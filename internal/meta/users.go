@@ -79,6 +79,55 @@ func (m *Metadata) GetUser(ctx context.Context, handle string) (*User, error) {
 	return &u, nil
 }
 
+// GetUserByID returns the user with the given id, or ErrNotFound. The web UI
+// resolves the session's user this way on every request, so a deleted or
+// demoted account loses access immediately.
+func (m *Metadata) GetUserByID(ctx context.Context, id int64) (*User, error) {
+	var (
+		u       User
+		isAdmin int64
+		ts      string
+	)
+	err := m.db.QueryRowContext(ctx,
+		`SELECT id, handle, is_admin, created_at FROM users WHERE id = ?`, id).
+		Scan(&u.ID, &u.Handle, &isAdmin, &ts)
+	if isNoRows(err) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	u.IsAdmin = isAdmin != 0
+	u.CreatedAt = parseTime(ts)
+	return &u, nil
+}
+
+// ListUsers returns all users ordered by handle.
+func (m *Metadata) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT id, handle, is_admin, created_at FROM users ORDER BY handle`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var (
+			u       User
+			isAdmin int64
+			ts      string
+		)
+		if err := rows.Scan(&u.ID, &u.Handle, &isAdmin, &ts); err != nil {
+			return nil, err
+		}
+		u.IsAdmin = isAdmin != 0
+		u.CreatedAt = parseTime(ts)
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
 // AdminExists reports whether any global administrator exists — the signal
 // bootstrap uses to refuse clobbering an already-initialized instance.
 func (m *Metadata) AdminExists(ctx context.Context) (bool, error) {
@@ -139,6 +188,13 @@ func (m *Metadata) TokenBySelector(ctx context.Context, selector string) (*Token
 func (m *Metadata) TouchToken(ctx context.Context, tokenID int64) error {
 	_, err := m.db.ExecContext(ctx,
 		`UPDATE tokens SET last_used = ? WHERE id = ?`, now(), tokenID)
+	return err
+}
+
+// DeleteToken revokes a token by id. It is idempotent — deleting an absent
+// token is not an error, so a double revoke from the UI is harmless.
+func (m *Metadata) DeleteToken(ctx context.Context, tokenID int64) error {
+	_, err := m.db.ExecContext(ctx, `DELETE FROM tokens WHERE id = ?`, tokenID)
 	return err
 }
 

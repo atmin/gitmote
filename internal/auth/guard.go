@@ -62,6 +62,14 @@ func (g *Guard) authenticate(ctx context.Context, r *http.Request) (*meta.User, 
 	if !ok {
 		return nil, ErrUnauthorized
 	}
+	return g.VerifyToken(ctx, raw)
+}
+
+// VerifyToken resolves a raw PAT string to its owner, or ErrUnauthorized. It is
+// the shared verification path: the request guard calls it after extracting the
+// token from the Authorization header, and the web UI's login form calls it with
+// a pasted token. All failures collapse to ErrUnauthorized.
+func (g *Guard) VerifyToken(ctx context.Context, raw string) (*meta.User, error) {
 	selector, secret, ok := split(raw)
 	if !ok {
 		return nil, ErrUnauthorized

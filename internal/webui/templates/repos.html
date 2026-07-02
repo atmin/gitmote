@@ -1,0 +1,36 @@
+{{define "repos.html"}}{{template "top" .}}
+<h1>Repositories</h1>
+
+{{if .Repos}}
+<table>
+  <thead><tr><th>Name</th><th>Default branch</th><th>Set branch</th></tr></thead>
+  <tbody>
+  {{range .Repos}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td>{{.DefaultBranch}}</td>
+      <td>
+        <form class="inline" method="post" action="/ui/repos/default-branch">
+          <input type="hidden" name="repo" value="{{.Name}}">
+          <input type="text" name="default_branch" value="{{.DefaultBranch}}" size="12" required>
+          <button type="submit">Update</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>No repositories yet.</p>
+{{end}}
+
+<fieldset>
+  <legend>Create repository</legend>
+  <form method="post" action="/ui/repos">
+    <label>Owner <input type="text" name="owner" placeholder="atmin" required></label>
+    <label>Name <input type="text" name="name" placeholder="gitmote" required></label>
+    <label>Default branch <input type="text" name="default_branch" value="main"></label>
+    <button type="submit">Create</button>
+  </form>
+</fieldset>
+{{template "bottom" .}}{{end}}

@@ -1,0 +1,54 @@
+{{define "acls.html"}}{{template "top" .}}
+<h1>Access control</h1>
+
+<form method="get" action="/ui/acls">
+  <label>Repository
+    <select name="repo" onchange="this.form.submit()">
+      <option value="">— choose —</option>
+      {{range .Repos}}<option value="{{.Name}}"{{if eq .Name $.Selected}} selected{{end}}>{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <noscript><button type="submit">Show</button></noscript>
+</form>
+
+{{if .Selected}}
+{{if .ACLs}}
+<table>
+  <thead><tr><th>User</th><th>Permission</th><th></th></tr></thead>
+  <tbody>
+  {{range .ACLs}}
+    <tr>
+      <td>{{.Handle}}</td>
+      <td>{{.Perm}}</td>
+      <td>
+        <form class="inline" method="post" action="/ui/acls/revoke">
+          <input type="hidden" name="repo" value="{{$.Selected}}">
+          <input type="hidden" name="user_id" value="{{.UserID}}">
+          <button type="submit">Revoke</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>No grants on {{.Selected}}.</p>
+{{end}}
+
+<fieldset>
+  <legend>Grant on {{.Selected}}</legend>
+  <form method="post" action="/ui/acls">
+    <input type="hidden" name="repo" value="{{.Selected}}">
+    <label>User <input type="text" name="handle" required></label>
+    <label>Permission
+      <select name="perm">
+        <option value="read">read</option>
+        <option value="write">write</option>
+        <option value="admin">admin</option>
+      </select>
+    </label>
+    <button type="submit">Grant</button>
+  </form>
+</fieldset>
+{{end}}
+{{template "bottom" .}}{{end}}

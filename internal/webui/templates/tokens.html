@@ -1,0 +1,55 @@
+{{define "tokens.html"}}{{template "top" .}}
+<h1>Tokens</h1>
+
+{{if .NewToken}}
+<div class="flash ok">
+  New token (copy it now — it is shown only once):<br>
+  <code>{{.NewToken}}</code>
+</div>
+{{end}}
+
+<form method="get" action="/ui/tokens">
+  <label>User
+    <select name="user" onchange="this.form.submit()">
+      <option value="">— choose —</option>
+      {{range .Users}}<option value="{{.Handle}}"{{if eq .Handle $.Selected}} selected{{end}}>{{.Handle}}</option>{{end}}
+    </select>
+  </label>
+  <noscript><button type="submit">Show</button></noscript>
+</form>
+
+{{if .Selected}}
+{{if .Tokens}}
+<table>
+  <thead><tr><th>Label</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+  <tbody>
+  {{range .Tokens}}
+    <tr>
+      <td>{{if .Label}}{{.Label}}{{else}}<em>(none)</em>{{end}}</td>
+      <td>{{.CreatedAt.Format "2006-01-02"}}</td>
+      <td>{{if .LastUsed}}{{.LastUsed.Format "2006-01-02"}}{{else}}never{{end}}</td>
+      <td>
+        <form class="inline" method="post" action="/ui/tokens/revoke">
+          <input type="hidden" name="user" value="{{$.Selected}}">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button type="submit">Revoke</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>No tokens for {{.Selected}}.</p>
+{{end}}
+
+<fieldset>
+  <legend>Mint token for {{.Selected}}</legend>
+  <form method="post" action="/ui/tokens">
+    <input type="hidden" name="user" value="{{.Selected}}">
+    <label>Label <input type="text" name="label" placeholder="laptop"></label>
+    <button type="submit">Mint</button>
+  </form>
+</fieldset>
+{{end}}
+{{template "bottom" .}}{{end}}

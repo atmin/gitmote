@@ -32,3 +32,12 @@ sharing the same `GITMOTE_DB`) and clone/push with the token:
 ```sh
 git clone http://atmin:<token>@<host>/atmin/gitmote
 ```
+
+## Management UI
+
+The things you can't do over git — create/list repos, mint/revoke tokens, and
+manage per-repo ACLs — live in a small server-rendered web UI under `/ui`. Set
+`GITMOTE_COOKIE_KEY` (the HMAC key that signs session cookies) to enable it; it
+runs alongside the git server. Sign in at `/login` by pasting an **admin** token
+(the same PAT format git uses); the server issues a signed, stateless session
+cookie. Access is limited to global admins.

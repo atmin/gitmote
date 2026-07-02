@@ -9,9 +9,6 @@ Items with worked-out context live as one-concern notes under
   the closure must be present before it runs ("on demand" doesn't apply at the
   git layer); full-hydrate vs partial-clone/promisor —
   [../notes/object-hydration.md](../notes/object-hydration.md).
-- **Repo-creation rules.** The `owner/name` convention, who may create repos,
-  and reserved names — for the management UI (task 09). (First-admin bootstrap
-  itself is done: `gitmote bootstrap`.)
 - **gc / compaction.** Loose objects proliferate; a `cleanup` subcommand
   (triggered by loose-object count) repacks and prunes orphans. Pruning must not
   race in-flight reads — a fetch pins a ref snapshot from s3lite and pushes only

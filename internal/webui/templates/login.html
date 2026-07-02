@@ -1,0 +1,26 @@
+{{define "login.html"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gitmote — sign in</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 24rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5; }
+  input { width: 100%; padding: .4rem; box-sizing: border-box; }
+  button { margin-top: .75rem; padding: .4rem .8rem; }
+  .err { background: #cc00001a; padding: .5rem .75rem; border-radius: 6px; margin: 1rem 0; }
+</style>
+</head>
+<body>
+<h1>gitmote</h1>
+{{if .Err}}<div class="err">{{.Err}}</div>{{end}}
+<form method="post" action="/login">
+  <label>Access token
+    <input type="password" name="token" placeholder="gmt_…" autofocus required>
+  </label>
+  <button type="submit">Sign in</button>
+</form>
+<p><small>Paste an admin personal access token. Manage tokens with the CLI (<code>gitmote bootstrap</code>) or here once signed in.</small></p>
+</body>
+</html>
+{{end}}

@@ -6,7 +6,6 @@ lands** (commits are the record — this list never becomes a changelog).
 
 Ordered by dependency; each task lands in a non-breaking, tested state.
 
-- [09-management-web-ui.md](09-management-web-ui.md) — Authenticated UI: repos, tokens, ACLs.
 - [10-self-host-local.md](10-self-host-local.md) — MinIO + Docker; e2e clone+push of the gitmote repo.
 - [11-deploy.md](11-deploy.md) — Real object storage + single-writer deploy; hosts itself for real.
 

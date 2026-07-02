@@ -13,7 +13,7 @@ import (
 )
 
 func TestHealthz(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil))
+	srv := httptest.NewServer(newHandler(nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/healthz")
@@ -28,7 +28,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil))
+	srv := httptest.NewServer(newHandler(nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/version")
@@ -43,7 +43,7 @@ func TestVersion(t *testing.T) {
 }
 
 func TestUnknownRouteNotFound(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil))
+	srv := httptest.NewServer(newHandler(nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/nope")
@@ -63,7 +63,7 @@ func TestGitHandlerMountedAtRoot(t *testing.T) {
 	gitHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	srv := httptest.NewServer(newHandler(gitHandler))
+	srv := httptest.NewServer(newHandler(gitHandler, nil))
 	defer srv.Close()
 
 	health, err := http.Get(srv.URL + "/healthz")

@@ -33,6 +33,24 @@ func (m *Metadata) CreateRepo(ctx context.Context, name, defaultBranch string) (
 	return &Repo{ID: id, Name: name, DefaultBranch: defaultBranch, CreatedAt: parseTime(created)}, nil
 }
 
+// SetDefaultBranch updates a repository's default branch (the derived HEAD). It
+// returns ErrNotFound when no repo has the given id.
+func (m *Metadata) SetDefaultBranch(ctx context.Context, repoID int64, branch string) error {
+	res, err := m.db.ExecContext(ctx,
+		`UPDATE repos SET default_branch = ? WHERE id = ?`, branch, repoID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // GetRepo returns the repository named name, or ErrNotFound.
 func (m *Metadata) GetRepo(ctx context.Context, name string) (*Repo, error) {
 	var (

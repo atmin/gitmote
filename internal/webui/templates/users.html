@@ -1,0 +1,29 @@
+{{define "users.html"}}{{template "top" .}}
+<h1>Users</h1>
+
+{{if .Users}}
+<table>
+  <thead><tr><th>Handle</th><th>Role</th><th>Created</th></tr></thead>
+  <tbody>
+  {{range .Users}}
+    <tr>
+      <td>{{.Handle}}</td>
+      <td>{{if .IsAdmin}}admin{{else}}user{{end}}</td>
+      <td>{{.CreatedAt.Format "2006-01-02"}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>No users yet.</p>
+{{end}}
+
+<fieldset>
+  <legend>Create user</legend>
+  <form method="post" action="/ui/users">
+    <label>Handle <input type="text" name="handle" required></label>
+    <label><input type="checkbox" name="is_admin" value="1"> Global admin</label>
+    <button type="submit">Create</button>
+  </form>
+</fieldset>
+{{template "bottom" .}}{{end}}

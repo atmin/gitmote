@@ -145,6 +145,34 @@ func TestAuthorize(t *testing.T) {
 	}
 }
 
+func TestVerifyToken(t *testing.T) {
+	ctx := context.Background()
+	m := openMeta(t)
+	g := NewGuard(m)
+	raw, userID := seedToken(t, m)
+	sel, _, _ := split(raw)
+
+	// Valid raw token resolves to its owner — the web UI login path.
+	user, err := g.VerifyToken(ctx, raw)
+	if err != nil {
+		t.Fatalf("VerifyToken(valid): %v", err)
+	}
+	if user.ID != userID {
+		t.Errorf("user = %d, want %d", user.ID, userID)
+	}
+
+	// Malformed, unknown selector, and wrong secret all → ErrUnauthorized.
+	for name, tok := range map[string]string{
+		"malformed":    "not-a-token",
+		"unknown":      "gmt_ffffffffffffffffffffffffffffffff.1234",
+		"wrong secret": "gmt_" + sel + ".wrongsecret",
+	} {
+		if _, err := g.VerifyToken(ctx, tok); !errors.Is(err, ErrUnauthorized) {
+			t.Errorf("%s: VerifyToken = %v, want ErrUnauthorized", name, err)
+		}
+	}
+}
+
 func TestBasicAuthCredentials(t *testing.T) {
 	ctx := context.Background()
 	m := openMeta(t)

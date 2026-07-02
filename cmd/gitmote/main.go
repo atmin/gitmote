@@ -21,6 +21,7 @@ import (
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
 	"github.com/atmin/gitmote/internal/store"
+	"github.com/atmin/gitmote/internal/webui"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -96,7 +97,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	gitHandler, closeMeta, err := buildGitHandler(ctx, logger)
+	gitHandler, ui, closeMeta, err := buildGitHandler(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -108,7 +109,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: newHandler(gitHandler),
+		Handler: newHandler(gitHandler, ui),
 	}
 
 	errCh := make(chan error, 1)
@@ -135,10 +136,11 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 	return nil
 }
 
-// newHandler returns the server's HTTP routes. gitHandler, when non-nil, serves
-// the git smart-HTTP endpoints at the catch-all "/"; the exact health/version
-// routes stay more specific and win under http.ServeMux.
-func newHandler(gitHandler http.Handler) http.Handler {
+// newHandler returns the server's HTTP routes. ui, when non-nil, registers the
+// management UI under /ui/ and /login (more specific patterns that win over the
+// git catch-all). gitHandler, when non-nil, serves the git smart-HTTP endpoints
+// at "/"; the exact health/version routes stay more specific.
+func newHandler(gitHandler http.Handler, ui *webui.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -146,6 +148,9 @@ func newHandler(gitHandler http.Handler) http.Handler {
 	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, version)
 	})
+	if ui != nil {
+		ui.Register(mux)
+	}
 	if gitHandler != nil {
 		mux.Handle("/", gitHandler)
 	}
@@ -156,36 +161,40 @@ func newHandler(gitHandler http.Handler) http.Handler {
 // configured (GITMOTE_S3_BUCKET). Without it, the server runs health/version
 // only — a dev convenience — and the returned close func is a no-op.
 //
+// The management UI (second return) is built when GITMOTE_COOKIE_KEY is set (the
+// HMAC key that signs session cookies); it shares this metadata handle, so it
+// runs alongside the git server.
+//
 // Metadata lives at GITMOTE_DB (default ./gitmote.sqlite3); materialized repos
 // cache under GITMOTE_CACHE (default a temp dir). The push path listens on
 // GITMOTE_SOCK (default a temp path) and installs the pre-receive hook binary
 // at GITMOTE_HOOK (default gitmote-hook alongside this binary). Litestream
 // replication of the metadata DB is wired in the deploy task (11); it is
 // local-only here.
-func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func() error, error) {
+func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *webui.Handler, func() error, error) {
 	noop := func() error { return nil }
 
 	if os.Getenv("GITMOTE_S3_BUCKET") == "" {
 		logger.Warn("GITMOTE_S3_BUCKET unset; git endpoints disabled (health/version only)")
-		return nil, noop, nil
+		return nil, nil, noop, nil
 	}
 
 	objs, err := store.NewS3FromEnv(ctx)
 	if err != nil {
-		return nil, noop, fmt.Errorf("object store: %w", err)
+		return nil, nil, noop, fmt.Errorf("object store: %w", err)
 	}
 
 	dbPath := envOr("GITMOTE_DB", "gitmote.sqlite3")
 	md, err := meta.Open(ctx, meta.Config{LocalPath: dbPath})
 	if err != nil {
-		return nil, noop, fmt.Errorf("metadata: %w", err)
+		return nil, nil, noop, fmt.Errorf("metadata: %w", err)
 	}
 
 	sockPath := envOr("GITMOTE_SOCK", filepath.Join(os.TempDir(), "gitmote.sock"))
 	writer, err := githttp.NewWriter(md, objs, hookBinaryPath(), sockPath, logger)
 	if err != nil {
 		_ = md.Close()
-		return nil, noop, fmt.Errorf("write path: %w", err)
+		return nil, nil, noop, fmt.Errorf("write path: %w", err)
 	}
 	cleanup := func() error {
 		err := writer.Close()
@@ -195,18 +204,37 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, fu
 		return err
 	}
 
+	guard := auth.NewGuard(md)
 	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
 	handler, err := githttp.New(githttp.Config{
 		Materializer: repo.New(md, objs, cacheRoot),
-		Authorizer:   auth.NewGuard(md),
+		Authorizer:   guard,
 		Writer:       writer,
 		Logger:       logger,
 	})
 	if err != nil {
 		_ = cleanup()
-		return nil, noop, err
+		return nil, nil, noop, err
 	}
-	return handler, cleanup, nil
+
+	ui, err := buildUI(md, guard, logger)
+	if err != nil {
+		_ = cleanup()
+		return nil, nil, noop, err
+	}
+	return handler, ui, cleanup, nil
+}
+
+// buildUI constructs the management UI when GITMOTE_COOKIE_KEY is set; otherwise
+// it returns nil (UI disabled) so a misconfigured key never yields an insecurely
+// signed session.
+func buildUI(md *meta.Metadata, guard *auth.Guard, logger *slog.Logger) (*webui.Handler, error) {
+	key := os.Getenv("GITMOTE_COOKIE_KEY")
+	if key == "" {
+		logger.Warn("GITMOTE_COOKIE_KEY unset; management UI disabled")
+		return nil, nil
+	}
+	return webui.New(md, guard, []byte(key), logger)
 }
 
 // hookBinaryPath resolves the pre-receive hook executable: GITMOTE_HOOK if set,
