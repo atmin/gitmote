@@ -1,9 +1,14 @@
-// Package githttp serves the git smart-HTTP read path (clone / fetch). It
-// materializes the target repo (refs from s3lite, objects hydrated from the
-// object store) and then delegates all protocol work — ref advertisement and
-// pack negotiation — to stock `git http-backend` over CGI, per the read path
-// in docs/architecture/request-flows.md. Only the upload-pack (read) service is
-// routed here; the write path (receive-pack) lands in task 07.
+// Package githttp serves git smart-HTTP. It materializes the target repo (refs
+// from s3lite, objects hydrated from the object store) and delegates protocol
+// work — ref advertisement, pack negotiation, receive-pack — to stock
+// `git http-backend` over CGI, per the request flows in
+// docs/architecture/request-flows.md.
+//
+// The read path (clone / fetch, upload-pack) needs only a materialized repo.
+// The write path (push, receive-pack) additionally serializes per repo, mints a
+// per-push nonce, and installs the pre-receive hook that RPCs the parent to
+// enforce the content-before-pointer CAS; that machinery lives in the Writer
+// (receive.go) and is engaged only when the handler is built with one.
 package githttp
 
 import (
@@ -27,79 +32,151 @@ type Authorizer interface {
 	Authorize(r *http.Request, repoName string, perm meta.Perm) (*meta.User, error)
 }
 
-// Handler serves the read-path smart-HTTP endpoints for any repo, dispatching
-// on the git URL suffix. Mount it at "/"; more specific routes (e.g. /healthz)
-// still win under http.ServeMux.
+// Config assembles a Handler.
+type Config struct {
+	// Materializer builds the on-disk repo git-http-backend serves. Required.
+	Materializer *repo.Materializer
+	// Authorizer guards every request. Required.
+	Authorizer Authorizer
+	// Writer enables the push path. Nil serves the read path only; write
+	// endpoints then 404.
+	Writer *Writer
+	// Logger is optional; nil discards.
+	Logger *slog.Logger
+}
+
+// Handler serves the git smart-HTTP endpoints for any repo, dispatching on the
+// git URL suffix. Mount it at "/"; more specific routes (e.g. /healthz) still
+// win under http.ServeMux.
 type Handler struct {
 	mz      *repo.Materializer
 	authz   Authorizer
+	writer  *Writer
 	gitPath string
 	logger  *slog.Logger
 }
 
-// New returns a read-path handler backed by mz and guarded by authz. It fails
-// if the `git` executable is not on PATH, since the whole design delegates to
-// it.
-func New(mz *repo.Materializer, authz Authorizer, logger *slog.Logger) (*Handler, error) {
+// New returns a handler. It fails if the `git` executable is not on PATH, since
+// the whole design delegates to it.
+func New(cfg Config) (*Handler, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		return nil, fmt.Errorf("githttp: git not found on PATH: %w", err)
 	}
+	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	return &Handler{mz: mz, authz: authz, gitPath: gitPath, logger: logger}, nil
+	return &Handler{
+		mz:      cfg.Materializer,
+		authz:   cfg.Authorizer,
+		writer:  cfg.Writer,
+		gitPath: gitPath,
+		logger:  logger,
+	}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	repoName, endpoint, ok := parseReadPath(r.URL.Path)
+	repoName, endpoint, ok := parseGitPath(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	// Serve only the upload-pack (read) service. receive-pack — and a
-	// receive-pack advertisement — are not part of the read path.
-	switch endpoint {
-	case "info/refs":
-		if r.Method != http.MethodGet || r.URL.Query().Get("service") != "git-upload-pack" {
-			http.NotFound(w, r)
-			return
-		}
-	case "git-upload-pack":
-		if r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
+	perm, isReceive, isPush, ok := classify(endpoint, r)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	// Writes are served only when a Writer is configured.
+	if isReceive && h.writer == nil {
+		http.NotFound(w, r)
+		return
 	}
 
-	// Authorize the read before doing any work. receive-pack is not served
-	// here, so read is the only permission this handler ever requires.
-	if _, err := h.authz.Authorize(r, repoName, meta.PermRead); err != nil {
+	if _, err := h.authz.Authorize(r, repoName, perm); err != nil {
 		h.writeAuthError(w, r, repoName, err)
 		return
 	}
 
-	if _, err := h.mz.Materialize(r.Context(), repoName); err != nil {
+	if isPush {
+		h.serveReceivePack(w, r, repoName)
+		return
+	}
+
+	// Read, or a receive-pack advertisement: materialize then hand off to
+	// http-backend. The receive advertisement needs http.receivepack enabled.
+	if !h.materialize(w, r, repoName) {
+		return
+	}
+	var extra []string
+	if isReceive {
+		extra = gitConfigEnv([2]string{"http.receivepack", "true"})
+	}
+	h.serveCGI(w, r, extra)
+}
+
+// serveReceivePack runs a push under the per-repo write lock: refresh the repo
+// from the sources of truth, mint a nonce, and hand off to receive-pack with the
+// pre-receive hook wired to call back on the socket. The hook's callback does
+// the object PUT + ref CAS (see Writer.handle).
+func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, repoName string) {
+	push, err := h.writer.Begin(r.Context(), repoName)
+	if err != nil {
 		if errors.Is(err, meta.ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
-		h.logger.Error("materialize failed", "repo", repoName, "error", err)
+		h.logger.Error("begin push failed", "repo", repoName, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	defer push.Release()
 
-	// Delegate to git-http-backend. PATH_INFO carries the full request path
-	// (empty CGI Root) and GIT_PROJECT_ROOT is the cache root, so http-backend
-	// resolves the repo dir the materializer just wrote.
+	// Materialize under the lock so receive-pack's fast-forward check runs
+	// against the authoritative tip.
+	if !h.materialize(w, r, repoName) {
+		return
+	}
+
+	extra := append(
+		gitConfigEnv(
+			[2]string{"http.receivepack", "true"},
+			[2]string{"core.hooksPath", h.writer.HooksPath()},
+		),
+		"GITMOTE_SOCK="+h.writer.SockPath(),
+		"GITMOTE_NONCE="+push.Nonce,
+	)
+	h.serveCGI(w, r, extra)
+}
+
+// materialize builds the on-disk repo, writing the HTTP error itself on failure
+// and returning false so the caller stops.
+func (h *Handler) materialize(w http.ResponseWriter, r *http.Request, repoName string) bool {
+	if _, err := h.mz.Materialize(r.Context(), repoName); err != nil {
+		if errors.Is(err, meta.ErrNotFound) {
+			http.NotFound(w, r)
+			return false
+		}
+		h.logger.Error("materialize failed", "repo", repoName, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return false
+	}
+	return true
+}
+
+// serveCGI delegates to git-http-backend. PATH_INFO carries the full request
+// path (empty CGI Root) and GIT_PROJECT_ROOT is the cache root, so http-backend
+// resolves the repo dir the materializer just wrote.
+func (h *Handler) serveCGI(w http.ResponseWriter, r *http.Request, extraEnv []string) {
+	env := append([]string{
+		"GIT_PROJECT_ROOT=" + h.mz.Root(),
+		"GIT_HTTP_EXPORT_ALL=1",
+	}, extraEnv...)
 	backend := &cgi.Handler{
 		Path: h.gitPath,
 		Args: []string{"http-backend"},
 		Dir:  h.mz.Root(),
-		Env: []string{
-			"GIT_PROJECT_ROOT=" + h.mz.Root(),
-			"GIT_HTTP_EXPORT_ALL=1",
-		},
+		Env:  env,
 	}
 	backend.ServeHTTP(w, r)
 }
@@ -122,12 +199,44 @@ func (h *Handler) writeAuthError(w http.ResponseWriter, r *http.Request, repoNam
 	}
 }
 
-// parseReadPath splits a git smart-HTTP read URL into the repo name and the
-// endpoint suffix ("info/refs" or "git-upload-pack"). The repo name — which may
-// contain slashes ("atmin/dotfiles") — must be non-empty.
-func parseReadPath(urlPath string) (repoName, endpoint string, ok bool) {
+// classify determines, for a parsed endpoint and request, the required
+// permission and whether it targets receive-pack (isReceive) and mutates
+// (isPush). ok=false rejects a wrong method or unknown service.
+func classify(endpoint string, r *http.Request) (perm meta.Perm, isReceive, isPush, ok bool) {
+	switch endpoint {
+	case "info/refs":
+		if r.Method != http.MethodGet {
+			return "", false, false, false
+		}
+		switch r.URL.Query().Get("service") {
+		case "git-upload-pack":
+			return meta.PermRead, false, false, true
+		case "git-receive-pack":
+			return meta.PermWrite, true, false, true
+		default:
+			return "", false, false, false
+		}
+	case "git-upload-pack":
+		if r.Method != http.MethodPost {
+			return "", false, false, false
+		}
+		return meta.PermRead, false, false, true
+	case "git-receive-pack":
+		if r.Method != http.MethodPost {
+			return "", false, false, false
+		}
+		return meta.PermWrite, true, true, true
+	default:
+		return "", false, false, false
+	}
+}
+
+// parseGitPath splits a git smart-HTTP URL into the repo name and the endpoint
+// suffix ("info/refs", "git-upload-pack", or "git-receive-pack"). The repo name
+// — which may contain slashes ("atmin/dotfiles") — must be non-empty.
+func parseGitPath(urlPath string) (repoName, endpoint string, ok bool) {
 	p := strings.TrimPrefix(urlPath, "/")
-	for _, ep := range []string{"info/refs", "git-upload-pack"} {
+	for _, ep := range []string{"info/refs", "git-upload-pack", "git-receive-pack"} {
 		if suffix := "/" + ep; strings.HasSuffix(p, suffix) {
 			name := strings.TrimSuffix(p, suffix)
 			if name == "" {
@@ -137,4 +246,18 @@ func parseReadPath(urlPath string) (repoName, endpoint string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+// gitConfigEnv renders config overrides as the GIT_CONFIG_COUNT/KEY/VALUE
+// environment git honors in every process, so they reach the spawned
+// receive-pack (and its hooks).
+func gitConfigEnv(pairs ...[2]string) []string {
+	env := []string{fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(pairs))}
+	for i, p := range pairs {
+		env = append(env,
+			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, p[0]),
+			fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, p[1]),
+		)
+	}
+	return env
 }

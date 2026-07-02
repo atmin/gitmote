@@ -69,7 +69,16 @@ sequenceDiagram
   embedded in the parent. Two processes writing it is the one thing s3lite
   forbids. So the hook RPCs back to the parent over a unix socket; the parent,
   the sole writer, performs the PUT + CAS and returns a verdict. (This is exactly
-  how GitLab/Gitaly wires its git hooks back to the app.)
+  how GitLab/Gitaly wires its git hooks back to the app.) The channel:
+  - **Installation** — one hook binary (`gitmote-hook`), referenced by
+    `core.hooksPath` (set per spawned `receive-pack` via `GIT_CONFIG_*`), so
+    every materialized repo inherits it with nothing to install per repo.
+  - **Discovery + auth** — the parent exports the socket path (`GITMOTE_SOCK`)
+    and a **single-use nonce** (`GITMOTE_NONCE`) into `receive-pack`'s
+    environment. The nonce is minted per push, bound to the locked operation,
+    and burned on use, so a stray local process can't forge a ref update.
+  - **Fail closed** — any hook-side error (missing env, dial failure, bad
+    verdict) rejects the push.
 - **One SQL transaction = atomic multi-ref push.** All per-ref CAS run inside a
   single s3lite transaction; all-or-nothing matches `git push --atomic`, and is
   _stronger_ than loose-file refs.

@@ -5,9 +5,6 @@
 Items with worked-out context live as one-concern notes under
 [`../notes/`](../notes/); the rest stay one-liners until they earn a note.
 
-- **The push hook channel.** How the `pre-receive` hook discovers and
-  authenticates to the parent's socket, and how it is installed into ephemeral
-  repos — [../notes/push-hook-channel.md](../notes/push-hook-channel.md).
 - **Object hydration for reads.** `upload-pack` walks a _local_ object store, so
   the closure must be present before it runs ("on demand" doesn't apply at the
   git layer); full-hydrate vs partial-clone/promisor —

@@ -1,0 +1,348 @@
+package githttp
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+	"testing"
+
+	"github.com/atmin/gitmote/internal/auth"
+	"github.com/atmin/gitmote/internal/meta"
+	"github.com/atmin/gitmote/internal/repo"
+	"github.com/atmin/gitmote/internal/store"
+)
+
+var (
+	hookOnce sync.Once
+	hookPath string
+	hookErr  error
+)
+
+// buildHook compiles the pre-receive hook binary once per test run and returns
+// its path.
+func buildHook(t *testing.T) string {
+	t.Helper()
+	hookOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "gitmote-hookbin-")
+		if err != nil {
+			hookErr = err
+			return
+		}
+		out := filepath.Join(dir, "gitmote-hook")
+		cmd := exec.Command("go", "build", "-o", out, "github.com/atmin/gitmote/cmd/gitmote-hook")
+		if b, err := cmd.CombinedOutput(); err != nil {
+			hookErr = fmt.Errorf("build hook: %v\n%s", err, b)
+			return
+		}
+		hookPath = out
+	})
+	if hookErr != nil {
+		t.Fatal(hookErr)
+	}
+	return hookPath
+}
+
+func openMeta(t *testing.T) *meta.Metadata {
+	t.Helper()
+	m, err := meta.Open(context.Background(), meta.Config{
+		LocalPath: filepath.Join(t.TempDir(), "meta.sqlite3"),
+	})
+	if err != nil {
+		t.Fatalf("meta.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	return m
+}
+
+// newWriteServer wires meta + mem store + materializer + write coordinator
+// behind a guarded handler on an httptest server.
+func newWriteServer(t *testing.T) (*httptest.Server, *meta.Metadata, store.Store, *Writer) {
+	t.Helper()
+	m := openMeta(t)
+	s := store.NewMem()
+	// A short socket dir: unix socket paths are limited to ~104 bytes, and
+	// t.TempDir() embeds the (long) test name.
+	sockDir, err := os.MkdirTemp("", "gm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "s.sock")
+	writer, err := NewWriter(m, s, buildHook(t), sock, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+
+	h, err := New(Config{
+		Materializer: repo.New(m, s, t.TempDir()),
+		Authorizer:   auth.NewGuard(m),
+		Writer:       writer,
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatalf("githttp.New: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv, m, s, writer
+}
+
+// tryGit runs a git command hermetically and returns its combined output and
+// error without failing the test — for operations expected to be rejected.
+func tryGit(dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// initCommit makes a fresh source repo with one commit on main and returns its
+// dir and head sha.
+func initCommit(t *testing.T, content string) string {
+	t.Helper()
+	src := t.TempDir()
+	git(t, src, "init", "-b", "main", ".")
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "add", ".")
+	git(t, src, "commit", "-m", "commit")
+	return src
+}
+
+// serverRefSHA returns the sha meta holds for a ref, or "" if absent.
+func serverRefSHA(t *testing.T, m *meta.Metadata, repoID int64, name string) string {
+	t.Helper()
+	refs, err := m.ListRefs(context.Background(), repoID)
+	if err != nil {
+		t.Fatalf("ListRefs: %v", err)
+	}
+	for _, r := range refs {
+		if r.Name == name {
+			return r.SHA
+		}
+	}
+	return ""
+}
+
+func TestPushThenClone(t *testing.T) {
+	ctx := context.Background()
+	srv, m, s, _ := newWriteServer(t)
+
+	r, err := m.CreateRepo(ctx, repoName, "main")
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
+	remote := authedURL(srv.URL, raw) + "/" + repoName
+
+	// Golden path: push a new repo's first commits.
+	src := initCommit(t, "hello\n")
+	head := git(t, src, "rev-parse", "HEAD")
+	git(t, src, "push", remote, "main")
+
+	// The ref advanced in s3lite and the objects are durable in the store.
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head {
+		t.Fatalf("server main = %q, want %q", got, head)
+	}
+	objs, _ := s.List(ctx, repoName+"/objects/")
+	if len(objs) == 0 {
+		t.Fatal("no objects uploaded to the store after push")
+	}
+
+	// A clone returns exactly what was pushed, and fsck is clean.
+	dst := filepath.Join(t.TempDir(), "clone")
+	git(t, "", "clone", remote, dst)
+	if got := git(t, dst, "rev-parse", "HEAD"); got != head {
+		t.Errorf("cloned HEAD = %q, want %q", got, head)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dst, "file.txt")); string(data) != "hello\n" {
+		t.Errorf("cloned file = %q, want \"hello\\n\"", data)
+	}
+	git(t, dst, "fsck", "--strict")
+
+	// A follow-up fast-forward push is accepted.
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("hello\nagain\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "commit", "-am", "second")
+	head2 := git(t, src, "rev-parse", "HEAD")
+	git(t, src, "push", remote, "main")
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head2 {
+		t.Errorf("server main after ff = %q, want %q", got, head2)
+	}
+}
+
+func TestNonFastForwardRejected(t *testing.T) {
+	ctx := context.Background()
+	srv, m, s, _ := newWriteServer(t)
+	r, _ := m.CreateRepo(ctx, repoName, "main")
+	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
+	remote := authedURL(srv.URL, raw) + "/" + repoName
+
+	// Establish main.
+	src := initCommit(t, "one\n")
+	git(t, src, "push", remote, "main")
+	base := git(t, src, "rev-parse", "HEAD")
+
+	// A stale clone that still sees main at base.
+	stale := filepath.Join(t.TempDir(), "stale")
+	git(t, "", "clone", remote, stale)
+
+	// Meanwhile main advances on the server.
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "commit", "-am", "advance")
+	git(t, src, "push", remote, "main")
+	advanced := git(t, src, "rev-parse", "HEAD")
+
+	// The stale client commits on top of base and pushes — a non-fast-forward
+	// against the advanced tip. It must be rejected, main unchanged.
+	if err := os.WriteFile(filepath.Join(stale, "file.txt"), []byte("one\ndivergent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, stale, "commit", "-am", "divergent")
+	if out, err := tryGit(stale, "push", remote, "main"); err == nil {
+		t.Fatalf("stale push succeeded, want rejection\n%s", out)
+	}
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != advanced {
+		t.Errorf("main after rejected push = %q, want %q (unchanged)", got, advanced)
+	}
+	_ = base
+	_ = s
+}
+
+func TestConcurrentPushOneWins(t *testing.T) {
+	ctx := context.Background()
+	srv, m, _, _ := newWriteServer(t)
+	r, _ := m.CreateRepo(ctx, repoName, "main")
+	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
+	remote := authedURL(srv.URL, raw) + "/" + repoName
+
+	// A base commit both racers build on.
+	src := initCommit(t, "base\n")
+	git(t, src, "push", remote, "main")
+
+	// Two independent clones, each with its own new commit on top of base.
+	dirs := [2]string{filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")}
+	heads := [2]string{}
+	for i, d := range dirs {
+		git(t, "", "clone", remote, d)
+		if err := os.WriteFile(filepath.Join(d, "file.txt"), []byte(fmt.Sprintf("base\nracer-%d\n", i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, d, "commit", "-am", "racer")
+		heads[i] = git(t, d, "rev-parse", "HEAD")
+	}
+
+	// Push both concurrently; exactly one must win.
+	var wg sync.WaitGroup
+	errs := [2]error{}
+	for i, d := range dirs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = tryGit(d, "push", remote, "main")
+		}()
+	}
+	wg.Wait()
+
+	wins := 0
+	winner := -1
+	for i := range errs {
+		if errs[i] == nil {
+			wins++
+			winner = i
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("concurrent pushes: %d winners, want exactly 1 (errs: %v)", wins, errs)
+	}
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != heads[winner] {
+		t.Errorf("main = %q, want winner %q — no lost update", got, heads[winner])
+	}
+}
+
+func TestAtomicMultiRefRollback(t *testing.T) {
+	ctx := context.Background()
+	srv, m, _, _ := newWriteServer(t)
+	r, _ := m.CreateRepo(ctx, repoName, "main")
+	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
+	remote := authedURL(srv.URL, raw) + "/" + repoName
+
+	src := initCommit(t, "one\n")
+	git(t, src, "push", remote, "main")
+
+	// Stale clone still at the original tip.
+	stale := filepath.Join(t.TempDir(), "stale")
+	git(t, "", "clone", remote, stale)
+
+	// Advance main on the server.
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "commit", "-am", "advance")
+	git(t, src, "push", remote, "main")
+	advanced := git(t, src, "rev-parse", "HEAD")
+
+	// The stale client builds a new commit and a brand-new branch, then pushes
+	// both atomically. The main update is a non-fast-forward (fails); with
+	// --atomic the feature create must roll back too.
+	if err := os.WriteFile(filepath.Join(stale, "file.txt"), []byte("one\ndivergent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, stale, "commit", "-am", "divergent")
+	git(t, stale, "branch", "feature")
+	if out, err := tryGit(stale, "push", "--atomic", remote, "main", "feature"); err == nil {
+		t.Fatalf("atomic push succeeded, want rejection\n%s", out)
+	}
+
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != advanced {
+		t.Errorf("main = %q, want %q (unchanged)", got, advanced)
+	}
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/feature"); got != "" {
+		t.Errorf("feature = %q, want absent — atomic rollback", got)
+	}
+}
+
+func TestOrderingInvariantObjectsBeforeRef(t *testing.T) {
+	ctx := context.Background()
+	srv, m, s, writer := newWriteServer(t)
+	r, _ := m.CreateRepo(ctx, repoName, "main")
+	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
+	remote := authedURL(srv.URL, raw) + "/" + repoName
+
+	// Inject a CAS failure that fires *after* the object PUT. This models a ref
+	// CAS that loses the race (or any post-PUT failure): objects are already
+	// durable, and the ref must never advance.
+	writer.beforeCAS = func() error { return errors.New("injected cas failure") }
+
+	src := initCommit(t, "hello\n")
+	if out, err := tryGit(src, "push", remote, "main"); err == nil {
+		t.Fatalf("push succeeded despite injected CAS failure\n%s", out)
+	}
+
+	// Ordering invariant: the objects reached the store (harmless orphans that
+	// gc reclaims), but the ref never advanced (no corruption).
+	objs, _ := s.List(ctx, repoName+"/objects/")
+	if len(objs) == 0 {
+		t.Error("expected orphan objects in the store (content-before-pointer)")
+	}
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != "" {
+		t.Errorf("main = %q, want absent — ref must not advance when CAS fails", got)
+	}
+}

@@ -76,7 +76,11 @@ func newServer(t *testing.T) (*httptest.Server, *meta.Metadata, store.Store) {
 	t.Cleanup(func() { _ = m.Close() })
 
 	s := store.NewMem()
-	h, err := New(repo.New(m, s, t.TempDir()), auth.NewGuard(m), slog.New(slog.DiscardHandler))
+	h, err := New(Config{
+		Materializer: repo.New(m, s, t.TempDir()),
+		Authorizer:   auth.NewGuard(m),
+		Logger:       slog.New(slog.DiscardHandler),
+	})
 	if err != nil {
 		t.Fatalf("githttp.New: %v", err)
 	}
@@ -258,7 +262,7 @@ func TestReceivePackNotServed(t *testing.T) {
 	}
 }
 
-func TestParseReadPath(t *testing.T) {
+func TestParseGitPath(t *testing.T) {
 	cases := []struct {
 		path         string
 		wantRepo     string
@@ -267,6 +271,7 @@ func TestParseReadPath(t *testing.T) {
 	}{
 		{"/atmin/dotfiles/info/refs", "atmin/dotfiles", "info/refs", true},
 		{"/atmin/dotfiles/git-upload-pack", "atmin/dotfiles", "git-upload-pack", true},
+		{"/atmin/dotfiles/git-receive-pack", "atmin/dotfiles", "git-receive-pack", true},
 		{"/one/info/refs", "one", "info/refs", true},
 		{"/info/refs", "", "", false},           // no repo
 		{"/git-upload-pack", "", "", false},     // no repo
@@ -274,9 +279,9 @@ func TestParseReadPath(t *testing.T) {
 		{"/", "", "", false},
 	}
 	for _, c := range cases {
-		gotRepo, gotEndpoint, ok := parseReadPath(c.path)
+		gotRepo, gotEndpoint, ok := parseGitPath(c.path)
 		if gotRepo != c.wantRepo || gotEndpoint != c.wantEndpoint || ok != c.wantOK {
-			t.Errorf("parseReadPath(%q) = (%q, %q, %v), want (%q, %q, %v)",
+			t.Errorf("parseGitPath(%q) = (%q, %q, %v), want (%q, %q, %v)",
 				c.path, gotRepo, gotEndpoint, ok, c.wantRepo, c.wantEndpoint, c.wantOK)
 		}
 	}

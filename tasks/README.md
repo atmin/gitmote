@@ -6,7 +6,6 @@ lands** (commits are the record — this list never becomes a changelog).
 
 Ordered by dependency; each task lands in a non-breaking, tested state.
 
-- [07-write-path-cas.md](07-write-path-cas.md) — `receive-pack` + pre-receive RPC + object PUT + ref CAS; `git push` works.
 - [08-bootstrap.md](08-bootstrap.md) — First admin, token, repo from an empty bucket.
 - [09-management-web-ui.md](09-management-web-ui.md) — Authenticated UI: repos, tokens, ACLs.
 - [10-self-host-local.md](10-self-host-local.md) — MinIO + Docker; e2e clone+push of the gitmote repo.

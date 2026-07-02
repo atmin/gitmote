@@ -6,8 +6,6 @@ future task or decision. The architecture's
 [open questions](../architecture/open-questions.md) are the superset and link
 here.
 
-- [push-hook-channel.md](push-hook-channel.md) — how the `pre-receive` hook
-  finds, authenticates to, and is installed for the parent's unix socket.
 - [object-hydration.md](object-hydration.md) — getting the object closure onto
   local disk before git runs; full-hydrate vs partial-clone.
 - [bootstrap.md](bootstrap.md) — first admin, token, repo, and schema migration

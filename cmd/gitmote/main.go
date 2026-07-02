@@ -100,13 +100,16 @@ func newHandler(gitHandler http.Handler) http.Handler {
 	return mux
 }
 
-// buildGitHandler wires the git read path (task 05) when an object store is
+// buildGitHandler wires the git read + write paths when an object store is
 // configured (GITMOTE_S3_BUCKET). Without it, the server runs health/version
 // only — a dev convenience — and the returned close func is a no-op.
 //
 // Metadata lives at GITMOTE_DB (default ./gitmote.sqlite3); materialized repos
-// cache under GITMOTE_CACHE (default a temp dir). Litestream replication of the
-// metadata DB is wired in the deploy task (11); it is local-only here.
+// cache under GITMOTE_CACHE (default a temp dir). The push path listens on
+// GITMOTE_SOCK (default a temp path) and installs the pre-receive hook binary
+// at GITMOTE_HOOK (default gitmote-hook alongside this binary). Litestream
+// replication of the metadata DB is wired in the deploy task (11); it is
+// local-only here.
 func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, func() error, error) {
 	noop := func() error { return nil }
 
@@ -126,13 +129,44 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, fu
 		return nil, noop, fmt.Errorf("metadata: %w", err)
 	}
 
-	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
-	handler, err := githttp.New(repo.New(md, objs, cacheRoot), auth.NewGuard(md), logger)
+	sockPath := envOr("GITMOTE_SOCK", filepath.Join(os.TempDir(), "gitmote.sock"))
+	writer, err := githttp.NewWriter(md, objs, hookBinaryPath(), sockPath, logger)
 	if err != nil {
 		_ = md.Close()
+		return nil, noop, fmt.Errorf("write path: %w", err)
+	}
+	cleanup := func() error {
+		err := writer.Close()
+		if cerr := md.Close(); err == nil {
+			err = cerr
+		}
+		return err
+	}
+
+	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
+	handler, err := githttp.New(githttp.Config{
+		Materializer: repo.New(md, objs, cacheRoot),
+		Authorizer:   auth.NewGuard(md),
+		Writer:       writer,
+		Logger:       logger,
+	})
+	if err != nil {
+		_ = cleanup()
 		return nil, noop, err
 	}
-	return handler, md.Close, nil
+	return handler, cleanup, nil
+}
+
+// hookBinaryPath resolves the pre-receive hook executable: GITMOTE_HOOK if set,
+// otherwise gitmote-hook next to this binary.
+func hookBinaryPath() string {
+	if p := os.Getenv("GITMOTE_HOOK"); p != "" {
+		return p
+	}
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(exe), "gitmote-hook")
+	}
+	return "gitmote-hook"
 }
 
 // envOr returns the value of the environment variable key, or fallback if
