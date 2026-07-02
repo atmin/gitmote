@@ -89,7 +89,7 @@ func TestRepoCRUD(t *testing.T) {
 	}
 }
 
-func TestUserAndTokenAuth(t *testing.T) {
+func TestTokenStorage(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)
 
@@ -98,43 +98,50 @@ func TestUserAndTokenAuth(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	const raw = "pat_supersecret_value"
-	tok, err := m.CreateToken(ctx, u.ID, raw, "laptop")
+	const (
+		selector = "0123456789abcdef"
+		verifier = "deadbeef" // stands in for SHA-256(secret); opaque to meta
+	)
+	tok, err := m.CreateToken(ctx, u.ID, selector, verifier, "laptop")
 	if err != nil {
 		t.Fatalf("CreateToken: %v", err)
 	}
 
-	// The raw token is never stored.
-	var stored string
-	if err := m.db.QueryRowContext(ctx, `SELECT hash FROM tokens WHERE id = ?`, tok.ID).Scan(&stored); err != nil {
-		t.Fatalf("read hash: %v", err)
+	// Lookup by selector returns the verifier + owner, and does not touch
+	// last_used.
+	ta, err := m.TokenBySelector(ctx, selector)
+	if err != nil {
+		t.Fatalf("TokenBySelector: %v", err)
 	}
-	if stored == raw {
-		t.Fatal("raw token stored in tokens.hash")
-	}
-	if stored != HashToken(raw) {
-		t.Errorf("stored hash = %q, want %q", stored, HashToken(raw))
+	if ta.TokenID != tok.ID || ta.Verifier != verifier || ta.User.ID != u.ID || ta.User.Handle != "atmin" {
+		t.Errorf("TokenBySelector = %+v, want token %d verifier %q user %d atmin", ta, tok.ID, verifier, u.ID)
 	}
 
-	// Authentication resolves the owner and stamps last_used.
-	got, err := m.AuthenticateToken(ctx, raw)
-	if err != nil {
-		t.Fatalf("AuthenticateToken: %v", err)
-	}
-	if got.ID != u.ID || got.Handle != "atmin" {
-		t.Errorf("AuthenticateToken = %+v, want user %d atmin", got, u.ID)
-	}
-	toks, err := m.ListTokens(ctx, u.ID)
+	before, err := m.ListTokens(ctx, u.ID)
 	if err != nil {
 		t.Fatalf("ListTokens: %v", err)
 	}
-	if len(toks) != 1 || toks[0].Label != "laptop" || toks[0].LastUsed == nil {
-		t.Errorf("ListTokens = %+v, want one 'laptop' token with last_used set", toks)
+	if len(before) != 1 || before[0].Label != "laptop" || before[0].LastUsed != nil {
+		t.Errorf("ListTokens = %+v, want one 'laptop' token with last_used unset", before)
 	}
 
-	// A wrong token authenticates no one.
-	if _, err := m.AuthenticateToken(ctx, "pat_wrong"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("AuthenticateToken(wrong) = %v, want ErrNotFound", err)
+	// TouchToken stamps last_used.
+	if err := m.TouchToken(ctx, tok.ID); err != nil {
+		t.Fatalf("TouchToken: %v", err)
+	}
+	after, _ := m.ListTokens(ctx, u.ID)
+	if after[0].LastUsed == nil {
+		t.Error("last_used still unset after TouchToken")
+	}
+
+	// An unknown selector is ErrNotFound.
+	if _, err := m.TokenBySelector(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("TokenBySelector(unknown) = %v, want ErrNotFound", err)
+	}
+
+	// selector is UNIQUE.
+	if _, err := m.CreateToken(ctx, u.ID, selector, "other", "dup"); err == nil {
+		t.Error("CreateToken(duplicate selector) succeeded, want error")
 	}
 }
 

@@ -15,22 +15,32 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/atmin/gitmote/internal/auth"
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
 )
+
+// Authorizer guards a request before it is served: it authenticates the PAT and
+// checks the user holds perm on repoName, returning auth's error sentinels
+// (ErrUnauthorized / ErrForbidden), meta.ErrNotFound, or an internal error.
+type Authorizer interface {
+	Authorize(r *http.Request, repoName string, perm meta.Perm) (*meta.User, error)
+}
 
 // Handler serves the read-path smart-HTTP endpoints for any repo, dispatching
 // on the git URL suffix. Mount it at "/"; more specific routes (e.g. /healthz)
 // still win under http.ServeMux.
 type Handler struct {
 	mz      *repo.Materializer
+	authz   Authorizer
 	gitPath string
 	logger  *slog.Logger
 }
 
-// New returns a read-path handler backed by mz. It fails if the `git`
-// executable is not on PATH, since the whole design delegates to it.
-func New(mz *repo.Materializer, logger *slog.Logger) (*Handler, error) {
+// New returns a read-path handler backed by mz and guarded by authz. It fails
+// if the `git` executable is not on PATH, since the whole design delegates to
+// it.
+func New(mz *repo.Materializer, authz Authorizer, logger *slog.Logger) (*Handler, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		return nil, fmt.Errorf("githttp: git not found on PATH: %w", err)
@@ -38,7 +48,7 @@ func New(mz *repo.Materializer, logger *slog.Logger) (*Handler, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	return &Handler{mz: mz, gitPath: gitPath, logger: logger}, nil
+	return &Handler{mz: mz, authz: authz, gitPath: gitPath, logger: logger}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +70,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+	}
+
+	// Authorize the read before doing any work. receive-pack is not served
+	// here, so read is the only permission this handler ever requires.
+	if _, err := h.authz.Authorize(r, repoName, meta.PermRead); err != nil {
+		h.writeAuthError(w, r, repoName, err)
+		return
 	}
 
 	if _, err := h.mz.Materialize(r.Context(), repoName); err != nil {
@@ -85,6 +102,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	backend.ServeHTTP(w, r)
+}
+
+// writeAuthError maps an Authorize error to the HTTP response git expects: a
+// 401 carries the Basic challenge so git (and its credential helpers) retry
+// with credentials; a 403 is a hard stop; a missing repo is a 404.
+func (h *Handler) writeAuthError(w http.ResponseWriter, r *http.Request, repoName string, err error) {
+	switch {
+	case errors.Is(err, auth.ErrForbidden):
+		http.Error(w, "forbidden", http.StatusForbidden)
+	case errors.Is(err, auth.ErrUnauthorized):
+		w.Header().Set("WWW-Authenticate", `Basic realm="gitmote"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	case errors.Is(err, meta.ErrNotFound):
+		http.NotFound(w, r)
+	default:
+		h.logger.Error("authorize failed", "repo", repoName, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
 }
 
 // parseReadPath splits a git smart-HTTP read URL into the repo name and the

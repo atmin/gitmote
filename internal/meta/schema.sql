@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS tokens (              -- HTTP personal access tokens
   id         INTEGER PRIMARY KEY,
   user_id    INTEGER NOT NULL REFERENCES users(id),
-  hash       TEXT NOT NULL,                       -- hash of the PAT, never the raw token
+  selector   TEXT NOT NULL UNIQUE,                -- public lookup key (not secret)
+  verifier   TEXT NOT NULL,                       -- SHA-256 of the token's secret half, never the raw token
   label      TEXT,
   created_at TEXT NOT NULL,
   last_used  TEXT

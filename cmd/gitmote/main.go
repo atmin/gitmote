@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atmin/gitmote/internal/auth"
 	"github.com/atmin/gitmote/internal/githttp"
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
@@ -126,7 +127,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, fu
 	}
 
 	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
-	handler, err := githttp.New(repo.New(md, objs, cacheRoot), logger)
+	handler, err := githttp.New(repo.New(md, objs, cacheRoot), auth.NewGuard(md), logger)
 	if err != nil {
 		_ = md.Close()
 		return nil, noop, err

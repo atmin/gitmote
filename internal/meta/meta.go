@@ -8,10 +8,8 @@ package meta
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	_ "embed"
-	"encoding/hex"
 	"errors"
 	"log/slog"
 	"time"
@@ -71,14 +69,6 @@ func (m *Metadata) Close() error { return m.db.Close() }
 
 // Sync blocks until the replica has caught up; a no-op without replication.
 func (m *Metadata) Sync(ctx context.Context) error { return m.db.Sync(ctx) }
-
-// HashToken maps a raw personal access token to its stored representation.
-// Tokens are high-entropy random strings, so a single SHA-256 is sufficient —
-// it makes the column indexable for lookup while never storing the raw token.
-func HashToken(raw string) string {
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
-}
 
 // now is the timestamp format for the TEXT *_at columns: RFC 3339, UTC.
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }

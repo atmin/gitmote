@@ -13,14 +13,22 @@ type User struct {
 	CreatedAt time.Time
 }
 
-// Token is a stored personal access token. The raw token is never persisted —
-// only Hash (see HashToken) — so it is absent here too.
+// Token is a stored personal access token's metadata. Neither the raw token nor
+// its verifier is exposed here — this is what the UI lists.
 type Token struct {
 	ID        int64
 	UserID    int64
 	Label     string
 	CreatedAt time.Time
 	LastUsed  *time.Time
+}
+
+// TokenAuth is a token's stored verifier plus its owner, returned to the auth
+// layer for constant-time verification (see internal/auth).
+type TokenAuth struct {
+	TokenID  int64
+	Verifier string
+	User     User
 }
 
 // CreateUser inserts a user.
@@ -57,13 +65,14 @@ func (m *Metadata) GetUser(ctx context.Context, handle string) (*User, error) {
 	return &u, nil
 }
 
-// CreateToken stores a personal access token for a user, keeping only the hash
-// of raw. The caller keeps raw; it cannot be recovered from the database.
-func (m *Metadata) CreateToken(ctx context.Context, userID int64, raw, label string) (*Token, error) {
+// CreateToken stores a personal access token for a user. selector is the token's
+// public lookup key; verifier is the hash of its secret half (see internal/auth
+// for the token format). Neither the raw token nor the secret is persisted.
+func (m *Metadata) CreateToken(ctx context.Context, userID int64, selector, verifier, label string) (*Token, error) {
 	created := now()
 	res, err := m.db.ExecContext(ctx,
-		`INSERT INTO tokens (user_id, hash, label, created_at) VALUES (?, ?, ?, ?)`,
-		userID, HashToken(raw), label, created)
+		`INSERT INTO tokens (user_id, selector, verifier, label, created_at) VALUES (?, ?, ?, ?, ?)`,
+		userID, selector, verifier, label, created)
 	if err != nil {
 		return nil, err
 	}
@@ -74,36 +83,35 @@ func (m *Metadata) CreateToken(ctx context.Context, userID int64, raw, label str
 	return &Token{ID: id, UserID: userID, Label: label, CreatedAt: parseTime(created)}, nil
 }
 
-// AuthenticateToken resolves a raw token to its owning user and stamps the
-// token's last_used. It returns ErrNotFound when no token matches — callers
-// must not distinguish "unknown token" from any other auth failure to the
-// client.
-func (m *Metadata) AuthenticateToken(ctx context.Context, raw string) (*User, error) {
-	hash := HashToken(raw)
+// TokenBySelector returns the verifier and owner of the token with the given
+// selector, or ErrNotFound. The auth layer compares the verifier in constant
+// time; this method deliberately does not touch last_used (see TouchToken).
+func (m *Metadata) TokenBySelector(ctx context.Context, selector string) (*TokenAuth, error) {
 	var (
-		u      User
-		userID int64
-		ts     string
+		ta TokenAuth
+		ts string
 	)
 	err := m.db.QueryRowContext(ctx,
-		`SELECT u.id, u.handle, u.created_at
+		`SELECT t.id, t.verifier, u.id, u.handle, u.created_at
 		   FROM tokens t JOIN users u ON u.id = t.user_id
-		  WHERE t.hash = ?`, hash).
-		Scan(&userID, &u.Handle, &ts)
+		  WHERE t.selector = ?`, selector).
+		Scan(&ta.TokenID, &ta.Verifier, &ta.User.ID, &ta.User.Handle, &ts)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	u.ID = userID
-	u.CreatedAt = parseTime(ts)
+	ta.User.CreatedAt = parseTime(ts)
+	return &ta, nil
+}
 
-	if _, err := m.db.ExecContext(ctx,
-		`UPDATE tokens SET last_used = ? WHERE hash = ?`, now(), hash); err != nil {
-		return nil, err
-	}
-	return &u, nil
+// TouchToken stamps a token's last_used with the current time. Called after a
+// successful verification.
+func (m *Metadata) TouchToken(ctx context.Context, tokenID int64) error {
+	_, err := m.db.ExecContext(ctx,
+		`UPDATE tokens SET last_used = ? WHERE id = ?`, now(), tokenID)
+	return err
 }
 
 // ListTokens returns a user's tokens (metadata only, never the hash) ordered by

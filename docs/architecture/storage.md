@@ -83,7 +83,8 @@ CREATE TABLE users (
 CREATE TABLE tokens (                             -- HTTP personal access tokens
   id         INTEGER PRIMARY KEY,
   user_id    INTEGER NOT NULL REFERENCES users(id),
-  hash       TEXT NOT NULL,                       -- hash of the PAT, never the raw token
+  selector   TEXT NOT NULL UNIQUE,                -- public lookup key (not secret)
+  verifier   TEXT NOT NULL,                       -- SHA-256 of the token's secret half, never the raw token
   label      TEXT,
   created_at TEXT NOT NULL,
   last_used  TEXT
@@ -107,3 +108,10 @@ CREATE TABLE acls (
 
 `HEAD` is not a row — it derives from `repos.default_branch`. Every `refs` row
 holds a concrete object id; symbolic refs beyond `HEAD` are not stored.
+
+A PAT is a `selector.secret` pair. The **selector** is a non-secret, unique,
+indexed lookup key; only the **verifier** — `SHA-256` of the **secret** half —
+is stored. Verification looks the row up by selector, then compares the verifier
+in **constant time**, so neither a timing side-channel on the lookup nor a
+database leak yields a usable token. The raw `selector.secret` is shown to the
+user exactly once at mint time and never persisted.

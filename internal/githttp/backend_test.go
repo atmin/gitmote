@@ -12,10 +12,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atmin/gitmote/internal/auth"
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
 	"github.com/atmin/gitmote/internal/store"
 )
+
+const repoName = "atmin/dotfiles"
 
 // git runs a git command hermetically and returns its trimmed combined output,
 // failing the test on a nonzero exit.
@@ -38,7 +41,7 @@ func git(t *testing.T, dir string, args ...string) string {
 
 // loadObjects mirrors a source repo's loose/packed objects into the store under
 // the repo's prefix — the durable objects a read hydrates from.
-func loadObjects(t *testing.T, s store.Store, src, repoName string) {
+func loadObjects(t *testing.T, s store.Store, src, name string) {
 	t.Helper()
 	objRoot := filepath.Join(src, ".git", "objects")
 	err := filepath.WalkDir(objRoot, func(p string, d os.DirEntry, err error) error {
@@ -53,15 +56,15 @@ func loadObjects(t *testing.T, s store.Store, src, repoName string) {
 		if err != nil {
 			return err
 		}
-		return s.Put(context.Background(), repoName+"/objects/"+filepath.ToSlash(rel), bytes.NewReader(data))
+		return s.Put(context.Background(), name+"/objects/"+filepath.ToSlash(rel), bytes.NewReader(data))
 	})
 	if err != nil {
 		t.Fatalf("load objects: %v", err)
 	}
 }
 
-// newServer wires meta + mem store + materializer behind a read-path handler on
-// an httptest server, returning the server and its backing pieces.
+// newServer wires meta + mem store + materializer behind a guarded read-path
+// handler on an httptest server.
 func newServer(t *testing.T) (*httptest.Server, *meta.Metadata, store.Store) {
 	t.Helper()
 	m, err := meta.Open(context.Background(), meta.Config{
@@ -73,7 +76,7 @@ func newServer(t *testing.T) (*httptest.Server, *meta.Metadata, store.Store) {
 	t.Cleanup(func() { _ = m.Close() })
 
 	s := store.NewMem()
-	h, err := New(repo.New(m, s, t.TempDir()), slog.New(slog.DiscardHandler))
+	h, err := New(repo.New(m, s, t.TempDir()), auth.NewGuard(m), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("githttp.New: %v", err)
 	}
@@ -82,14 +85,11 @@ func newServer(t *testing.T) (*httptest.Server, *meta.Metadata, store.Store) {
 	return srv, m, s
 }
 
-func TestCloneAndFetch(t *testing.T) {
+// seedRepo builds a one-commit source repo, loads its objects, and records the
+// repo + main ref, returning (repoID, headSHA).
+func seedRepo(t *testing.T, m *meta.Metadata, s store.Store, src string) (int64, string) {
+	t.Helper()
 	ctx := context.Background()
-	srv, m, s := newServer(t)
-	const repoName = "atmin/dotfiles"
-
-	// Seed: a source repo with one commit → objects into the store, ref into
-	// meta.
-	src := t.TempDir()
 	git(t, src, "init", "-b", "main", ".")
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -98,18 +98,57 @@ func TestCloneAndFetch(t *testing.T) {
 	git(t, src, "commit", "-m", "first")
 	loadObjects(t, s, src, repoName)
 
-	head1 := git(t, src, "rev-parse", "HEAD")
+	head := git(t, src, "rev-parse", "HEAD")
 	r, err := m.CreateRepo(ctx, repoName, "main")
 	if err != nil {
 		t.Fatalf("CreateRepo: %v", err)
 	}
-	if err := m.CASRef(ctx, r.ID, "refs/heads/main", meta.ZeroSHA, head1); err != nil {
+	if err := m.CASRef(ctx, r.ID, "refs/heads/main", meta.ZeroSHA, head); err != nil {
 		t.Fatalf("CASRef: %v", err)
 	}
+	return r.ID, head
+}
 
-	// Golden path: a real clone over HTTP.
+// mintUser creates a user with a fresh token and returns the raw token. When
+// perm is non-empty it also grants that permission on repoID.
+func mintUser(t *testing.T, m *meta.Metadata, repoID int64, handle string, perm meta.Perm) string {
+	t.Helper()
+	ctx := context.Background()
+	u, err := m.CreateUser(ctx, handle)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	raw, selector, verifier, err := auth.Mint()
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	if _, err := m.CreateToken(ctx, u.ID, selector, verifier, "test"); err != nil {
+		t.Fatalf("CreateToken: %v", err)
+	}
+	if perm != "" {
+		if err := m.SetACL(ctx, repoID, u.ID, perm); err != nil {
+			t.Fatalf("SetACL: %v", err)
+		}
+	}
+	return raw
+}
+
+// authedURL embeds Basic credentials (git's native HTTP auth) into a base URL.
+func authedURL(base, raw string) string {
+	return strings.Replace(base, "://", "://git:"+raw+"@", 1)
+}
+
+func TestCloneAndFetch(t *testing.T) {
+	ctx := context.Background()
+	srv, m, s := newServer(t)
+
+	src := t.TempDir()
+	repoID, head1 := seedRepo(t, m, s, src)
+	raw := mintUser(t, m, repoID, "atmin", meta.PermRead)
+
+	// Golden path: a real clone over HTTP with a read token.
 	dst := filepath.Join(t.TempDir(), "clone")
-	git(t, "", "clone", srv.URL+"/"+repoName, dst)
+	git(t, "", "clone", authedURL(srv.URL, raw)+"/"+repoName, dst)
 
 	if got := git(t, dst, "rev-parse", "HEAD"); got != head1 {
 		t.Errorf("cloned HEAD = %q, want %q", got, head1)
@@ -117,41 +156,99 @@ func TestCloneAndFetch(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(dst, "README.md")); err != nil || string(data) != "hello\n" {
 		t.Errorf("cloned README = %q (err %v), want \"hello\\n\"", data, err)
 	}
-	git(t, dst, "fsck", "--strict") // fails the test on any corruption/missing object
+	git(t, dst, "fsck", "--strict")
 
-	// Seed an update: a second commit on the server side.
+	// Seed a second commit server-side.
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("hello\nworld\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	git(t, src, "commit", "-am", "second")
 	loadObjects(t, s, src, repoName)
 	head2 := git(t, src, "rev-parse", "HEAD")
+	r, _ := m.GetRepo(ctx, repoName)
 	if err := m.CASRef(ctx, r.ID, "refs/heads/main", head1, head2); err != nil {
 		t.Fatalf("CASRef advance: %v", err)
 	}
 
-	// fetch pulls the new commit.
-	git(t, dst, "fetch", "origin")
-	if got := git(t, dst, "rev-parse", "origin/main"); got != head2 {
-		t.Errorf("origin/main after fetch = %q, want %q", got, head2)
+	// An incremental fetch pulls the new commit (explicit URL carries creds).
+	git(t, dst, "fetch", authedURL(srv.URL, raw)+"/"+repoName, "main")
+	if got := git(t, dst, "rev-parse", "FETCH_HEAD"); got != head2 {
+		t.Errorf("FETCH_HEAD after fetch = %q, want %q", got, head2)
 	}
 }
 
-func TestCloneUnknownRepoFails(t *testing.T) {
-	srv, _, _ := newServer(t)
-	// A clone of a repo with no metadata row must not succeed.
-	dst := filepath.Join(t.TempDir(), "clone")
-	cmd := exec.Command("git", "clone", srv.URL+"/no/such", dst)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	if out, err := cmd.CombinedOutput(); err == nil {
-		t.Fatalf("clone of unknown repo succeeded, want failure\n%s", out)
+// infoRefs GETs the upload-pack advertisement with an optional bearer token and
+// returns the status code.
+func infoRefs(t *testing.T, srvURL, token string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srvURL+"/"+repoName+"/info/refs?service=git-upload-pack", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET info/refs: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized && resp.Header.Get("WWW-Authenticate") == "" {
+		t.Error("401 without WWW-Authenticate challenge")
+	}
+	return resp.StatusCode
+}
+
+func TestReadAuthorization(t *testing.T) {
+	srv, m, s := newServer(t)
+	repoID, _ := seedRepo(t, m, s, t.TempDir())
+
+	reader := mintUser(t, m, repoID, "reader", meta.PermRead)
+	noACL := mintUser(t, m, repoID, "stranger", "")
+
+	cases := []struct {
+		name  string
+		token string
+		want  int
+	}{
+		{"no token", "", http.StatusUnauthorized},
+		{"malformed token", "not-a-token", http.StatusUnauthorized},
+		{"unknown token", "gmt_00000000000000000000000000000000.1111", http.StatusUnauthorized},
+		{"valid token without ACL", noACL, http.StatusForbidden},
+		{"valid read token", reader, http.StatusOK},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := infoRefs(t, srv.URL, c.token); got != c.want {
+				t.Errorf("status = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+func TestWrongSecretRejected(t *testing.T) {
+	srv, m, s := newServer(t)
+	repoID, _ := seedRepo(t, m, s, t.TempDir())
+	raw := mintUser(t, m, repoID, "reader", meta.PermRead)
+
+	// Same selector, tampered secret: the constant-time verifier compare fails.
+	selector, _, _ := strings.Cut(strings.TrimPrefix(raw, "gmt_"), ".")
+	forged := "gmt_" + selector + ".deadbeefdeadbeef"
+	if got := infoRefs(t, srv.URL, forged); got != http.StatusUnauthorized {
+		t.Errorf("forged-secret status = %d, want 401", got)
 	}
 }
 
 func TestReceivePackNotServed(t *testing.T) {
-	srv, _, _ := newServer(t)
-	// The write service advertisement is not part of the read path (task 07).
-	resp, err := http.Get(srv.URL + "/atmin/dotfiles/info/refs?service=git-receive-pack")
+	srv, m, s := newServer(t)
+	repoID, _ := seedRepo(t, m, s, t.TempDir())
+	raw := mintUser(t, m, repoID, "reader", meta.PermRead)
+
+	// The write service advertisement is not part of the read path (task 07) —
+	// 404 even for an authorized reader.
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/"+repoName+"/info/refs?service=git-receive-pack", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -177,10 +274,10 @@ func TestParseReadPath(t *testing.T) {
 		{"/", "", "", false},
 	}
 	for _, c := range cases {
-		repoName, endpoint, ok := parseReadPath(c.path)
-		if repoName != c.wantRepo || endpoint != c.wantEndpoint || ok != c.wantOK {
+		gotRepo, gotEndpoint, ok := parseReadPath(c.path)
+		if gotRepo != c.wantRepo || gotEndpoint != c.wantEndpoint || ok != c.wantOK {
 			t.Errorf("parseReadPath(%q) = (%q, %q, %v), want (%q, %q, %v)",
-				c.path, repoName, endpoint, ok, c.wantRepo, c.wantEndpoint, c.wantOK)
+				c.path, gotRepo, gotEndpoint, ok, c.wantRepo, c.wantEndpoint, c.wantOK)
 		}
 	}
 }
