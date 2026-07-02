@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/atmin/gitmote/internal/auth"
+	"github.com/atmin/gitmote/internal/bootstrap"
 	"github.com/atmin/gitmote/internal/githttp"
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
@@ -27,6 +29,16 @@ var version = "dev"
 const shutdownTimeout = 10 * time.Second
 
 func main() {
+	// Subcommands run without the server (single-writer admin, per
+	// docs/notes/bootstrap.md); the default (no subcommand) is the server.
+	if args := os.Args[1:]; len(args) > 0 && args[0] == "bootstrap" {
+		if err := runBootstrap(context.Background(), args[1:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "bootstrap:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	addr := flag.String("addr", envOr("GITMOTE_ADDR", ":8080"), "listen address")
 	flag.Parse()
 
@@ -36,6 +48,46 @@ func main() {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// runBootstrap creates the first admin, token, and repo from an empty instance.
+// It opens the metadata DB at GITMOTE_DB (local-only; litestream is wired in the
+// deploy task) and prints the one-time token to out on success.
+func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
+	handle := fs.String("handle", os.Getenv("GITMOTE_ADMIN_HANDLE"), "admin user handle (or GITMOTE_ADMIN_HANDLE)")
+	repoName := fs.String("repo", "", "initial repository, e.g. atmin/gitmote")
+	branch := fs.String("default-branch", "main", "default branch for the initial repo")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	md, err := meta.Open(ctx, meta.Config{LocalPath: envOr("GITMOTE_DB", "gitmote.sqlite3")})
+	if err != nil {
+		return fmt.Errorf("open metadata: %w", err)
+	}
+	defer func() { _ = md.Close() }()
+
+	res, err := bootstrap.Run(ctx, md, bootstrap.Options{
+		AdminHandle:   *handle,
+		RepoName:      *repoName,
+		DefaultBranch: *branch,
+	})
+	if err != nil {
+		return err
+	}
+
+	if res.AlreadyBootstrapped {
+		_, err := io.WriteString(out, "already bootstrapped: an admin exists; nothing to do\n")
+		return err
+	}
+	_, err = fmt.Fprintf(out,
+		"admin user:   %s\n"+
+			"initial repo: %s\n\n"+
+			"access token (shown once — save it now):\n\n    %s\n\n"+
+			"clone/push with:  git clone http://%s:<token>@<host>/%s\n",
+		res.Admin.Handle, res.Repo.Name, res.RawToken, res.Admin.Handle, res.Repo.Name)
+	return err
 }
 
 // run starts the HTTP server and blocks until ctx is cancelled or a

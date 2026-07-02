@@ -6,10 +6,12 @@ import (
 	"time"
 )
 
-// User is a forge account.
+// User is a forge account. IsAdmin marks a global administrator (see
+// storage.md) — distinct from a per-repo admin ACL.
 type User struct {
 	ID        int64
 	Handle    string
+	IsAdmin   bool
 	CreatedAt time.Time
 }
 
@@ -31,11 +33,21 @@ type TokenAuth struct {
 	User     User
 }
 
-// CreateUser inserts a user.
+// CreateUser inserts a regular (non-admin) user.
 func (m *Metadata) CreateUser(ctx context.Context, handle string) (*User, error) {
+	return m.createUser(ctx, handle, false)
+}
+
+// CreateAdmin inserts a global administrator (users.is_admin = 1).
+func (m *Metadata) CreateAdmin(ctx context.Context, handle string) (*User, error) {
+	return m.createUser(ctx, handle, true)
+}
+
+func (m *Metadata) createUser(ctx context.Context, handle string, isAdmin bool) (*User, error) {
 	created := now()
 	res, err := m.db.ExecContext(ctx,
-		`INSERT INTO users (handle, created_at) VALUES (?, ?)`, handle, created)
+		`INSERT INTO users (handle, is_admin, created_at) VALUES (?, ?, ?)`,
+		handle, boolToInt(isAdmin), created)
 	if err != nil {
 		return nil, err
 	}
@@ -43,26 +55,40 @@ func (m *Metadata) CreateUser(ctx context.Context, handle string) (*User, error)
 	if err != nil {
 		return nil, err
 	}
-	return &User{ID: id, Handle: handle, CreatedAt: parseTime(created)}, nil
+	return &User{ID: id, Handle: handle, IsAdmin: isAdmin, CreatedAt: parseTime(created)}, nil
 }
 
 // GetUser returns the user with the given handle, or ErrNotFound.
 func (m *Metadata) GetUser(ctx context.Context, handle string) (*User, error) {
 	var (
-		u  User
-		ts string
+		u       User
+		isAdmin int64
+		ts      string
 	)
 	err := m.db.QueryRowContext(ctx,
-		`SELECT id, handle, created_at FROM users WHERE handle = ?`, handle).
-		Scan(&u.ID, &u.Handle, &ts)
+		`SELECT id, handle, is_admin, created_at FROM users WHERE handle = ?`, handle).
+		Scan(&u.ID, &u.Handle, &isAdmin, &ts)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	u.IsAdmin = isAdmin != 0
 	u.CreatedAt = parseTime(ts)
 	return &u, nil
+}
+
+// AdminExists reports whether any global administrator exists — the signal
+// bootstrap uses to refuse clobbering an already-initialized instance.
+func (m *Metadata) AdminExists(ctx context.Context) (bool, error) {
+	var exists int64
+	err := m.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE is_admin = 1)`).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists != 0, nil
 }
 
 // CreateToken stores a personal access token for a user. selector is the token's
@@ -88,20 +114,22 @@ func (m *Metadata) CreateToken(ctx context.Context, userID int64, selector, veri
 // time; this method deliberately does not touch last_used (see TouchToken).
 func (m *Metadata) TokenBySelector(ctx context.Context, selector string) (*TokenAuth, error) {
 	var (
-		ta TokenAuth
-		ts string
+		ta      TokenAuth
+		isAdmin int64
+		ts      string
 	)
 	err := m.db.QueryRowContext(ctx,
-		`SELECT t.id, t.verifier, u.id, u.handle, u.created_at
+		`SELECT t.id, t.verifier, u.id, u.handle, u.is_admin, u.created_at
 		   FROM tokens t JOIN users u ON u.id = t.user_id
 		  WHERE t.selector = ?`, selector).
-		Scan(&ta.TokenID, &ta.Verifier, &ta.User.ID, &ta.User.Handle, &ts)
+		Scan(&ta.TokenID, &ta.Verifier, &ta.User.ID, &ta.User.Handle, &isAdmin, &ts)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	ta.User.IsAdmin = isAdmin != 0
 	ta.User.CreatedAt = parseTime(ts)
 	return &ta, nil
 }

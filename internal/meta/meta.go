@@ -75,3 +75,11 @@ func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 // isNoRows reports whether err is the "no rows" sentinel.
 func isNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
+
+// boolToInt maps a Go bool to the 0/1 SQLite stores for it.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

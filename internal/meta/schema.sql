@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS refs (
 CREATE TABLE IF NOT EXISTS users (
   id         INTEGER PRIMARY KEY,
   handle     TEXT NOT NULL UNIQUE,
+  is_admin   INTEGER NOT NULL DEFAULT 0,       -- global admin: may manage users/repos/ACLs
   created_at TEXT NOT NULL
 );
 

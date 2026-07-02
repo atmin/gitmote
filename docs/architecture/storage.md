@@ -77,6 +77,7 @@ CREATE TABLE refs (
 CREATE TABLE users (
   id         INTEGER PRIMARY KEY,
   handle     TEXT NOT NULL UNIQUE,
+  is_admin   INTEGER NOT NULL DEFAULT 0,       -- global admin: may manage users/repos/ACLs
   created_at TEXT NOT NULL
 );
 
@@ -108,6 +109,11 @@ CREATE TABLE acls (
 
 `HEAD` is not a row — it derives from `repos.default_branch`. Every `refs` row
 holds a concrete object id; symbolic refs beyond `HEAD` are not stored.
+
+`users.is_admin` is the **global** administrator flag — the role that may create
+users and repos and manage ACLs (the entry point is `gitmote bootstrap`, which
+mints the first admin). It is distinct from `acls.perm='admin'`, which is
+per-repo; day-to-day repo access is always governed by `acls`.
 
 A PAT is a `selector.secret` pair. The **selector** is a non-secret, unique,
 indexed lookup key; only the **verifier** — `SHA-256` of the **secret** half —

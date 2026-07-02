@@ -8,5 +8,3 @@ here.
 
 - [object-hydration.md](object-hydration.md) — getting the object closure onto
   local disk before git runs; full-hydrate vs partial-clone.
-- [bootstrap.md](bootstrap.md) — first admin, token, repo, and schema migration
-  from an empty bucket.

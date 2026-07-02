@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +105,29 @@ func TestRunShutsDownOnCancel(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not shut down after cancel")
+	}
+}
+
+func TestRunBootstrap(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.sqlite3")
+	t.Setenv("GITMOTE_DB", dbPath)
+
+	var out bytes.Buffer
+	args := []string{"-handle", "atmin", "-repo", "atmin/gitmote"}
+	if err := runBootstrap(context.Background(), args, &out); err != nil {
+		t.Fatalf("runBootstrap: %v", err)
+	}
+	if !strings.Contains(out.String(), "atmin/gitmote") || !strings.Contains(out.String(), "access token") {
+		t.Errorf("bootstrap output missing repo/token:\n%s", out.String())
+	}
+
+	// Re-running against the same DB refuses to clobber the admin.
+	var out2 bytes.Buffer
+	if err := runBootstrap(context.Background(), args, &out2); err != nil {
+		t.Fatalf("second runBootstrap: %v", err)
+	}
+	if !strings.Contains(out2.String(), "already bootstrapped") {
+		t.Errorf("second run did not report already-bootstrapped:\n%s", out2.String())
 	}
 }
 
