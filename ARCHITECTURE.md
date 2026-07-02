@@ -319,3 +319,8 @@ Items with worked-out context live as one-concern notes under
   behaviour ever proves unacceptable (see safety §4).
 - **Read scaling.** One container serves reads and writes today; litestream read
   replicas are the later answer if reads get heavy.
+
+---
+
+Speculative, non-committal future directions live in
+[`docs/evolution/`](docs/evolution/) — read them as ideas, not plans.
