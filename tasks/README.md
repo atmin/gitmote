@@ -6,7 +6,7 @@ lands** (commits are the record — this list never becomes a changelog).
 
 Ordered by dependency; each task lands in a non-breaking, tested state.
 
-- [10-self-host-local.md](10-self-host-local.md) — MinIO + Docker; e2e clone+push of the gitmote repo.
 - [11-deploy.md](11-deploy.md) — Real object storage + single-writer deploy; hosts itself for real.
 
-Milestone is done when **10** and **11** are green: the gitmote repo lives on gitmote.
+Milestone is done when **11** is green: the gitmote repo lives on gitmote for real
+(local self-hosting via `make e2e-local` already passes).

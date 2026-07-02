@@ -6,7 +6,7 @@ GOIMPORTS     := go run golang.org/x/tools/cmd/goimports@v0.47.0
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: all fmt lint test build
+.PHONY: all fmt lint test build e2e-local
 
 all: lint test build
 
@@ -22,3 +22,8 @@ test:
 
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/gitmote ./cmd/gitmote
+
+# End-to-end: gitmote hosts itself against MinIO in Docker (CONTRIBUTING.md —
+# integration tests drive real git). Requires docker + docker compose.
+e2e-local:
+	./scripts/e2e-local.sh

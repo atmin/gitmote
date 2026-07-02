@@ -12,8 +12,17 @@ backed to S3) — so the only genuinely hard problem, atomic ref updates, become
 single SQL transaction.
 
 **Status:** early implementation — git read/write over smart-HTTP works
-(clone/fetch/push with token auth and per-repo ACLs); the self-hosting milestone
-is in progress. The design lives in [docs/architecture/](docs/architecture/).
+(clone/fetch/push with token auth and per-repo ACLs), and gitmote can host its
+own source repo end-to-end against MinIO (`make e2e-local`). The design lives in
+[docs/architecture/](docs/architecture/).
+
+## Run it locally
+
+`make e2e-local` brings up a gitmote container plus MinIO with
+[docker-compose.yml](docker-compose.yml), bootstraps an admin/token/repo, then
+pushes this working tree, clones it back, and — after force-recreating the
+container — clones again to prove the repo survives on the object store and
+persisted refs (not local disk). Requires Docker + Docker Compose.
 
 ## Bootstrap
 

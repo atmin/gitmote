@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   ci:
@@ -14,3 +15,15 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make all
+
+  # Self-hosting proof: push/clone the real repo against a gitmote container
+  # backed by MinIO (scripts/e2e-local.sh). Gated — it builds an image and runs
+  # Docker, so it stays off the fast per-PR path and runs on master / on demand.
+  e2e:
+    if: github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # push needs the full history, not a shallow clone
+      - run: make e2e-local

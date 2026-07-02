@@ -1,0 +1,5 @@
+# The image builds from Go sources only; keep the build context small.
+.git/
+bin/
+docs/
+tasks/
