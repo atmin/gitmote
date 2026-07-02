@@ -32,6 +32,10 @@ func New(m *meta.Metadata, s store.Store, root string) *Materializer {
 	return &Materializer{meta: m, store: s, root: root}
 }
 
+// Root is the cache directory under which repos materialize; a repo named
+// "a/b" lands at Root()/a/b. It is the git-http-backend GIT_PROJECT_ROOT.
+func (mz *Materializer) Root() string { return mz.root }
+
 // Materialize ensures a valid on-disk bare repo for name exists under the cache
 // root and returns its path. It creates the repo on a cache miss (rebuild-on-
 // miss), hydrates the object closure from the store, and writes refs from the

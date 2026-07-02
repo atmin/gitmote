@@ -6,7 +6,6 @@ lands** (commits are the record — this list never becomes a changelog).
 
 Ordered by dependency; each task lands in a non-breaking, tested state.
 
-- [05-read-path-clone.md](05-read-path-clone.md) — Smart-HTTP `upload-pack`; `git clone` works.
 - [06-auth-pat-acl.md](06-auth-pat-acl.md) — Bearer PATs + per-repo ACL enforcement.
 - [07-write-path-cas.md](07-write-path-cas.md) — `receive-pack` + pre-receive RPC + object PUT + ref CAS; `git push` works.
 - [08-bootstrap.md](08-bootstrap.md) — First admin, token, repo from an empty bucket.

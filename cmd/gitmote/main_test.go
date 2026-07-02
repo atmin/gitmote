@@ -11,7 +11,7 @@ import (
 )
 
 func TestHealthz(t *testing.T) {
-	srv := httptest.NewServer(newHandler())
+	srv := httptest.NewServer(newHandler(nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/healthz")
@@ -26,7 +26,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
-	srv := httptest.NewServer(newHandler())
+	srv := httptest.NewServer(newHandler(nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/version")
@@ -41,7 +41,7 @@ func TestVersion(t *testing.T) {
 }
 
 func TestUnknownRouteNotFound(t *testing.T) {
-	srv := httptest.NewServer(newHandler())
+	srv := httptest.NewServer(newHandler(nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/nope")
@@ -52,6 +52,34 @@ func TestUnknownRouteNotFound(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("GET /nope status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+}
+
+func TestGitHandlerMountedAtRoot(t *testing.T) {
+	// A provided git handler serves the catch-all "/" while the exact
+	// health/version routes stay more specific and win.
+	gitHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	srv := httptest.NewServer(newHandler(gitHandler))
+	defer srv.Close()
+
+	health, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	health.Body.Close()
+	if health.StatusCode != http.StatusOK {
+		t.Errorf("GET /healthz status = %d, want %d", health.StatusCode, http.StatusOK)
+	}
+
+	gitResp, err := http.Get(srv.URL + "/some/repo/info/refs")
+	if err != nil {
+		t.Fatalf("GET /some/repo/info/refs: %v", err)
+	}
+	gitResp.Body.Close()
+	if gitResp.StatusCode != http.StatusTeapot {
+		t.Errorf("git route status = %d, want %d (routed to git handler)", gitResp.StatusCode, http.StatusTeapot)
 	}
 }
 
