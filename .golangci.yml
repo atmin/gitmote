@@ -1,0 +1,17 @@
+version: "2"
+
+linters:
+  # The standard set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  settings:
+    errcheck:
+      exclude-functions:
+        # Writes to an http.ResponseWriter have nowhere to report errors.
+        - fmt.Fprintln(net/http.ResponseWriter)
+        # Deferred response-body closes in tests.
+        - (io.ReadCloser).Close
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
