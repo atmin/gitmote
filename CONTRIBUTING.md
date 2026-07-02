@@ -14,6 +14,7 @@ docs/
   architecture/   The design and its decisions — source of truth
   notes/          Open design questions, one concern per file
   evolution/      Speculative future directions — ideas, not commitments
+  ops.md          Canonical infra doc — deploy, env, the single-writer rule
 tasks/            The frontier — active/upcoming work; deleted once landed
 ```
 

@@ -41,6 +41,10 @@ services:
       GITMOTE_DB: /data/meta.sqlite3    # persistent (named volume) — refs survive restart
       GITMOTE_CACHE: /cache             # ephemeral — materialized repos rebuild from S3
       GITMOTE_SOCK: /tmp/gitmote.sock
+      # Opt-in litestream replication of the metadata DB. Empty by default
+      # (e2e-local proves volume durability); e2e-restore.sh sets it to exercise
+      # restore-from-S3 after the DB volume is wiped — the deploy cold-start path.
+      GITMOTE_DB_REPLICA: ${GITMOTE_DB_REPLICA:-}
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin

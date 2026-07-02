@@ -17,8 +17,9 @@ jobs:
       - run: make all
 
   # Self-hosting proof: push/clone the real repo against a gitmote container
-  # backed by MinIO (scripts/e2e-local.sh). Gated — it builds an image and runs
-  # Docker, so it stays off the fast per-PR path and runs on master / on demand.
+  # backed by MinIO (scripts/e2e-local.sh), plus the litestream cold-start restore
+  # (scripts/e2e-restore.sh). Gated — builds an image and runs Docker, so it stays
+  # off the fast per-PR path and runs on master / on demand.
   e2e:
     if: github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -27,3 +28,57 @@ jobs:
         with:
           fetch-depth: 0 # push needs the full history, not a shallow clone
       - run: make e2e-local
+      - run: make e2e-restore
+
+  # Deploy the single writer to Scaleway on every green master push (docs/ops.md).
+  # max-scale=1 is asserted here, not left to a console default: two writers to the
+  # shared litestream WAL is the one forbidden state (safety.md §1).
+  deploy:
+    if: github.ref == 'refs/heads/master'
+    needs: [ci, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to Scaleway Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.SCW_REGISTRY_ENDPOINT }}
+          username: nologin
+          password: ${{ secrets.SCW_SECRET_KEY }}
+
+      - name: Build & push (amd64 — Scaleway requires it)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            VERSION=${{ github.sha }}
+          tags: |
+            ${{ secrets.SCW_REGISTRY_ENDPOINT }}/gitmote:master
+            ${{ secrets.SCW_REGISTRY_ENDPOINT }}/gitmote:${{ github.sha }}
+
+      - name: Install Scaleway CLI
+        run: |
+          SCW_URL=$(curl -s https://api.github.com/repos/scaleway/scaleway-cli/releases/latest \
+            | grep -o '"browser_download_url": *"[^"]*linux_amd64"' | cut -d'"' -f4)
+          sudo curl -fsSL "$SCW_URL" -o /usr/local/bin/scw
+          sudo chmod +x /usr/local/bin/scw
+
+      # A unique (SHA-tagged) image reference makes this a clean replacement, and
+      # max-scale=1 (the single-writer invariant) is re-asserted every deploy.
+      # min-scale=0 idles to zero between uses. --wait blocks until the new
+      # deployment is serving. See docs/ops.md for the single-writer deploy note.
+      - name: Deploy (single writer)
+        env:
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_ORGANIZATION_ID }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_PROJECT_ID }}
+          SCW_DEFAULT_REGION: fr-par
+        run: |
+          scw container container update ${{ secrets.SCW_CONTAINER_ID }} \
+            image=${{ secrets.SCW_REGISTRY_ENDPOINT }}/gitmote:${{ github.sha }} \
+            min-scale=0 max-scale=1 --wait

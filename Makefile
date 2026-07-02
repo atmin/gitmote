@@ -6,7 +6,7 @@ GOIMPORTS     := go run golang.org/x/tools/cmd/goimports@v0.47.0
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: all fmt lint test build e2e-local
+.PHONY: all fmt lint test build e2e-local e2e-restore
 
 all: lint test build
 
@@ -27,3 +27,9 @@ build:
 # integration tests drive real git). Requires docker + docker compose.
 e2e-local:
 	./scripts/e2e-local.sh
+
+# Litestream cold-start proof: push with metadata replication on, wipe the DB
+# volume, and confirm the repo still clones (refs restored from S3). De-risks the
+# production cold-start path locally. Requires docker + docker compose.
+e2e-restore:
+	./scripts/e2e-restore.sh

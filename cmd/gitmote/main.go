@@ -22,6 +22,7 @@ import (
 	"github.com/atmin/gitmote/internal/repo"
 	"github.com/atmin/gitmote/internal/store"
 	"github.com/atmin/gitmote/internal/webui"
+	"github.com/atmin/s3lite"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -52,8 +53,10 @@ func main() {
 }
 
 // runBootstrap creates the first admin, token, and repo from an empty instance.
-// It opens the metadata DB at GITMOTE_DB (local-only; litestream is wired in the
-// deploy task) and prints the one-time token to out on success.
+// It opens the metadata DB per the environment (GITMOTE_DB, and GITMOTE_DB_REPLICA
+// for litestream) and prints the one-time token to out on success. When a replica
+// is configured it Syncs before returning, so this short-lived process reliably
+// pushes the new admin/token/repo to S3 for the server to restore.
 func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 	handle := fs.String("handle", os.Getenv("GITMOTE_ADMIN_HANDLE"), "admin user handle (or GITMOTE_ADMIN_HANDLE)")
@@ -63,7 +66,7 @@ func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 
-	md, err := meta.Open(ctx, meta.Config{LocalPath: envOr("GITMOTE_DB", "gitmote.sqlite3")})
+	md, err := meta.Open(ctx, metaConfigFromEnv(nil))
 	if err != nil {
 		return fmt.Errorf("open metadata: %w", err)
 	}
@@ -82,6 +85,13 @@ func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 		_, err := io.WriteString(out, "already bootstrapped: an admin exists; nothing to do\n")
 		return err
 	}
+
+	// Force the just-written admin/token/repo out to the replica before this
+	// short-lived process exits; Close alone does not guarantee an initial flush.
+	if err := md.Sync(ctx); err != nil {
+		return fmt.Errorf("replicate metadata: %w", err)
+	}
+
 	_, err = fmt.Fprintf(out,
 		"admin user:   %s\n"+
 			"initial repo: %s\n\n"+
@@ -165,12 +175,11 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler) http.Handler {
 // HMAC key that signs session cookies); it shares this metadata handle, so it
 // runs alongside the git server.
 //
-// Metadata lives at GITMOTE_DB (default ./gitmote.sqlite3); materialized repos
-// cache under GITMOTE_CACHE (default a temp dir). The push path listens on
+// Metadata lives at GITMOTE_DB (default ./gitmote.sqlite3), replicated to
+// GITMOTE_DB_REPLICA when set (litestream; empty is local-only). Materialized
+// repos cache under GITMOTE_CACHE (default a temp dir). The push path listens on
 // GITMOTE_SOCK (default a temp path) and installs the pre-receive hook binary
-// at GITMOTE_HOOK (default gitmote-hook alongside this binary). Litestream
-// replication of the metadata DB is wired in the deploy task (11); it is
-// local-only here.
+// at GITMOTE_HOOK (default gitmote-hook alongside this binary).
 func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *webui.Handler, func() error, error) {
 	noop := func() error { return nil }
 
@@ -184,8 +193,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		return nil, nil, noop, fmt.Errorf("object store: %w", err)
 	}
 
-	dbPath := envOr("GITMOTE_DB", "gitmote.sqlite3")
-	md, err := meta.Open(ctx, meta.Config{LocalPath: dbPath})
+	md, err := meta.Open(ctx, metaConfigFromEnv(logger))
 	if err != nil {
 		return nil, nil, noop, fmt.Errorf("metadata: %w", err)
 	}
@@ -198,6 +206,15 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	}
 	cleanup := func() error {
 		err := writer.Close()
+		// Flush replication on clean shutdown so a redeploy/restart is lossless
+		// (a no-op without a replica). Bounded so an unreachable S3 can't hang
+		// shutdown; the accepted crash-loss window (safety.md §4) still covers a
+		// hard kill.
+		syncCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if serr := md.Sync(syncCtx); err == nil {
+			err = serr
+		}
 		if cerr := md.Close(); err == nil {
 			err = cerr
 		}
@@ -247,6 +264,23 @@ func hookBinaryPath() string {
 		return filepath.Join(filepath.Dir(exe), "gitmote-hook")
 	}
 	return "gitmote-hook"
+}
+
+// metaConfigFromEnv builds the metadata database config from the environment.
+// GITMOTE_DB_REPLICA is an s3:// URL used for both restore-on-cold-start and
+// continuous backup (litestream); empty leaves the database local-only (tests,
+// local dev), so the same binary runs unreplicated or replicated by env alone.
+// The replica reuses the object store's endpoint and the AWS default credential
+// chain, so one credential set covers both git objects and the metadata WAL.
+func metaConfigFromEnv(logger *slog.Logger) meta.Config {
+	replica := os.Getenv("GITMOTE_DB_REPLICA")
+	return meta.Config{
+		LocalPath:   envOr("GITMOTE_DB", "gitmote.sqlite3"),
+		RestoreFrom: replica,
+		BackupTo:    replica,
+		S3:          s3lite.S3Config{Endpoint: os.Getenv("GITMOTE_S3_ENDPOINT")},
+		Logger:      logger,
+	}
 }
 
 // envOr returns the value of the environment variable key, or fallback if

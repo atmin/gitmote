@@ -24,6 +24,10 @@ pushes this working tree, clones it back, and — after force-recreating the
 container — clones again to prove the repo survives on the object store and
 persisted refs (not local disk). Requires Docker + Docker Compose.
 
+`make e2e-restore` additionally exercises the litestream cold-start path (wipes
+the metadata DB and restores it from S3). Deployment — Scaleway Serverless
+Containers, single writer, `gitmote.atmin.net` — lives in [docs/ops.md](docs/ops.md).
+
 ## Bootstrap
 
 An empty instance has no users, so token auth is a chicken-and-egg. Run the
