@@ -10,6 +10,8 @@ linters:
         - fmt.Fprintln(net/http.ResponseWriter)
         # Deferred response-body closes in tests.
         - (io.ReadCloser).Close
+        # Deferred row-set closes; iteration errors surface via rows.Err().
+        - (*database/sql.Rows).Close
 
 formatters:
   enable:

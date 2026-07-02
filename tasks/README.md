@@ -6,7 +6,6 @@ lands** (commits are the record — this list never becomes a changelog).
 
 Ordered by dependency; each task lands in a non-breaking, tested state.
 
-- [03-metadata-s3lite.md](03-metadata-s3lite.md) — Embed s3lite; schema, migrations, query layer, ref CAS.
 - [04-repo-materialization.md](04-repo-materialization.md) — Build ephemeral bare repos from refs + hydrated objects.
 - [05-read-path-clone.md](05-read-path-clone.md) — Smart-HTTP `upload-pack`; `git clone` works.
 - [06-auth-pat-acl.md](06-auth-pat-acl.md) — Bearer PATs + per-repo ACL enforcement.
