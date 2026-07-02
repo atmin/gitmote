@@ -7,8 +7,9 @@ s3lite schema itself must be created. None of this has an entry path yet.
 
 ## What must exist on day one
 
-- The s3lite schema (tables from [ARCHITECTURE.md](../../ARCHITECTURE.md) →
-  Storage layout). Run migrations automatically on s3lite `Open`.
+- The s3lite schema (tables from
+  [architecture → storage layout](../architecture/storage.md)). Run migrations
+  automatically on s3lite `Open`.
 - A first **admin** user + a token to authenticate as them.
 - At least one repo to push to.
 

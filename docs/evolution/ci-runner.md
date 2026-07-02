@@ -19,7 +19,7 @@ CI doesn't bolt on; it reuses seams already built:
 
 | CI need               | Reused gitmote primitive                                                                                                                                            |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Trigger (`on: push`)  | The s3lite ref **CAS commit** — the one durable "a ref advanced" moment ([ARCHITECTURE.md](../../ARCHITECTURE.md) → Push flow). "After a successful CAS, enqueue a run." |
+| Trigger (`on: push`)  | The s3lite ref **CAS commit** — the one durable "a ref advanced" moment ([architecture → push flow](../architecture/request-flows.md)). "After a successful CAS, enqueue a run." |
 | Run / job state       | An s3lite `runs` / `jobs` table — single-writer is fine at this scale                                                                                                |
 | Logs & artifacts      | Append-only blobs in S3; content-before-pointer applies unchanged                                                                                                   |
 | Runner → server report| The parent's authenticated API — same discipline as the push-hook channel; runners never touch s3lite directly                                                      |

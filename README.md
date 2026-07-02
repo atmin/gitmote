@@ -12,4 +12,4 @@ backed to S3) — so the only genuinely hard problem, atomic ref updates, become
 single SQL transaction.
 
 **Status:** design stage, no code yet. The design lives in
-[ARCHITECTURE.md](ARCHITECTURE.md); tasks to follow.
+[docs/architecture/](docs/architecture/); tasks to follow.

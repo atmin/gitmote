@@ -2,8 +2,9 @@
 
 One file per open design question — worked-out context that isn't settled enough
 to be architecture, and isn't broken into tasks yet. Each is meant to feed a
-future task or decision. The [architecture](../../ARCHITECTURE.md)'s "Open
-questions" section is the superset and links here.
+future task or decision. The architecture's
+[open questions](../architecture/open-questions.md) are the superset and link
+here.
 
 - [push-hook-channel.md](push-hook-channel.md) — how the `pre-receive` hook
   finds, authenticates to, and is installed for the parent's unix socket.

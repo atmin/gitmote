@@ -3,7 +3,7 @@
 Getting the right git objects onto local disk for a given operation.
 
 **Context.** The local bare repo is a cache; refs come from s3lite, objects from
-S3 (see [ARCHITECTURE.md](../../ARCHITECTURE.md) → Components). The open point is
+S3 (see [architecture → components](../architecture/storage.md)). The open point is
 _how_ the objects arrive.
 
 **The problem.** `upload-pack` (serving fetch/clone) and `receive-pack`'s

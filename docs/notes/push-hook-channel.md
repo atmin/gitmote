@@ -4,7 +4,7 @@ The control channel between git's `pre-receive` hook and the gitmote parent
 process — plus how the hook gets wired into materialized repos.
 
 **Context.** Push durability gates _inside_ `receive-pack`, at the `pre-receive`
-hook (see [ARCHITECTURE.md](../../ARCHITECTURE.md) → "Push (write path)"). The
+hook (see [architecture → push write path](../architecture/request-flows.md)). The
 hook runs as a separate process and cannot touch the embedded single-writer
 s3lite, so it RPCs back to the parent — the sole writer — which performs the S3
 PUT + ref CAS and returns a verdict the hook turns into its exit code.
