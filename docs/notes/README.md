@@ -1,0 +1,13 @@
+# Design notes
+
+One file per open design question — worked-out context that isn't settled enough
+to be architecture, and isn't broken into tasks yet. Each is meant to feed a
+future task or decision. The [architecture](../../ARCHITECTURE.md)'s "Open
+questions" section is the superset and links here.
+
+- [push-hook-channel.md](push-hook-channel.md) — how the `pre-receive` hook
+  finds, authenticates to, and is installed for the parent's unix socket.
+- [object-hydration.md](object-hydration.md) — getting the object closure onto
+  local disk before git runs; full-hydrate vs partial-clone.
+- [bootstrap.md](bootstrap.md) — first admin, token, repo, and schema migration
+  from an empty bucket.
