@@ -2,7 +2,7 @@
 
 > Part of the [gitmote architecture](README.md).
 
-**"Safe" is a hard requirement.** The model rests on four points:
+**"Safe" is a hard requirement.** The model rests on these points:
 
 1. **Single writer = single _lease-holder_, not single _user_.** s3lite requires
    exactly one writer instance; that's a deployment fact, not a limit on
@@ -44,3 +44,19 @@
    idempotent — this is self-healing in a way a ledger isn't, so we accept it.
    (Escape hatch if ever needed: move _refs_ to plain S3 behind a synchronous
    conditional-PUT CAS, keeping only softer metadata in s3lite.)
+
+5. **CI secrets are encrypted at rest, and the threat model is narrow — say so.**
+   Per-repo CI secrets are sealed with AES-256-GCM under a **server-held** master
+   key (`GITMOTE_CI_SECRET_KEY_V<n>`, a container env var alongside
+   `GITMOTE_COOKIE_KEY` and the AWS keys); a per-repo subkey is derived with
+   HKDF-SHA256, and the envelope's AAD binds `(repoID, name, version)` so a stolen
+   ciphertext can't be replayed under a different repo/name/version. Only the
+   sealed `{v, iv, ct}` lives in s3lite — never the plaintext or the key. So the
+   one property this buys is: **a compromise of the S3 replica / DB snapshot (the
+   litestream WAL, the object bucket) does not leak secret values.** It is
+   explicitly **not** a defense against a compromised *running* server, which
+   holds the master key by necessity — it must decrypt to inject secrets into the
+   runner env at trigger. There is no user-password KDF here (unlike an E2E
+   design): the server is the trust boundary. Rotation is a new key version + bump
+   (old envelopes still decrypt under their own version); values are write-only in
+   the UI (only names are ever shown) and are never logged.

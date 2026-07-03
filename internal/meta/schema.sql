@@ -77,3 +77,18 @@ CREATE TABLE IF NOT EXISTS ci_jobs (
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
+
+-- CI secrets: per-repo named values encrypted at rest with a server-held master
+-- key (never stored here). Only the sealed envelope lives in the DB — {version,
+-- iv, ciphertext} — so a replica/snapshot leak does not expose values. Values are
+-- write-only from the UI; only names are ever listed. See internal/secrets and
+-- tasks 16/22.
+CREATE TABLE IF NOT EXISTS ci_secrets (
+  repo_id    INTEGER NOT NULL REFERENCES repos(id),
+  name       TEXT NOT NULL,                    -- env var name injected at trigger
+  v          INTEGER NOT NULL,                 -- master key version that sealed ct
+  iv         BLOB NOT NULL,                    -- 12-byte GCM nonce
+  ct         BLOB NOT NULL,                    -- AES-256-GCM ciphertext + tag
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, name)
+);

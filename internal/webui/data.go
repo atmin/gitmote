@@ -45,6 +45,14 @@ type aclsData struct {
 	ACLs     []meta.ACL  // the selected repo's grants
 }
 
+type secretsData struct {
+	base
+	Repos    []meta.Repo // for the repo picker
+	Selected string      // currently viewed repo name
+	Names    []string    // the selected repo's secret names (never values)
+	Enabled  bool        // whether a master key is configured (gates the set form)
+}
+
 // --- browse ---
 
 // refChoice is one entry in the ref switcher: a display name (short, e.g.

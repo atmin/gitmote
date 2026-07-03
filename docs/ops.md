@@ -93,6 +93,7 @@ Setting these on the container does nothing for CI, and vice versa.
 | `SCW_SECRET_KEY` | secret — Scaleway API secret key (the UUID) used to start the CI job; also the registry/deploy key |
 | `SCW_REGION` | Scaleway region for the CI job start (falls back to `AWS_REGION`) |
 | `WORKER_SECRET` | secret — shared runner-auth secret; injected into the runner env and compared on its report-back |
+| `GITMOTE_CI_SECRET_KEY_V1` | secret — base64 of 32 bytes; master key for per-repo CI secrets. Add `_V2`, … to rotate (highest is current; old envelopes still decrypt). Unset → the secrets UI is disabled and none are injected |
 | `AWS_REGION` | `fr-par` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | secret — Scaleway API key pair; covers both the object store and the litestream replica |
 

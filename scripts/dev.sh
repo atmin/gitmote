@@ -35,6 +35,10 @@ export GITMOTE_COOKIE_KEY="dev-cookie-key-not-for-production"
 export GITMOTE_URL="http://localhost:8080"
 export WORKER_SECRET="dev-worker-secret-not-for-production"
 
+# Enable per-repo CI secrets locally (Secrets panel in /ui). A fixed dev master
+# key — base64 of 32 bytes — obviously not for production. Rotate by adding _V2.
+export GITMOTE_CI_SECRET_KEY_V1="ZGV2LW9ubHktY2ktc2VjcmV0LW1hc3Rlci1rZXktMzI="
+
 mkdir -p "$ROOT/data"
 
 # Free :8080 from a stale dev server left running from a previous session.

@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/atmin/gitmote/internal/auth"
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
+	"github.com/atmin/gitmote/internal/secrets"
 	"github.com/atmin/gitmote/internal/store"
 )
 
@@ -39,7 +41,17 @@ func newHarness(t *testing.T) *harness {
 
 	objs := store.NewMem()
 	mz := repo.New(md, objs, t.TempDir())
-	h, err := New(md, mz, auth.NewGuard(md), []byte("test-cookie-key"), nil)
+
+	// A keyring with one all-zero key: enough to exercise the secrets panel
+	// (Enabled() true, encrypt/decrypt round-trip) without a real key.
+	t.Setenv("GITMOTE_CI_SECRET_KEY_V1", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	kr, err := secrets.NewKeyringFromEnv()
+	if err != nil {
+		t.Fatalf("keyring: %v", err)
+	}
+	svc := secrets.NewService(kr, md)
+
+	h, err := New(md, mz, auth.NewGuard(md), svc, []byte("test-cookie-key"), nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

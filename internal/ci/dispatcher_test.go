@@ -393,6 +393,69 @@ func TestDispatchMintFailureLeavesRunUsable(t *testing.T) {
 	}
 }
 
+// stubSecrets returns a fixed secret map (or an error) for any repo.
+type stubSecrets struct {
+	env map[string]string
+	err error
+}
+
+func (s stubSecrets) Secrets(context.Context, int64) (map[string]string, error) {
+	return s.env, s.err
+}
+
+func TestDispatchInjectsSecrets(t *testing.T) {
+	ctx := context.Background()
+	md, s, mz := newFixture(t)
+	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+		".github/workflows/ci.yml": "name: CI\non: push\n",
+	})
+
+	tr := &stubTrigger{}
+	NewDispatcher(Config{
+		Runs: md, Materializer: mz, Trigger: tr,
+		Secrets:      stubSecrets{env: map[string]string{"API_TOKEN": "s3cr3t"}},
+		BaseURL:      "https://gitmote.test",
+		WorkerSecret: "worker-secret",
+	}).Dispatch(ctx, branchEvent(r, head))
+
+	if len(tr.calls) != 1 {
+		t.Fatalf("trigger calls = %d, want 1", len(tr.calls))
+	}
+	env := tr.calls[0]
+	// Secrets are namespaced so the engine can tell them from coordinates.
+	if env["GITMOTE_CI_SECRET_API_TOKEN"] != "s3cr3t" {
+		t.Errorf("GITMOTE_CI_SECRET_API_TOKEN = %q, want the injected value", env["GITMOTE_CI_SECRET_API_TOKEN"])
+	}
+	// The namespacing keeps a secret from ever shadowing the runner's coordinates.
+	if env["GITMOTE_URL"] != "https://gitmote.test" || env["GITMOTE_REPO"] != "atmin/app" {
+		t.Errorf("coordinates altered by secret injection: %+v", env)
+	}
+}
+
+func TestDispatchSecretsFailureRunsWithout(t *testing.T) {
+	ctx := context.Background()
+	md, s, mz := newFixture(t)
+	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+		".github/workflows/ci.yml": "name: CI\non: push\n",
+	})
+
+	// A secrets error is non-fatal: the job still triggers, just without secrets.
+	tr := &stubTrigger{}
+	NewDispatcher(Config{
+		Runs: md, Materializer: mz, Trigger: tr,
+		Secrets:      stubSecrets{err: errors.New("keyring down")},
+		BaseURL:      "https://gitmote.test",
+		WorkerSecret: "worker-secret",
+	}).Dispatch(ctx, branchEvent(r, head))
+
+	if len(tr.calls) != 1 {
+		t.Fatalf("trigger calls = %d, want 1 (secrets failure must not abort dispatch)", len(tr.calls))
+	}
+	if tr.calls[0]["GITMOTE_REPO"] != "atmin/app" {
+		t.Errorf("job env missing fixed coords: %+v", tr.calls[0])
+	}
+}
+
 // failNthTrigger fails the Nth (1-based) trigger call and succeeds the others.
 type failNthTrigger struct {
 	failOn int

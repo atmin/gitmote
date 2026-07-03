@@ -62,6 +62,12 @@ type Minter interface {
 	MintScoped(ctx context.Context, userID int64, label string, repoScope *int64, readOnly bool, expiresAt time.Time) (string, error)
 }
 
+// Secrets decrypts a repo's CI secrets into a name→value map to inject at
+// trigger. *secrets.Service satisfies it. Nil injects no secrets.
+type Secrets interface {
+	Secrets(ctx context.Context, repoID int64) (map[string]string, error)
+}
+
 // Event is one updated ref from a completed push.
 type Event struct {
 	RepoID   int64
@@ -82,9 +88,10 @@ type Config struct {
 	Runs         Runs
 	Materializer Materializer
 	Trigger      Trigger
-	Minter       Minter // mints the per-run clone token; nil leaves it empty
-	BaseURL      string // GITMOTE_URL
-	WorkerSecret string // WORKER_SECRET
+	Minter       Minter  // mints the per-run clone token; nil leaves it empty
+	Secrets      Secrets // decrypts per-repo CI secrets to inject; nil injects none
+	BaseURL      string  // GITMOTE_URL
+	WorkerSecret string  // WORKER_SECRET
 	Logger       *slog.Logger
 }
 
@@ -96,6 +103,7 @@ type Dispatcher struct {
 	mz      Materializer
 	trigger Trigger
 	minter  Minter
+	secrets Secrets
 	baseURL string
 	secret  string
 	logger  *slog.Logger
@@ -113,6 +121,7 @@ func NewDispatcher(cfg Config) *Dispatcher {
 		mz:      cfg.Materializer,
 		trigger: cfg.Trigger,
 		minter:  cfg.Minter,
+		secrets: cfg.Secrets,
 		baseURL: cfg.BaseURL,
 		secret:  cfg.WorkerSecret,
 		logger:  logger,
@@ -184,6 +193,9 @@ func (d *Dispatcher) recordRun(ctx context.Context, ev Event, dir string, files 
 	// every job of a run clones the same repo at the same SHA. A mint failure is
 	// non-fatal — the run still records, and the runner's clone will fail visibly.
 	cloneToken := d.mintCloneToken(ctx, ev, run.ID)
+	// Decrypt the repo's CI secrets once for the run; injected into every job's
+	// env. Non-fatal on error (fire-and-forget) — the run proceeds without them.
+	secretsEnv := d.repoSecrets(ctx, ev)
 	var (
 		parseErr      error
 		jobs          int
@@ -202,7 +214,7 @@ func (d *Dispatcher) recordRun(ctx context.Context, ev Event, dir string, files 
 			continue
 		}
 		jobs++
-		if err := d.trigger.Trigger(ctx, d.jobEnv(ev, run.ID, job.ID, cloneToken)); err != nil {
+		if err := d.trigger.Trigger(ctx, d.jobEnv(ev, run.ID, job.ID, cloneToken, secretsEnv)); err != nil {
 			d.logger.Error("ci: trigger failed",
 				"run", run.ID, "job", job.ID, "name", f.Name, "error", err)
 			if err := d.runs.SetJobStatus(ctx, job.ID, meta.RunError); err != nil {
@@ -222,19 +234,46 @@ func (d *Dispatcher) recordRun(ctx context.Context, ev Event, dir string, files 
 	}
 }
 
+// secretEnvPrefix namespaces an injected CI secret in the runner env, so the
+// engine can tell a secret from the runner's own coordinates and expose it to the
+// workflow (as `${{ secrets.NAME }}`). Kept in sync with the runner's ActEngine.
+const secretEnvPrefix = "GITMOTE_CI_SECRET_"
+
 // jobEnv is the per-job environment injected into the triggered runner: the
-// coordinates it claims and reports against, plus the scoped clone token.
-func (d *Dispatcher) jobEnv(ev Event, runID, jobID int64, cloneToken string) map[string]string {
-	return map[string]string{
-		"GITMOTE_CI_RUN_ID":      strconv.FormatInt(runID, 10),
-		"GITMOTE_CI_JOB_ID":      strconv.FormatInt(jobID, 10),
-		"GITMOTE_URL":            d.baseURL,
-		"WORKER_SECRET":          d.secret,
-		"GITMOTE_REPO":           ev.RepoName,
-		"GITMOTE_SHA":            ev.NewSHA,
-		"GITMOTE_REF":            ev.Ref,
-		"GITMOTE_CI_CLONE_TOKEN": cloneToken,
+// repo's CI secrets (each namespaced under secretEnvPrefix so the engine can
+// forward them), plus the coordinates it claims and reports against and the
+// scoped clone token.
+func (d *Dispatcher) jobEnv(ev Event, runID, jobID int64, cloneToken string, secretsEnv map[string]string) map[string]string {
+	env := make(map[string]string, len(secretsEnv)+8)
+	for k, v := range secretsEnv {
+		env[secretEnvPrefix+k] = v
 	}
+	env["GITMOTE_CI_RUN_ID"] = strconv.FormatInt(runID, 10)
+	env["GITMOTE_CI_JOB_ID"] = strconv.FormatInt(jobID, 10)
+	env["GITMOTE_URL"] = d.baseURL
+	env["WORKER_SECRET"] = d.secret
+	env["GITMOTE_REPO"] = ev.RepoName
+	env["GITMOTE_SHA"] = ev.NewSHA
+	env["GITMOTE_REF"] = ev.Ref
+	env["GITMOTE_CI_CLONE_TOKEN"] = cloneToken
+	return env
+}
+
+// repoSecrets decrypts the repo's CI secrets for injection. It returns nil (and
+// logs) when no service is configured or decryption fails — running without
+// secrets is preferable to failing the fire-and-forget dispatch; the workflow
+// surfaces the missing value itself.
+func (d *Dispatcher) repoSecrets(ctx context.Context, ev Event) map[string]string {
+	if d.secrets == nil {
+		return nil
+	}
+	m, err := d.secrets.Secrets(ctx, ev.RepoID)
+	if err != nil {
+		d.logger.Error("ci: load secrets failed; running without them",
+			"repo", ev.RepoName, "error", err)
+		return nil
+	}
+	return m
 }
 
 // mintCloneToken mints the per-run read-only, repo-scoped, expiring clone token

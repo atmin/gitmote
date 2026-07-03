@@ -38,6 +38,16 @@ type Authenticator interface {
 	VerifyToken(ctx context.Context, raw string) (*meta.User, error)
 }
 
+// SecretsAdmin manages a repo's CI secrets for the admin panel. Values are
+// write-only: only names are ever read back. *secrets.Service satisfies it; nil
+// disables the secrets UI.
+type SecretsAdmin interface {
+	Enabled() bool
+	SetSecret(ctx context.Context, repoID int64, name, value string) error
+	ListSecretNames(ctx context.Context, repoID int64) ([]string, error)
+	DeleteSecret(ctx context.Context, repoID int64, name string) error
+}
+
 // reservedOwners are top-level path segments the server already routes; a repo
 // whose owner is one of these would shadow those routes, so creation refuses it.
 var reservedOwners = map[string]bool{
@@ -49,19 +59,20 @@ var nameSegment = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // Handler serves the management UI.
 type Handler struct {
-	md   *meta.Metadata
-	mz   *repo.Materializer
-	auth Authenticator
-	sess *sessions
-	tmpl *template.Template
-	log  *slog.Logger
-	now  func() time.Time
+	md      *meta.Metadata
+	mz      *repo.Materializer
+	auth    Authenticator
+	secrets SecretsAdmin
+	sess    *sessions
+	tmpl    *template.Template
+	log     *slog.Logger
+	now     func() time.Time
 }
 
 // New builds the UI handler. cookieKey signs session cookies and must be
 // non-empty; the auth verifier backs the login form; mz materializes repos for
-// the read-only browse pages.
-func New(md *meta.Metadata, mz *repo.Materializer, a Authenticator, cookieKey []byte, logger *slog.Logger) (*Handler, error) {
+// the read-only browse pages; secrets (may be nil) backs the CI secrets panel.
+func New(md *meta.Metadata, mz *repo.Materializer, a Authenticator, secrets SecretsAdmin, cookieKey []byte, logger *slog.Logger) (*Handler, error) {
 	if len(cookieKey) == 0 {
 		return nil, errors.New("webui: empty cookie key")
 	}
@@ -86,13 +97,14 @@ func New(md *meta.Metadata, mz *repo.Materializer, a Authenticator, cookieKey []
 		logger = slog.Default()
 	}
 	return &Handler{
-		md:   md,
-		mz:   mz,
-		auth: a,
-		sess: &sessions{key: cookieKey},
-		tmpl: tmpl,
-		log:  logger,
-		now:  time.Now,
+		md:      md,
+		mz:      mz,
+		auth:    a,
+		secrets: secrets,
+		sess:    &sessions{key: cookieKey},
+		tmpl:    tmpl,
+		log:     logger,
+		now:     time.Now,
 	}, nil
 }
 
@@ -115,6 +127,9 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/acls", h.requireAdmin(h.getACLs))
 	mux.HandleFunc("POST /ui/acls", h.requireAdmin(h.postACL))
 	mux.HandleFunc("POST /ui/acls/revoke", h.requireAdmin(h.postRevokeACL))
+	mux.HandleFunc("GET /ui/secrets", h.requireAdmin(h.getSecrets))
+	mux.HandleFunc("POST /ui/secrets", h.requireAdmin(h.postSecret))
+	mux.HandleFunc("POST /ui/secrets/delete", h.requireAdmin(h.postDeleteSecret))
 
 	// Read-only browsing. The repo name contains slashes and the action tail is
 	// split manually on "/-/" (see browse), so one subtree handler covers all
@@ -489,6 +504,93 @@ func (h *Handler) postRevokeACL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.renderACLs(w, r, repoName, "revoked", "")
+}
+
+// --- ci secrets ---
+
+func (h *Handler) getSecrets(w http.ResponseWriter, r *http.Request) {
+	h.renderSecrets(w, r, strings.TrimSpace(r.FormValue("repo")), "", "")
+}
+
+func (h *Handler) renderSecrets(w http.ResponseWriter, r *http.Request, repoName, flash, errMsg string) {
+	repos, err := h.md.ListRepos(r.Context())
+	if err != nil {
+		h.serverError(w, "list repos", err)
+		return
+	}
+	data := secretsData{
+		base:     h.base(r, flash, errMsg),
+		Repos:    repos,
+		Selected: repoName,
+		Enabled:  h.secrets != nil && h.secrets.Enabled(),
+	}
+	if repoName != "" {
+		repo, err := h.md.GetRepo(r.Context(), repoName)
+		if errors.Is(err, meta.ErrNotFound) {
+			data.Err = "no such repo: " + repoName
+			h.render(w, "secrets.html", data)
+			return
+		}
+		if err != nil {
+			h.serverError(w, "get repo", err)
+			return
+		}
+		names, err := h.secrets.ListSecretNames(r.Context(), repo.ID)
+		if err != nil {
+			h.serverError(w, "list secret names", err)
+			return
+		}
+		data.Names = names
+	}
+	h.render(w, "secrets.html", data)
+}
+
+func (h *Handler) postSecret(w http.ResponseWriter, r *http.Request) {
+	repoName := strings.TrimSpace(r.FormValue("repo"))
+	name := strings.TrimSpace(r.FormValue("name"))
+	value := r.FormValue("value") // not trimmed: a secret may have meaningful edges
+	if h.secrets == nil || !h.secrets.Enabled() {
+		h.renderSecrets(w, r, repoName, "", "secrets are disabled: set GITMOTE_CI_SECRET_KEY_V1")
+		return
+	}
+	if value == "" {
+		h.renderSecrets(w, r, repoName, "", "value cannot be empty")
+		return
+	}
+	repo, err := h.md.GetRepo(r.Context(), repoName)
+	if errors.Is(err, meta.ErrNotFound) {
+		h.renderSecrets(w, r, repoName, "", "no such repo: "+repoName)
+		return
+	}
+	if err != nil {
+		h.serverError(w, "get repo", err)
+		return
+	}
+	if err := h.secrets.SetSecret(r.Context(), repo.ID, name, value); err != nil {
+		// The error names the (public) secret name at worst, never the value.
+		h.renderSecrets(w, r, repoName, "", "set secret: "+err.Error())
+		return
+	}
+	h.renderSecrets(w, r, repoName, "saved secret "+name, "")
+}
+
+func (h *Handler) postDeleteSecret(w http.ResponseWriter, r *http.Request) {
+	repoName := strings.TrimSpace(r.FormValue("repo"))
+	name := strings.TrimSpace(r.FormValue("name"))
+	repo, err := h.md.GetRepo(r.Context(), repoName)
+	if errors.Is(err, meta.ErrNotFound) {
+		h.renderSecrets(w, r, repoName, "", "no such repo: "+repoName)
+		return
+	}
+	if err != nil {
+		h.serverError(w, "get repo", err)
+		return
+	}
+	if err := h.secrets.DeleteSecret(r.Context(), repo.ID, name); err != nil {
+		h.serverError(w, "delete secret", err)
+		return
+	}
+	h.renderSecrets(w, r, repoName, "deleted secret "+name, "")
 }
 
 // --- rendering ---
