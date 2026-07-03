@@ -6,7 +6,7 @@ lands** (commits are the record — this list never becomes a changelog).
 
 Ordered by dependency; each task lands in a non-breaking, tested state.
 
-- [11-deploy.md](11-deploy.md) — Real object storage + single-writer deploy; hosts itself for real.
-
-Milestone is done when **11** is green: the gitmote repo lives on gitmote for real
-(local self-hosting via `make e2e-local` already passes).
+_No active tasks._ The **gitmote can host itself** milestone is reached: it runs
+on Scaleway at `gitmote.atmin.net`, deploys itself on every green master push,
+and survives cold starts (litestream restore). Next work lands here as it's
+picked up; speculative directions live in [../docs/evolution/](../docs/evolution/).

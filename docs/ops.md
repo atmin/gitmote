@@ -64,6 +64,13 @@ Container** (via `scw container container create/update`, secrets as
 pipeline's Scaleway API keys are separate GitHub Actions secrets (next section).
 Setting these on the container does nothing for CI, and vice versa.
 
+> ⚠️ **`update` replaces the entire `secret-environment-variables` map — it does
+> not merge.** Passing one secret wipes the rest (observed: setting only
+> `GITMOTE_DEPLOY_KEY` dropped the AWS keys, so litestream fell back to EC2 IMDS
+> and the server crash-looped on restore). **Always pass *all* secret env vars
+> together on every `update`.** Plain `environment-variables` are a separate map,
+> unaffected. The CI deploy's `update` sets no env vars, so it preserves both maps.
+
 | Variable | Value / meaning |
 |----------|-----------------|
 | `GITMOTE_ADDR` | bind address — `:8080` (Scaleway routes to `port=8080`) |
