@@ -161,6 +161,32 @@ func TestGoldenPath(t *testing.T) {
 	}
 }
 
+// TestCreateRepoGrantsOwnerAdmin: creating a repo through the UI grants the owner
+// admin on it, so it is immediately usable (clone/push) without a separate ACL
+// step — the gap that left a freshly created repo 403-ing every push.
+func TestCreateRepoGrantsOwnerAdmin(t *testing.T) {
+	x := newHarness(t)
+	ctx := context.Background()
+	session := x.login(x.mintTokenFor(x.admin.ID))
+
+	if rec := x.do(http.MethodPost, "/ui/users", url.Values{"handle": {"bob"}}, session); rec.Code != http.StatusOK {
+		t.Fatalf("create user: %d (%s)", rec.Code, rec.Body)
+	}
+	if rec := x.do(http.MethodPost, "/ui/repos",
+		url.Values{"owner": {"bob"}, "name": {"proj"}, "default_branch": {"main"}}, session); rec.Code != http.StatusOK {
+		t.Fatalf("create repo: %d (%s)", rec.Code, rec.Body)
+	}
+
+	bob, _ := x.md.GetUser(ctx, "bob")
+	repo, err := x.md.GetRepo(ctx, "bob/proj")
+	if err != nil {
+		t.Fatalf("repo not created: %v", err)
+	}
+	if perm, err := x.md.GetACL(ctx, repo.ID, bob.ID); err != nil || perm != meta.PermAdmin {
+		t.Errorf("owner ACL after create = %q, %v; want admin", perm, err)
+	}
+}
+
 func TestUnauthenticatedDenied(t *testing.T) {
 	x := newHarness(t)
 

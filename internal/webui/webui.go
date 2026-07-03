@@ -205,7 +205,8 @@ func (h *Handler) postRepo(w http.ResponseWriter, r *http.Request) {
 		h.renderRepos(w, r, "", "owner is reserved: "+owner)
 		return
 	}
-	if _, err := h.md.GetUser(r.Context(), owner); errors.Is(err, meta.ErrNotFound) {
+	ownerUser, err := h.md.GetUser(r.Context(), owner)
+	if errors.Is(err, meta.ErrNotFound) {
 		h.renderRepos(w, r, "", "no such user for owner: "+owner)
 		return
 	} else if err != nil {
@@ -214,8 +215,15 @@ func (h *Handler) postRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	full := owner + "/" + name
-	if _, err := h.md.CreateRepo(r.Context(), full, branch); err != nil {
+	repo, err := h.md.CreateRepo(r.Context(), full, branch)
+	if err != nil {
 		h.renderRepos(w, r, "", "create repo: "+err.Error())
+		return
+	}
+	// Grant the owner admin on their new repo so it is immediately usable
+	// (clone/push) without a separate ACL step, mirroring bootstrap.
+	if err := h.md.SetACL(r.Context(), repo.ID, ownerUser.ID, meta.PermAdmin); err != nil {
+		h.serverError(w, "grant owner acl", err)
 		return
 	}
 	h.renderRepos(w, r, "created "+full, "")
