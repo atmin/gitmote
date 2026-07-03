@@ -25,12 +25,16 @@ type Token struct {
 	LastUsed  *time.Time
 }
 
-// TokenAuth is a token's stored verifier plus its owner, returned to the auth
-// layer for constant-time verification (see internal/auth).
+// TokenAuth is a token's stored verifier plus its owner and constraints,
+// returned to the auth layer for constant-time verification and the scope/expiry
+// checks (see internal/auth). ExpiresAt/RepoScope are nil when unconstrained.
 type TokenAuth struct {
-	TokenID  int64
-	Verifier string
-	User     User
+	TokenID   int64
+	Verifier  string
+	User      User
+	ExpiresAt *time.Time
+	RepoScope *int64
+	ReadOnly  bool
 }
 
 // CreateUser inserts a regular (non-admin) user.
@@ -158,26 +162,64 @@ func (m *Metadata) CreateToken(ctx context.Context, userID int64, selector, veri
 	return &Token{ID: id, UserID: userID, Label: label, CreatedAt: parseTime(created)}, nil
 }
 
-// TokenBySelector returns the verifier and owner of the token with the given
-// selector, or ErrNotFound. The auth layer compares the verifier in constant
-// time; this method deliberately does not touch last_used (see TouchToken).
+// CreateScopedToken stores a token carrying optional constraints: repoScope (nil
+// = all the owner's repos), readOnly (deny push), and expiresAt (zero = never).
+// It backs the CI clone credential and any expiring/scoped PAT.
+func (m *Metadata) CreateScopedToken(ctx context.Context, userID int64, selector, verifier, label string, repoScope *int64, readOnly bool, expiresAt time.Time) (*Token, error) {
+	created := now()
+	var exp *string
+	if !expiresAt.IsZero() {
+		s := expiresAt.UTC().Format(time.RFC3339Nano)
+		exp = &s
+	}
+	res, err := m.db.ExecContext(ctx,
+		`INSERT INTO tokens (user_id, selector, verifier, label, created_at, expires_at, repo_scope, read_only)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		userID, selector, verifier, label, created, exp, repoScope, boolToInt(readOnly))
+	if err != nil {
+		return nil, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	return &Token{ID: id, UserID: userID, Label: label, CreatedAt: parseTime(created)}, nil
+}
+
+// TokenBySelector returns the verifier, owner, and constraints of the token with
+// the given selector, or ErrNotFound. The auth layer compares the verifier in
+// constant time and enforces the constraints; this method deliberately does not
+// touch last_used (see TouchToken).
 func (m *Metadata) TokenBySelector(ctx context.Context, selector string) (*TokenAuth, error) {
 	var (
-		ta      TokenAuth
-		isAdmin int64
-		ts      string
+		ta        TokenAuth
+		isAdmin   int64
+		ts        string
+		expiresAt sql.NullString
+		repoScope sql.NullInt64
+		readOnly  int64
 	)
 	err := m.db.QueryRowContext(ctx,
-		`SELECT t.id, t.verifier, u.id, u.handle, u.is_admin, u.created_at
+		`SELECT t.id, t.verifier, t.expires_at, t.repo_scope, t.read_only,
+		        u.id, u.handle, u.is_admin, u.created_at
 		   FROM tokens t JOIN users u ON u.id = t.user_id
 		  WHERE t.selector = ?`, selector).
-		Scan(&ta.TokenID, &ta.Verifier, &ta.User.ID, &ta.User.Handle, &isAdmin, &ts)
+		Scan(&ta.TokenID, &ta.Verifier, &expiresAt, &repoScope, &readOnly,
+			&ta.User.ID, &ta.User.Handle, &isAdmin, &ts)
 	if isNoRows(err) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	if expiresAt.Valid {
+		exp := parseTime(expiresAt.String)
+		ta.ExpiresAt = &exp
+	}
+	if repoScope.Valid {
+		ta.RepoScope = &repoScope.Int64
+	}
+	ta.ReadOnly = readOnly != 0
 	ta.User.IsAdmin = isAdmin != 0
 	ta.User.CreatedAt = parseTime(ts)
 	return &ta, nil

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/atmin/gitmote/internal/meta"
 )
@@ -196,6 +197,107 @@ func TestBasicAuthCredentials(t *testing.T) {
 		if _, err := g.Authorize(r, "atmin/repo", meta.PermRead); err != nil {
 			t.Errorf("Basic(%q,%q): Authorize = %v, want ok", creds.user, creds.pass, err)
 		}
+	}
+}
+
+func TestTokenExpiry(t *testing.T) {
+	ctx := context.Background()
+	m := openMeta(t)
+	g := NewGuard(m)
+	repo, _ := m.CreateRepo(ctx, "atmin/repo", "main")
+	u, _ := m.CreateUser(ctx, "atmin")
+	if err := m.SetACL(ctx, repo.ID, u.ID, meta.PermRead); err != nil {
+		t.Fatalf("SetACL: %v", err)
+	}
+
+	expiry := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	raw, err := g.MintScoped(ctx, u.ID, "ci", nil, false, expiry)
+	if err != nil {
+		t.Fatalf("MintScoped: %v", err)
+	}
+
+	// Before expiry: authorizes.
+	g.now = func() time.Time { return expiry.Add(-time.Minute) }
+	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermRead); err != nil {
+		t.Errorf("before expiry: Authorize = %v, want ok", err)
+	}
+
+	// At/after expiry: rejected as unauthorized.
+	g.now = func() time.Time { return expiry }
+	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermRead); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("at expiry: Authorize = %v, want ErrUnauthorized", err)
+	}
+	g.now = func() time.Time { return expiry.Add(time.Hour) }
+	if _, err := g.VerifyToken(ctx, raw); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("after expiry: VerifyToken = %v, want ErrUnauthorized", err)
+	}
+}
+
+func TestRepoScope(t *testing.T) {
+	ctx := context.Background()
+	m := openMeta(t)
+	g := NewGuard(m)
+	repoA, _ := m.CreateRepo(ctx, "atmin/a", "main")
+	repoB, _ := m.CreateRepo(ctx, "atmin/b", "main")
+	u, _ := m.CreateUser(ctx, "atmin")
+	// The owner has read on BOTH repos.
+	if err := m.SetACL(ctx, repoA.ID, u.ID, meta.PermRead); err != nil {
+		t.Fatalf("SetACL a: %v", err)
+	}
+	if err := m.SetACL(ctx, repoB.ID, u.ID, meta.PermRead); err != nil {
+		t.Fatalf("SetACL b: %v", err)
+	}
+
+	// A token scoped to A authorizes A but is denied B despite the ACL on B.
+	raw, err := g.MintScoped(ctx, u.ID, "scoped-a", &repoA.ID, false, time.Time{})
+	if err != nil {
+		t.Fatalf("MintScoped: %v", err)
+	}
+	if _, err := g.Authorize(bearer(raw), "atmin/a", meta.PermRead); err != nil {
+		t.Errorf("scoped repo: Authorize = %v, want ok", err)
+	}
+	if _, err := g.Authorize(bearer(raw), "atmin/b", meta.PermRead); !errors.Is(err, ErrForbidden) {
+		t.Errorf("other repo: Authorize = %v, want ErrForbidden", err)
+	}
+}
+
+func TestReadOnlyToken(t *testing.T) {
+	ctx := context.Background()
+	m := openMeta(t)
+	g := NewGuard(m)
+	repo, _ := m.CreateRepo(ctx, "atmin/repo", "main")
+	u, _ := m.CreateUser(ctx, "atmin")
+	// The owner can write, but the token is read-only.
+	if err := m.SetACL(ctx, repo.ID, u.ID, meta.PermWrite); err != nil {
+		t.Fatalf("SetACL: %v", err)
+	}
+
+	raw, err := g.MintScoped(ctx, u.ID, "ro", nil, true, time.Time{})
+	if err != nil {
+		t.Fatalf("MintScoped: %v", err)
+	}
+	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermRead); err != nil {
+		t.Errorf("read with read-only token: Authorize = %v, want ok", err)
+	}
+	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermWrite); !errors.Is(err, ErrForbidden) {
+		t.Errorf("write with read-only token: Authorize = %v, want ErrForbidden", err)
+	}
+}
+
+func TestUnscopedTokenUnaffected(t *testing.T) {
+	ctx := context.Background()
+	m := openMeta(t)
+	g := NewGuard(m)
+	repo, _ := m.CreateRepo(ctx, "atmin/repo", "main")
+	raw, userID := seedToken(t, m) // ordinary CreateToken PAT
+	if err := m.SetACL(ctx, repo.ID, userID, meta.PermWrite); err != nil {
+		t.Fatalf("SetACL: %v", err)
+	}
+
+	// No expiry, any owned repo, read + write per ACL — even far in the future.
+	g.now = func() time.Time { return time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC) }
+	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermWrite); err != nil {
+		t.Errorf("unscoped token write: Authorize = %v, want ok", err)
 	}
 }
 

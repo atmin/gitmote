@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/atmin/gitmote/internal/meta"
 )
@@ -13,11 +14,12 @@ import (
 // Guard authenticates PATs and authorizes requests per-repo against the ACL
 // table. It is the request guard the transport layer consults before serving.
 type Guard struct {
-	md *meta.Metadata
+	md  *meta.Metadata
+	now func() time.Time // injectable clock for token expiry (time.Now in prod)
 }
 
 // NewGuard returns a Guard backed by the metadata layer.
-func NewGuard(md *meta.Metadata) *Guard { return &Guard{md: md} }
+func NewGuard(md *meta.Metadata) *Guard { return &Guard{md: md, now: time.Now} }
 
 // Authorize verifies the request's token and checks the resulting user holds at
 // least perm on repoName. The returned error selects the response:
@@ -31,7 +33,11 @@ func NewGuard(md *meta.Metadata) *Guard { return &Guard{md: md} }
 func (g *Guard) Authorize(r *http.Request, repoName string, perm meta.Perm) (*meta.User, error) {
 	ctx := r.Context()
 
-	user, err := g.authenticate(ctx, r)
+	raw, ok := tokenFromRequest(r)
+	if !ok {
+		return nil, ErrUnauthorized
+	}
+	vt, err := g.verify(ctx, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +47,17 @@ func (g *Guard) Authorize(r *http.Request, repoName string, perm meta.Perm) (*me
 		return nil, err // meta.ErrNotFound flows through to a 404
 	}
 
-	granted, err := g.md.GetACL(ctx, repo.ID, user.ID)
+	// Token constraints gate before the ACL: a repo-scoped token reaches only its
+	// one repo, and a read-only token cannot perform a write/admin operation —
+	// even where the owner's ACL would otherwise allow it.
+	if vt.repoScope != nil && *vt.repoScope != repo.ID {
+		return nil, ErrForbidden
+	}
+	if vt.readOnly && permRank[perm] > permRank[meta.PermRead] {
+		return nil, ErrForbidden
+	}
+
+	granted, err := g.md.GetACL(ctx, repo.ID, vt.user.ID)
 	if errors.Is(err, meta.ErrNotFound) {
 		return nil, ErrForbidden // no ACL row means no access
 	}
@@ -51,18 +67,15 @@ func (g *Guard) Authorize(r *http.Request, repoName string, perm meta.Perm) (*me
 	if !allows(granted, perm) {
 		return nil, ErrForbidden
 	}
-	return user, nil
+	return &vt.user, nil
 }
 
-// authenticate resolves the request's PAT to its owner, or ErrUnauthorized. All
-// failures collapse to ErrUnauthorized so a client cannot distinguish "unknown
-// token" from "wrong secret".
-func (g *Guard) authenticate(ctx context.Context, r *http.Request) (*meta.User, error) {
-	raw, ok := tokenFromRequest(r)
-	if !ok {
-		return nil, ErrUnauthorized
-	}
-	return g.VerifyToken(ctx, raw)
+// verifiedToken is a successfully authenticated token: its owner plus the
+// constraints Authorize enforces.
+type verifiedToken struct {
+	user      meta.User
+	repoScope *int64
+	readOnly  bool
 }
 
 // VerifyToken resolves a raw PAT string to its owner, or ErrUnauthorized. It is
@@ -70,6 +83,18 @@ func (g *Guard) authenticate(ctx context.Context, r *http.Request) (*meta.User, 
 // token from the Authorization header, and the web UI's login form calls it with
 // a pasted token. All failures collapse to ErrUnauthorized.
 func (g *Guard) VerifyToken(ctx context.Context, raw string) (*meta.User, error) {
+	vt, err := g.verify(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	return &vt.user, nil
+}
+
+// verify authenticates a raw token and returns its owner and constraints. It
+// checks the verifier in constant time and rejects an expired token. All
+// failures collapse to ErrUnauthorized so a client cannot distinguish "unknown
+// token" from "wrong secret" from "expired".
+func (g *Guard) verify(ctx context.Context, raw string) (*verifiedToken, error) {
 	selector, secret, ok := split(raw)
 	if !ok {
 		return nil, ErrUnauthorized
@@ -84,10 +109,28 @@ func (g *Guard) VerifyToken(ctx context.Context, raw string) (*meta.User, error)
 	if subtle.ConstantTimeCompare([]byte(ta.Verifier), []byte(hashSecret(secret))) != 1 {
 		return nil, ErrUnauthorized
 	}
+	if ta.ExpiresAt != nil && !ta.ExpiresAt.After(g.now()) {
+		return nil, ErrUnauthorized
+	}
 	if err := g.md.TouchToken(ctx, ta.TokenID); err != nil {
 		return nil, err
 	}
-	return &ta.User, nil
+	return &verifiedToken{user: ta.User, repoScope: ta.RepoScope, readOnly: ta.ReadOnly}, nil
+}
+
+// MintScoped creates and persists a token with optional constraints — repoScope
+// (nil = all the owner's repos), readOnly (deny push), expiresAt (zero = never) —
+// and returns the raw token string, shown exactly once. It is the CI clone
+// credential mint (task 21) and any expiring/scoped PAT.
+func (g *Guard) MintScoped(ctx context.Context, userID int64, label string, repoScope *int64, readOnly bool, expiresAt time.Time) (string, error) {
+	raw, selector, verifier, err := Mint()
+	if err != nil {
+		return "", err
+	}
+	if _, err := g.md.CreateScopedToken(ctx, userID, selector, verifier, label, repoScope, readOnly, expiresAt); err != nil {
+		return "", err
+	}
+	return raw, nil
 }
 
 // tokenFromRequest extracts a PAT from the Authorization header. It accepts a

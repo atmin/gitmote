@@ -75,7 +75,66 @@ func Open(ctx context.Context, cfg Config) (*Metadata, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Metadata{db: db}, nil
+	m := &Metadata{db: db}
+	if err := m.migrate(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return m, nil
+}
+
+// migrate applies additive schema changes that a CREATE TABLE IF NOT EXISTS in
+// schema.sql cannot express against an already-populated table. s3lite has no
+// version table, so every migration must be idempotent: this checks
+// pragma_table_info and only ALTERs columns that are missing. On a fresh DB the
+// columns already exist (schema.sql), so this is a no-op. This is the
+// established pattern for adding a column to an existing table.
+func (m *Metadata) migrate(ctx context.Context) error {
+	return m.addColumns(ctx, "tokens", []columnDef{
+		{"expires_at", "TEXT"},
+		{"repo_scope", "INTEGER REFERENCES repos(id)"},
+		{"read_only", "INTEGER NOT NULL DEFAULT 0"},
+	})
+}
+
+// columnDef is one column to add: its name and the type/constraints DDL that
+// follows "ADD COLUMN <name>". An added NOT NULL column must carry a DEFAULT.
+type columnDef struct {
+	name string
+	ddl  string
+}
+
+// addColumns adds each column absent from table. table and the column defs are
+// internal constants (never user input), so the string-built DDL is safe.
+func (m *Metadata) addColumns(ctx context.Context, table string, cols []columnDef) error {
+	have := make(map[string]bool)
+	rows, err := m.db.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+
+	for _, c := range cols {
+		if have[c.name] {
+			continue
+		}
+		if _, err := m.db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+c.name+` `+c.ddl); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close durably flushes pending replication and closes the database; the flush

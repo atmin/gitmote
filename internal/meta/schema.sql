@@ -32,8 +32,15 @@ CREATE TABLE IF NOT EXISTS tokens (              -- HTTP personal access tokens
   verifier   TEXT NOT NULL,                       -- SHA-256 of the token's secret half, never the raw token
   label      TEXT,
   created_at TEXT NOT NULL,
-  last_used  TEXT
+  last_used  TEXT,
+  expires_at TEXT,                                -- NULL = never expires
+  repo_scope INTEGER REFERENCES repos(id),        -- NULL = all the owner's repos; else the only allowed repo
+  read_only  INTEGER NOT NULL DEFAULT 0           -- 1 = clone/fetch only, no push
 );
+-- NOTE: the three columns above are also added to existing DBs by the guarded
+-- migration in meta.go (Metadata.migrate) — s3lite has no version table, so a
+-- bare ALTER can't live here. That guarded ALTER is the pattern for future
+-- additive columns.
 
 CREATE TABLE IF NOT EXISTS ssh_keys (            -- deferred transport, schema ready
   id         INTEGER PRIMARY KEY,

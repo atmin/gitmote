@@ -17,8 +17,6 @@ index [16-ci.md](16-ci.md) (the *why* is in
 [../docs/evolution/ci-runner.md](../docs/evolution/ci-runner.md)). Split into
 dependency-ordered stages, each implementable from fresh context:
 
-- [20-ci-scoped-tokens.md](20-ci-scoped-tokens.md) — expiring, repo-scoped,
-  read-only tokens (precursor: the runner's clone credential).
 - [21-ci-runner.md](21-ci-runner.md) — runner image + internal claim/complete API
   (the execution stage; has an infra spike to resolve first).
 - [22-ci-secrets.md](22-ci-secrets.md) — encrypted per-repo secrets store

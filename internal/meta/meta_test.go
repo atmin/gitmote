@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // open returns a fresh, local-only Metadata at a temp path (no replication).
@@ -58,6 +59,62 @@ func TestMigrationsIdempotentAndFreshSchema(t *testing.T) {
 	}
 	if got.ID != r.ID {
 		t.Errorf("repo id after re-open = %d, want %d", got.ID, r.ID)
+	}
+}
+
+func TestScopedTokenColumnsMigrateAndPersist(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "meta.sqlite3")
+
+	// A DB whose tokens table predates the scoped columns: create it by hand
+	// without them, plus a legacy row, then let Open's guarded migration add them.
+	m := openAt(t, path)
+	u, err := m.CreateUser(ctx, "atmin")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := m.CreateToken(ctx, u.ID, "legacy-sel", "legacy-ver", "old"); err != nil {
+		t.Fatalf("CreateToken: %v", err)
+	}
+	if _, err := m.db.ExecContext(ctx, `ALTER TABLE tokens DROP COLUMN expires_at`); err != nil {
+		t.Fatalf("drop expires_at: %v", err)
+	}
+	if _, err := m.db.ExecContext(ctx, `ALTER TABLE tokens DROP COLUMN repo_scope`); err != nil {
+		t.Fatalf("drop repo_scope: %v", err)
+	}
+	if _, err := m.db.ExecContext(ctx, `ALTER TABLE tokens DROP COLUMN read_only`); err != nil {
+		t.Fatalf("drop read_only: %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Re-open: migrate adds the columns. Open again: idempotent (no error).
+	m2 := openAt(t, path)
+	// The legacy row reads back with NULL/0 defaults.
+	ta, err := m2.TokenBySelector(ctx, "legacy-sel")
+	if err != nil {
+		t.Fatalf("TokenBySelector(legacy): %v", err)
+	}
+	if ta.ExpiresAt != nil || ta.RepoScope != nil || ta.ReadOnly {
+		t.Errorf("legacy token = %+v, want no expiry/scope, not read-only", ta)
+	}
+	if err := m2.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	m3 := openAt(t, path) // second migrate is a no-op
+	r := seedRepo(t, m3, "atmin/repo")
+	exp := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := m3.CreateScopedToken(ctx, u.ID, "sel2", "ver2", "scoped", &r.ID, true, exp); err != nil {
+		t.Fatalf("CreateScopedToken: %v", err)
+	}
+	ta2, err := m3.TokenBySelector(ctx, "sel2")
+	if err != nil {
+		t.Fatalf("TokenBySelector(sel2): %v", err)
+	}
+	if ta2.RepoScope == nil || *ta2.RepoScope != r.ID || !ta2.ReadOnly ||
+		ta2.ExpiresAt == nil || !ta2.ExpiresAt.Equal(exp) {
+		t.Errorf("scoped token = %+v, want scope %d, read-only, expiry %v", ta2, r.ID, exp)
 	}
 }
 
