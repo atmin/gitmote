@@ -189,6 +189,110 @@ func (m *Metadata) SetJobStatus(ctx context.Context, jobID int64, status RunStat
 	return nil
 }
 
+// GetJob returns the job with the given id, or ErrNotFound.
+func (m *Metadata) GetJob(ctx context.Context, jobID int64) (*Job, error) {
+	var (
+		j      Job
+		status string
+		logKey sql.NullString
+		cts    string
+		uts    string
+	)
+	err := m.db.QueryRowContext(ctx,
+		`SELECT id, run_id, name, status, log_key, created_at, updated_at
+		   FROM ci_jobs WHERE id = ?`, jobID).
+		Scan(&j.ID, &j.RunID, &j.Name, &status, &logKey, &cts, &uts)
+	if isNoRows(err) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	j.Status = RunStatus(status)
+	j.LogKey = logKey.String
+	j.CreatedAt = parseTime(cts)
+	j.UpdatedAt = parseTime(uts)
+	return &j, nil
+}
+
+// ClaimJob atomically transitions a queued job to running and returns it. It
+// returns ErrNotFound when no job with the id is queued — already claimed,
+// terminal, or absent — so a concurrent double-claim yields exactly one winner.
+func (m *Metadata) ClaimJob(ctx context.Context, jobID int64) (*Job, error) {
+	res, err := m.db.ExecContext(ctx,
+		`UPDATE ci_jobs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		string(RunRunning), now(), jobID, string(RunQueued))
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, ErrNotFound
+	}
+	return m.GetJob(ctx, jobID)
+}
+
+// SetJobResult records a job's terminal status and its log key together. It
+// returns ErrNotFound when no job has the given id.
+func (m *Metadata) SetJobResult(ctx context.Context, jobID int64, status RunStatus, logKey string) error {
+	res, err := m.db.ExecContext(ctx,
+		`UPDATE ci_jobs SET status = ?, log_key = ?, updated_at = ? WHERE id = ?`,
+		string(status), logKey, now(), jobID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SweepStuckJobs marks every running job last updated before cutoff as error and
+// returns the ids it changed, so the caller can roll up their runs. A runner that
+// dies without completing would otherwise leave a job running forever.
+func (m *Metadata) SweepStuckJobs(ctx context.Context, cutoff time.Time) ([]int64, error) {
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT id, updated_at FROM ci_jobs WHERE status = ?`, string(RunRunning))
+	if err != nil {
+		return nil, err
+	}
+	var stuck []int64
+	for rows.Next() {
+		var (
+			id  int64
+			uts string
+		)
+		if err := rows.Scan(&id, &uts); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if parseTime(uts).Before(cutoff) {
+			stuck = append(stuck, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	_ = rows.Close()
+
+	for _, id := range stuck {
+		if _, err := m.db.ExecContext(ctx,
+			`UPDATE ci_jobs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+			string(RunError), now(), id, string(RunRunning)); err != nil {
+			return nil, err
+		}
+	}
+	return stuck, nil
+}
+
 // ListJobs returns a run's jobs ordered by creation (id).
 func (m *Metadata) ListJobs(ctx context.Context, runID int64) ([]Job, error) {
 	rows, err := m.db.QueryContext(ctx,

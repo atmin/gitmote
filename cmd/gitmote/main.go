@@ -106,7 +106,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	gitHandler, ui, closeMeta, err := buildGitHandler(ctx, logger)
+	gitHandler, ui, reportAPI, closeMeta, err := buildGitHandler(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -118,7 +118,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: newHandler(gitHandler, ui),
+		Handler: newHandler(gitHandler, ui, reportAPI),
 	}
 
 	errCh := make(chan error, 1)
@@ -149,7 +149,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 // management UI under /ui/ and /login (more specific patterns that win over the
 // git catch-all). gitHandler, when non-nil, serves the git smart-HTTP endpoints
 // at "/"; the exact health/version routes stay more specific.
-func newHandler(gitHandler http.Handler, ui *webui.Handler) http.Handler {
+func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.ReportAPI) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -159,6 +159,9 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler) http.Handler {
 	})
 	if ui != nil {
 		ui.Register(mux)
+	}
+	if reportAPI != nil {
+		reportAPI.Register(mux)
 	}
 	if gitHandler != nil {
 		mux.Handle("/", gitHandler)
@@ -179,17 +182,17 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler) http.Handler {
 // repos cache under GITMOTE_CACHE (default a temp dir). The push path listens on
 // GITMOTE_SOCK (default a temp path) and installs the pre-receive hook binary
 // at GITMOTE_HOOK (default gitmote-hook alongside this binary).
-func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *webui.Handler, func() error, error) {
+func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *webui.Handler, *ci.ReportAPI, func() error, error) {
 	noop := func() error { return nil }
 
 	if os.Getenv("GITMOTE_S3_BUCKET") == "" {
 		logger.Warn("GITMOTE_S3_BUCKET unset; git endpoints disabled (health/version only)")
-		return nil, nil, noop, nil
+		return nil, nil, nil, noop, nil
 	}
 
 	objs, err := store.NewS3FromEnv(ctx)
 	if err != nil {
-		return nil, nil, noop, fmt.Errorf("object store: %w", err)
+		return nil, nil, nil, noop, fmt.Errorf("object store: %w", err)
 	}
 
 	// RoleAuto: this instance becomes the writer when it can acquire the lease,
@@ -199,7 +202,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	// unchanged.
 	md, err := meta.Open(ctx, metaConfigFromEnv(logger, s3lite.RoleAuto))
 	if err != nil {
-		return nil, nil, noop, fmt.Errorf("metadata: %w", err)
+		return nil, nil, nil, noop, fmt.Errorf("metadata: %w", err)
 	}
 	md.OnPromote(func() {
 		logger.Info("became writer: acquired the lease", "generation", md.Generation())
@@ -212,7 +215,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	writer, err := githttp.NewWriter(md, objs, hookBinaryPath(), sockPath, logger)
 	if err != nil {
 		_ = md.Close()
-		return nil, nil, noop, fmt.Errorf("write path: %w", err)
+		return nil, nil, nil, noop, fmt.Errorf("write path: %w", err)
 	}
 	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
 	materializer := repo.New(md, objs, cacheRoot)
@@ -226,7 +229,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	if jobDefID != "" && (workerSecret == "" || gitmoteURL == "") {
 		_ = writer.Close()
 		_ = md.Close()
-		return nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but WORKER_SECRET or GITMOTE_URL is missing")
+		return nil, nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but WORKER_SECRET or GITMOTE_URL is missing")
 	}
 	jobs := scaleway.NewJobsClient(os.Getenv("SCW_SECRET_KEY"), envOr("SCW_REGION", os.Getenv("AWS_REGION")), jobDefID)
 	// A successful, branch-advancing push discovers its workflows, records a run,
@@ -240,6 +243,10 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		WorkerSecret: workerSecret,
 		Logger:       logger,
 	})
+	// The runner's authenticated claim/complete API. Only the leader may write
+	// completions (a follower returns a retryable 503), and it authenticates with
+	// the same WORKER_SECRET injected into the runner env.
+	reportAPI := ci.NewReportAPI(md, objs, md.IsLeader, workerSecret, logger)
 	writer.AfterCommit = func(ctx context.Context, commits []githttp.CommitInfo) {
 		for _, c := range commits {
 			dispatcher.Dispatch(ctx, ci.Event{
@@ -275,15 +282,15 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	})
 	if err != nil {
 		_ = cleanup()
-		return nil, nil, noop, err
+		return nil, nil, nil, noop, err
 	}
 
 	ui, err := buildUI(md, materializer, guard, logger)
 	if err != nil {
 		_ = cleanup()
-		return nil, nil, noop, err
+		return nil, nil, nil, noop, err
 	}
-	return handler, ui, cleanup, nil
+	return handler, ui, reportAPI, cleanup, nil
 }
 
 // buildUI constructs the management UI when GITMOTE_COOKIE_KEY is set; otherwise

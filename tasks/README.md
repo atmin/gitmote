@@ -17,8 +17,8 @@ index [16-ci.md](16-ci.md) (the *why* is in
 [../docs/evolution/ci-runner.md](../docs/evolution/ci-runner.md)). Split into
 dependency-ordered stages, each implementable from fresh context:
 
-- [21-ci-runner.md](21-ci-runner.md) — runner image + internal claim/complete API
-  (the execution stage; has an infra spike to resolve first).
+- [21-ci-runner.md](21-ci-runner.md) — **4b:** runner image + engine execution
+  (4a, the internal claim/complete API, has landed; has an infra spike first).
 - [22-ci-secrets.md](22-ci-secrets.md) — encrypted per-repo secrets store
   (AES-256-GCM + HKDF + versioned keys), injected at trigger.
 - [23-ci-status-ui.md](23-ci-status-ui.md) — runs list, run detail, log viewer,

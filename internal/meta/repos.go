@@ -70,6 +70,25 @@ func (m *Metadata) GetRepo(ctx context.Context, name string) (*Repo, error) {
 	return &r, nil
 }
 
+// GetRepoByID returns the repository with the given id, or ErrNotFound.
+func (m *Metadata) GetRepoByID(ctx context.Context, id int64) (*Repo, error) {
+	var (
+		r  Repo
+		ts string
+	)
+	err := m.db.QueryRowContext(ctx,
+		`SELECT id, name, default_branch, created_at FROM repos WHERE id = ?`, id).
+		Scan(&r.ID, &r.Name, &r.DefaultBranch, &ts)
+	if isNoRows(err) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.CreatedAt = parseTime(ts)
+	return &r, nil
+}
+
 // ListRepos returns all repositories ordered by name.
 func (m *Metadata) ListRepos(ctx context.Context) ([]Repo, error) {
 	rows, err := m.db.QueryContext(ctx,
