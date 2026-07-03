@@ -17,3 +17,7 @@ live in [../docs/evolution/](../docs/evolution/).
   object hydration. First, separable slice of bounded hydration; the full
   per-operation closure for data POSTs is deferred (needs a reachability index —
   see [../docs/notes/object-hydration.md](../docs/notes/object-hydration.md)).
+- [14-browse-repo.md](14-browse-repo.md) — read-only repo browsing in the web UI
+  (admin-gated): tree, blob, raw download, commit log, single-commit diff, ref
+  switcher — all cheap `git` plumbing over the already-materialized repo. No
+  syntax highlighting / markdown rendering yet.
