@@ -1,5 +1,7 @@
 # gitmote
 
+> *Your own, personal, GitHub.*
+
 A tiny self-hosted git remote. One Go container speaks git's smart-HTTP
 protocol; repositories live in S3-compatible object storage and mutable metadata
 (refs, users, keys, access) in [s3lite](https://github.com/atmin/s3lite). Use it
@@ -12,8 +14,10 @@ backed to S3) — so the only genuinely hard problem, atomic ref updates, become
 single SQL transaction.
 
 **Status:** early implementation — git read/write over smart-HTTP works
-(clone/fetch/push with token auth and per-repo ACLs), and gitmote can host its
-own source repo end-to-end against MinIO (`make e2e-local`). The design lives in
+(clone/fetch/push with token auth and per-repo ACLs), and gitmote hosts its own
+source repo end-to-end: locally against MinIO (`make e2e-local`) and in
+production on Scaleway Object Storage at
+[gitmote.atmin.net](https://gitmote.atmin.net). The design lives in
 [docs/architecture/](docs/architecture/).
 
 ## Run it locally
@@ -54,3 +58,7 @@ manage per-repo ACLs — live in a small server-rendered web UI under `/ui`. Set
 runs alongside the git server. Sign in at `/login` by pasting an **admin** token
 (the same PAT format git uses); the server issues a signed, stateless session
 cookie. Access is limited to global admins.
+
+---
+
+<sub>`git push gitmote` — reach out and touch faith. 🎶</sub>
