@@ -88,6 +88,11 @@ text / "binary — download" for binary + raw link), `browse_commits.html` (log
 rows linking to each commit, "more" marker when capped), `browse_commit.html`
 (commit metadata + `<pre>` diff).
 
+Keep the blob template's text branch a **single, isolated render block** (the
+bare `<pre>{{...}}</pre>`) so [task 15](15-highlight-and-markdown.md) can swap it
+for highlighted / rendered HTML without touching the reader API or routing — that
+task is purely additive on top of this seam.
+
 **Safety / notes:**
 
 - **Path traversal / injection:** repo name is already validated by

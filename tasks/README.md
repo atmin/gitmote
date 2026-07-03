@@ -16,3 +16,6 @@ live in [../docs/evolution/](../docs/evolution/).
   (admin-gated): tree, blob, raw download, commit log, single-commit diff, ref
   switcher — all cheap `git` plumbing over the already-materialized repo. No
   syntax highlighting / markdown rendering yet.
+- [15-highlight-and-markdown.md](15-highlight-and-markdown.md) — layer syntax
+  highlighting (chroma) and markdown/README rendering (goldmark + bluemonday
+  sanitize) onto the browse UI. Purely additive on task 14's blob/tree templates.
