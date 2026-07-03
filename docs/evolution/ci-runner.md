@@ -13,6 +13,17 @@ gitmote + a serverless runner execute your code, and GitHub becomes a plain
 `git push` mirror — a second remote, not the origin of anything. Self-hosting
 stops being a downgrade.
 
+The loop then closes on itself: a push runs CI **and redeploys gitmote** —
+gitmote hosting, building, and shipping its own next version. That used to be the
+scary case (an instance replacing itself mid-write is the two-writer hazard), but
+the **leased writer** ([reader-writer-split](reader-writer-split.md), now shipped)
+makes it safe by construction: the new image boots as a follower, the old releases
+the lease on SIGTERM, the new promotes — the ouroboros never has two writers. The
+GitHub mirror then earns a second job: **break-glass.** If a bad push ever wedges
+the self-deploy loop, GitHub is an independent clean copy to redeploy from by
+hand — a backup that happens to also be a mirror. That recovery path is *why* the
+mirror is load-bearing, not a nicety.
+
 ## Why it fits the existing design
 
 CI doesn't bolt on; it reuses seams already built:
@@ -39,15 +50,29 @@ gitmote supplies the forge around the engine, not the executor.
 ## Runner substrate: Scaleway Serverless Jobs
 
 Almost purpose-built: a finite task that scales to zero — the same "wake, work,
-idle" shape as gitmote itself. A job spins up, clones from gitmote (it speaks
-git), runs the engine, reports back, dies. (Serverless Containers for anything
-long-lived or interactive.)
+idle" shape as gitmote itself, and with a real Docker daemon + CPU the Container
+can't offer. A job spins up, clones from gitmote (it speaks git), runs the engine,
+reports back, dies. (Serverless Containers stay for the always-warm writer;
+long-running batch work is exactly what Jobs are for — already proven in a sibling
+project.)
 
 ## Precedent
 
 **Forgejo / Gitea Actions** is a small self-hosted forge running an
 Actions-compatible runner (`act_runner`, built on act's engine). "Small forge +
 reused engine + Actions compat" ships today — this isn't hypothetical.
+
+## Trigger & deploy discipline
+
+- **Thin, fire-and-forget trigger.** The post-receive hook dispatches the run
+  *after* the ref CAS commits and never blocks the push on it. A failed dispatch
+  is a **missed deploy, not a failed push** — log it and move on. Same rule as
+  content-before-pointer: the user's push succeeding must not depend on the deploy
+  machinery.
+- **Latest-wins on deploy.** Rapid pushes race; the lease keeps that *safe* (never
+  two writers), but a slow run could still ship an older SHA after a newer one.
+  Guard: the deploy step no-ops unless its target SHA is still the branch tip in
+  gitmote — a stale run deploys nothing rather than regressing prod.
 
 ## Honest caveats
 
@@ -62,8 +87,16 @@ reused engine + Actions compat" ships today — this isn't hypothetical.
 
 ## Open threads
 
-- Which engine — `act` (Actions compat) vs Woodpecker (simplicity). Decided by
-  whether Actions compatibility actually matters to you.
+- Which engine — `act` (runs `.github/workflows` YAML, ~80% Actions-compatible)
+  vs Woodpecker (Drone-lineage, its own `.woodpecker.yml` format, no Actions
+  compat). Not a neutral toss-up given the mirror: `act` keeps **one** CI
+  definition that runs both self-hosted *and* on the GitHub mirror, so the
+  break-glass redeploy path uses the same workflow — Actions-compat is
+  **load-bearing here, not a preference.** Woodpecker's simplicity means **two**
+  CI definitions (`.woodpecker.yml` for gitmote, `.github/workflows/` for the
+  mirror) that drift, quietly weakening the "GitHub as clean redeploy" guarantee.
+  Pick Woodpecker only if the mirror running identical CI genuinely doesn't matter.
 - Workflow file location and format.
 - Concurrency: runs are _dispatched_ by the single writer but _execute_ in
-  parallel on Scaleway; only result-reporting funnels back through the writer.
+  parallel on Scaleway; only result-reporting funnels back through the writer. The
+  latest-wins deploy guard (above) keeps parallel runs from racing prod backwards.
