@@ -16,7 +16,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/gitmote-runner ./cmd/gitmote-runner
 
 FROM debian:bookworm-slim
-ARG ACT_VERSION=0.2.80
+ARG ACT_VERSION=0.2.89
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates curl bash tar \
  && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
