@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -166,6 +167,78 @@ func assertRepo(t *testing.T, dir, branch, head string) {
 		t.Errorf("HEAD = %q, want refs/heads/%s", got, branch)
 	}
 	git(t, dir, "fsck", "--strict") // fails the test on any corruption/missing object
+}
+
+// spyStore wraps a Store and counts Get calls, so a test can assert the
+// advertisement path never touches an object.
+type spyStore struct {
+	store.Store
+	gets int
+}
+
+func (s *spyStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	s.gets++
+	return s.Store.Get(ctx, key)
+}
+
+// advertise runs `git upload-pack --advertise-refs` against dir — exactly what
+// the info/refs GET serves — and returns its output, failing on a nonzero exit.
+func advertise(t *testing.T, dir string) string {
+	t.Helper()
+	return git(t, "", "upload-pack", "--advertise-refs", dir)
+}
+
+func TestMaterializeRefsNoObjects(t *testing.T) {
+	ctx := context.Background()
+	m := openMeta(t)
+	s := &spyStore{Store: store.NewMem()}
+	const repoName = "atmin/dotfiles"
+	branch, head := seedRepo(t, m, s, repoName, false)
+
+	// An annotated tag: meta points the ref at the tag object, which is never
+	// hydrated. The advertisement must still list it.
+	tag := "refs/tags/v1"
+	r, err := m.GetRepo(ctx, repoName)
+	if err != nil {
+		t.Fatalf("GetRepo: %v", err)
+	}
+	tagSHA := "1234567890123456789012345678901234567890"
+	if err := m.CASRef(ctx, r.ID, tag, meta.ZeroSHA, tagSHA); err != nil {
+		t.Fatalf("CASRef tag: %v", err)
+	}
+
+	mz := New(m, s, t.TempDir())
+	s.gets = 0 // seedRepo did no Gets, but be explicit.
+	dir, err := mz.MaterializeRefs(ctx, repoName)
+	if err != nil {
+		t.Fatalf("MaterializeRefs: %v", err)
+	}
+	if s.gets != 0 {
+		t.Errorf("MaterializeRefs called store.Get %d times, want 0", s.gets)
+	}
+
+	// The advertisement lists exactly the meta refs and their SHAs, with HEAD
+	// tracking the default branch — all with no objects on disk.
+	adv := advertise(t, dir)
+	for _, want := range []string{
+		head + " refs/heads/" + branch,
+		tagSHA + " " + tag,
+		"symref=HEAD:refs/heads/" + branch,
+	} {
+		if !strings.Contains(adv, want) {
+			t.Errorf("advertisement missing %q\n%s", want, adv)
+		}
+	}
+	// MVP omits the annotated-tag peel line (the tag object is absent).
+	if strings.Contains(adv, tag+"^{}") {
+		t.Errorf("advertisement unexpectedly carries a peel line for %s\n%s", tag, adv)
+	}
+	// No object was ever written to disk.
+	if entries, err := os.ReadDir(filepath.Join(dir, "objects", "pack")); err != nil {
+		t.Fatalf("ReadDir objects/pack: %v", err)
+	} else if len(entries) != 0 {
+		t.Errorf("objects/pack has %d entries, want 0 (no hydration)", len(entries))
+	}
 }
 
 func TestMaterializeUnknownRepo(t *testing.T) {

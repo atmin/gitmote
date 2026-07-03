@@ -44,19 +44,71 @@ func (mz *Materializer) Root() string { return mz.root }
 //
 // Hydration policy is full-hydrate for the MVP (see task 04 /
 // docs/notes/object-hydration.md): every object under the repo's store prefix
-// is pulled. gitmote's own repo is tiny, so this is the safe, simple first cut;
-// bounded per-operation closures are a later optimization.
+// is pulled. This is the path for the data POSTs (upload-pack / receive-pack)
+// that actually transfer history; the info/refs advertisement is served
+// objectless via MaterializeRefs. gitmote's own repo is tiny, so full-hydrate
+// on the data path is the safe, simple first cut; bounded per-operation
+// closures are a later optimization.
 func (mz *Materializer) Materialize(ctx context.Context, name string) (string, error) {
 	r, err := mz.meta.GetRepo(ctx, name)
 	if err != nil {
 		return "", err
 	}
 
-	dir, err := mz.repoDir(name)
+	dir, err := mz.ensureRepo(ctx, name)
 	if err != nil {
 		return "", err
 	}
 
+	if err := mz.hydrateObjects(ctx, name, dir); err != nil {
+		return "", err
+	}
+	if err := mz.writeRefs(ctx, dir, r); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// MaterializeRefs ensures a bare repo for name exists and makes its ref
+// advertisement current — without hydrating a single object. It writes
+// packed-refs directly from the metadata layer (not update-ref, which requires
+// each target object present) and points HEAD at the default branch. This
+// serves the info/refs GET, which lists refs but transfers no history — the
+// first slice of bounded hydration (docs/notes/object-hydration.md). Returns
+// meta.ErrNotFound if the repo is unknown.
+//
+// MVP omits annotated-tag ^{} peel lines: git still advertises the tag ref and
+// merely drops the peel hint (a lost negotiation optimization, not a
+// correctness issue). A refs-only packed-refs and a later full Materialize's
+// loose refs coexist on disk — loose refs override, which is correct.
+func (mz *Materializer) MaterializeRefs(ctx context.Context, name string) (string, error) {
+	r, err := mz.meta.GetRepo(ctx, name)
+	if err != nil {
+		return "", err
+	}
+
+	dir, err := mz.ensureRepo(ctx, name)
+	if err != nil {
+		return "", err
+	}
+
+	refs, err := mz.meta.ListRefs(ctx, r.ID)
+	if err != nil {
+		return "", err
+	}
+	if err := writePackedRefs(dir, refs); err != nil {
+		return "", err
+	}
+	return dir, setHEAD(ctx, dir, r.DefaultBranch)
+}
+
+// ensureRepo maps name to its cache dir and guarantees a bare repo exists there,
+// creating one on a cache miss (rebuild-on-miss). It touches no refs or objects.
+func (mz *Materializer) ensureRepo(ctx context.Context, name string) (string, error) {
+	dir, err := mz.repoDir(name)
+	if err != nil {
+		return "", err
+	}
 	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", err
@@ -65,13 +117,6 @@ func (mz *Materializer) Materialize(ctx context.Context, name string) (string, e
 			return "", err
 		}
 	} else if err != nil {
-		return "", err
-	}
-
-	if err := mz.hydrateObjects(ctx, name, dir); err != nil {
-		return "", err
-	}
-	if err := mz.writeRefs(ctx, dir, r); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -159,9 +204,56 @@ func (mz *Materializer) writeRefs(ctx context.Context, dir string, r *meta.Repo)
 			return err
 		}
 	}
-	// HEAD is derived from default_branch, not stored as a ref (storage.md).
-	// symbolic-ref is happy to point at a branch that has no commits yet.
-	return runGit(ctx, dir, "symbolic-ref", "HEAD", path.Join("refs/heads", r.DefaultBranch))
+	return setHEAD(ctx, dir, r.DefaultBranch)
+}
+
+// writePackedRefs overwrites the repo's packed-refs file from refs, atomically
+// (temp file + rename, so a concurrent reader never sees a torn file). Each line
+// is "<sha> <refname>"; the MVP writes no ^{} peel lines and no traits header,
+// so git peels from the objects when present and simply omits the peel hint when
+// they are absent — exactly the objectless-advertisement behavior we want. git
+// advertises refs whose target objects are absent, which is the whole point.
+func writePackedRefs(dir string, refs []meta.Ref) error {
+	var b strings.Builder
+	for _, ref := range refs {
+		b.WriteString(ref.SHA)
+		b.WriteByte(' ')
+		b.WriteString(ref.Name)
+		b.WriteByte('\n')
+	}
+	return writeFileAtomic(filepath.Join(dir, "packed-refs"), []byte(b.String()))
+}
+
+// setHEAD points the repo's HEAD at the default branch. HEAD is derived from
+// default_branch, not stored as a ref (storage.md); symbolic-ref is happy to
+// point at a branch that has no commits yet.
+func setHEAD(ctx context.Context, dir, defaultBranch string) error {
+	return runGit(ctx, dir, "symbolic-ref", "HEAD", path.Join("refs/heads", defaultBranch))
+}
+
+// writeFileAtomic writes data to path via a temp file in the same directory
+// followed by a rename, so a reader observes either the old file or the complete
+// new one, never a partial write.
+func writeFileAtomic(dst string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".packed-refs-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // runGit runs a git subcommand, using dir as the working directory when set.

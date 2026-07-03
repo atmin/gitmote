@@ -123,7 +123,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Read, or a receive-pack advertisement: materialize then hand off to
 	// http-backend. The receive advertisement needs http.receivepack enabled.
-	if !h.materialize(w, r, repoName) {
+	//
+	// The info/refs advertisement only lists refs, so it materializes refs
+	// alone — no object hydration (task 13 / docs/notes/object-hydration.md).
+	// The upload-pack POST that transfers history still full-hydrates.
+	materialized := h.materialize
+	if endpoint == "info/refs" {
+		materialized = h.materializeRefs
+	}
+	if !materialized(w, r, repoName) {
 		return
 	}
 	var extra []string
@@ -170,7 +178,22 @@ func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, repoN
 // materialize builds the on-disk repo, writing the HTTP error itself on failure
 // and returning false so the caller stops.
 func (h *Handler) materialize(w http.ResponseWriter, r *http.Request, repoName string) bool {
-	if _, err := h.mz.Materialize(r.Context(), repoName); err != nil {
+	_, err := h.mz.Materialize(r.Context(), repoName)
+	return h.finishMaterialize(w, r, repoName, err)
+}
+
+// materializeRefs makes the repo's ref advertisement current without hydrating
+// objects — the info/refs path. It has the same signature and error handling as
+// materialize.
+func (h *Handler) materializeRefs(w http.ResponseWriter, r *http.Request, repoName string) bool {
+	_, err := h.mz.MaterializeRefs(r.Context(), repoName)
+	return h.finishMaterialize(w, r, repoName, err)
+}
+
+// finishMaterialize maps a materialize error to the HTTP response, writing a 404
+// for an unknown repo and a 500 otherwise, and returns whether it succeeded.
+func (h *Handler) finishMaterialize(w http.ResponseWriter, r *http.Request, repoName string, err error) bool {
+	if err != nil {
 		if errors.Is(err, meta.ErrNotFound) {
 			http.NotFound(w, r)
 			return false
