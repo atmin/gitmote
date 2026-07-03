@@ -115,6 +115,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /login", h.postLogin)
 	mux.HandleFunc("POST /logout", h.postLogout)
 
+	// The bare root is the git smart-HTTP catch-all's territory, but a browser
+	// hitting it should land in the UI rather than a 404. GET /{$} matches only
+	// the exact root, so it never shadows a repo path (/owner/repo/…). Registered
+	// with the UI, so it exists only when the UI does.
+	mux.HandleFunc("GET /{$}", h.redirectRepos)
+
 	mux.HandleFunc("GET /ui/{$}", h.requireAdmin(h.redirectRepos))
 	mux.HandleFunc("GET /ui/repos", h.requireAdmin(h.getRepos))
 	mux.HandleFunc("POST /ui/repos", h.requireAdmin(h.postRepo))

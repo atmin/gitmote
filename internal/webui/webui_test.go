@@ -112,6 +112,19 @@ func (x *harness) login(raw string) *http.Cookie {
 	return nil
 }
 
+// TestRootRedirectsToUI: the bare root sends a browser into the UI instead of
+// 404ing. It matches only the exact root, leaving repo paths to the git handler.
+func TestRootRedirectsToUI(t *testing.T) {
+	x := newHarness(t)
+	rec := x.do(http.MethodGet, "/", nil, nil)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("GET / = %d, want 303", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/ui/repos" {
+		t.Errorf("GET / redirected to %q, want /ui/repos", loc)
+	}
+}
+
 func TestGoldenPath(t *testing.T) {
 	x := newHarness(t)
 	ctx := context.Background()
