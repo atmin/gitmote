@@ -96,13 +96,15 @@ cold start (scale-to-zero → wake, or a redeploy) the DB is restored from
 proven locally by `make e2e-restore` (wipes the DB volume, confirms the repo
 still clones).
 
-Memory: **1 GB** (`memory-limit-bytes=1GB` — the CLI requires a `G`/`GB` unit).
-`git index-pack` / `receive-pack` need far more than a stateless signer; 1 GB
-gives headroom and, at `min-scale=0`, is idle-billed. Tune from logs.
+Resources: **250 mVCPU / 512 MB / 2 GB ephemeral** (`cpu-limit=250`,
+`memory-limit-bytes=512MB` — the CLI requires a `G`/`GB`/`MB` unit). Observed
+usage sits well under these; 256 MB was already plenty for `git index-pack` /
+`receive-pack`. Memory is set to 512 MB only to unlock the larger ephemeral
+scratch tier (2 GB `/tmp`), not for RAM headroom. Tune from logs.
 
 Scale: **`min-scale = 0`** (idle to zero). A remote pushed to occasionally is idle
-almost always, and always-on at 1 GB far exceeds Scaleway's free tier (~2.6M GB-s/mo
-vs 400k), so scale-to-zero is the cheaper default. The cost is a few seconds of
+almost always, and even at 512 MB always-on exceeds Scaleway's free tier
+(~2.6M GB-s/mo vs 400k), so scale-to-zero is the cheaper default. The cost is a few seconds of
 cold start on the first request after idle (restore + materialize, the path above);
 scale-down is a graceful SIGTERM, so the shutdown `Sync` flushes the WAL — no lost
 writes. Set `min-scale = 1` only if instant first-push latency is worth the
@@ -150,15 +152,18 @@ docker build --platform=linux/amd64 -t rg.fr-par.scw.cloud/atmin/gitmote:master 
 docker push rg.fr-par.scw.cloud/atmin/gitmote:master
 
 # 3. Create the container (single writer: min-scale=0 idle-to-zero, max-scale=1).
-#    Arg names per the current CLI: image= (not registry-image), memory-limit-bytes,
-#    and key-based (secret-)environment-variables.KEY=value. Only credentials and
-#    the cookie key are secret; the rest are plain environment-variables.
+#    Arg names per the current CLI: image= (not registry-image), cpu-limit (mVCPU),
+#    memory-limit-bytes, and key-based (secret-)environment-variables.KEY=value.
+#    Only credentials and the cookie key are secret; the rest are plain
+#    environment-variables. The ephemeral /tmp scratch tier is coupled to the
+#    memory tier — 512 MB unlocks 2 GB scratch (set in the console).
 scw container container create \
   namespace-id=<NAMESPACE_ID> \
   name=gitmote \
   image=rg.fr-par.scw.cloud/atmin/gitmote:master \
   min-scale=0 max-scale=1 \
-  memory-limit-bytes=1GB \
+  cpu-limit=250 \
+  memory-limit-bytes=512MB \
   port=8080 \
   environment-variables.GITMOTE_S3_BUCKET=gitmote \
   environment-variables.GITMOTE_S3_PREFIX=objects/ \
