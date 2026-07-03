@@ -12,6 +12,7 @@ require (
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/yuin/goldmark v1.8.2
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -43,6 +44,7 @@ require (
 	github.com/hablullah/go-juliandays v1.0.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/jalaali/go-jalaali v0.0.0-20210801064154-80525e88d958 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/lmittmann/tint v1.1.3 // indirect
 	github.com/magefile/mage v1.14.0 // indirect
 	github.com/markusmobius/go-dateparser v1.2.4 // indirect

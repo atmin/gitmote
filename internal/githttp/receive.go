@@ -47,10 +47,12 @@ type Writer struct {
 	// push after the objects are already durable.
 	beforeCAS func() error
 
-	// AfterCommit, when set, runs once after the ref CAS succeeds, before the
-	// push returns OK. It is fire-and-forget: the push has already committed, so
-	// any panic or slowness must not fail the push (content-before-pointer
-	// applied to CI — safety.md §3). It receives one CommitInfo per updated ref.
+	// AfterCommit, when set, runs once per push that advanced refs — fired by the
+	// HTTP handler after receive-pack has fully finished (see FireAfterCommit), so
+	// the on-disk repo already reflects the new refs. It is fire-and-forget: the
+	// push has already committed, so any panic or slowness must not fail the push
+	// (content-before-pointer applied to CI — safety.md §3). It receives one
+	// CommitInfo per updated ref.
 	AfterCommit func(context.Context, []CommitInfo)
 }
 
@@ -73,6 +75,28 @@ const afterCommitTimeout = 30 * time.Second
 type pushOp struct {
 	repoID   int64
 	repoName string
+	outcome  *pushOutcome
+}
+
+// pushOutcome collects the refs a push committed. The hook callback (Writer.handle)
+// fills it after a successful CAS; the HTTP handler reads it after receive-pack
+// finishes, to fire the after-commit hook. Guarded by its mutex so the write in
+// the socket goroutine is visible to the read in the request goroutine.
+type pushOutcome struct {
+	mu      sync.Mutex
+	commits []CommitInfo
+}
+
+func (o *pushOutcome) record(commits []CommitInfo) {
+	o.mu.Lock()
+	o.commits = commits
+	o.mu.Unlock()
+}
+
+func (o *pushOutcome) committed() []CommitInfo {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.commits
 }
 
 // NewWriter starts the write coordinator: it installs the pre-receive hook
@@ -129,11 +153,16 @@ func (w *Writer) SockPath() string { return w.sockPath }
 // and Release drops the per-repo lock and burns the nonce.
 type Push struct {
 	Nonce   string
+	outcome *pushOutcome
 	release func()
 }
 
 // Release ends the push, unlocking the repo and discarding the nonce.
 func (p *Push) Release() { p.release() }
+
+// Committed returns the refs this push advanced, available once receive-pack has
+// run. It is empty for a rejected or no-op push.
+func (p *Push) Committed() []CommitInfo { return p.outcome.committed() }
 
 // Begin starts a push: it resolves the repo, takes the per-repo write lock (so
 // pushes to one repo serialize), and mints a nonce bound to this operation. The
@@ -146,13 +175,15 @@ func (w *Writer) Begin(ctx context.Context, repoName string) (*Push, error) {
 	}
 	lk := w.lockRepo(repoName)
 	lk.Lock()
-	nonce, err := w.register(pushOp{repoID: repo.ID, repoName: repoName})
+	outcome := &pushOutcome{}
+	nonce, err := w.register(pushOp{repoID: repo.ID, repoName: repoName, outcome: outcome})
 	if err != nil {
 		lk.Unlock()
 		return nil, err
 	}
 	return &Push{
-		Nonce: nonce,
+		Nonce:   nonce,
+		outcome: outcome,
 		release: func() {
 			w.unregister(nonce)
 			lk.Unlock()
@@ -243,26 +274,10 @@ func (w *Writer) handle(req hookrpc.Request) hookrpc.Response {
 		return hookrpc.Response{Reason: "ref update failed"}
 	}
 
-	// The push is committed. Fire the after-commit hook fire-and-forget: it must
-	// never turn a green push red.
-	w.fireAfterCommit(op, req.Commands)
-	return hookrpc.Response{OK: true}
-}
-
-// fireAfterCommit invokes the after-commit hook (if set) under its own bounded
-// context, recovering any panic. The ref CAS has already committed, so a failure
-// here is a missed dispatch, never a failed push.
-func (w *Writer) fireAfterCommit(op pushOp, cmds []hookrpc.RefCommand) {
-	if w.AfterCommit == nil {
-		return
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			w.logger.Error("after-commit hook panicked", "repo", op.repoName, "panic", r)
-		}
-	}()
-	commits := make([]CommitInfo, len(cmds))
-	for i, c := range cmds {
+	// The push is committed. Record what advanced so the HTTP handler can fire the
+	// after-commit hook once receive-pack has finished (see FireAfterCommit).
+	commits := make([]CommitInfo, len(req.Commands))
+	for i, c := range req.Commands {
 		commits[i] = CommitInfo{
 			RepoID:   op.repoID,
 			RepoName: op.repoName,
@@ -271,6 +286,24 @@ func (w *Writer) fireAfterCommit(op pushOp, cmds []hookrpc.RefCommand) {
 			New:      c.New,
 		}
 	}
+	op.outcome.record(commits)
+	return hookrpc.Response{OK: true}
+}
+
+// FireAfterCommit runs the after-commit hook for a completed push. The HTTP
+// handler calls it after receive-pack has fully finished, so the on-disk repo
+// already reflects the new refs and a dispatch's Materialize is a warm no-op
+// rather than a ref update that races receive-pack's own. It is fire-and-forget:
+// the push has already committed, so any panic or error must not fail the push.
+func (w *Writer) FireAfterCommit(commits []CommitInfo) {
+	if w.AfterCommit == nil || len(commits) == 0 {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			w.logger.Error("after-commit hook panicked", "panic", r)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), afterCommitTimeout)
 	defer cancel()
 	w.AfterCommit(ctx, commits)

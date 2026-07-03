@@ -226,9 +226,11 @@ func TestPushChunkedLargePack(t *testing.T) {
 }
 
 // wireDispatcher points the writer's after-commit hook at a real ci.Dispatcher
-// backed by m, mirroring the main.go wiring.
-func wireDispatcher(w *Writer, m *meta.Metadata) {
-	d := ci.NewDispatcher(m, slog.New(slog.DiscardHandler))
+// reading workflow config through a materializer over store s, mirroring the
+// main.go wiring.
+func wireDispatcher(t *testing.T, w *Writer, m *meta.Metadata, s store.Store) {
+	t.Helper()
+	d := ci.NewDispatcher(m, repo.New(m, s, t.TempDir()), slog.New(slog.DiscardHandler))
 	w.AfterCommit = func(ctx context.Context, commits []CommitInfo) {
 		for _, c := range commits {
 			d.Dispatch(ctx, ci.Event{
@@ -242,12 +244,34 @@ func wireDispatcher(w *Writer, m *meta.Metadata) {
 	}
 }
 
-// TestAfterCommitEnqueuesRun drives a real git push and asserts the after-commit
-// seam records exactly one queued run for the advanced branch tip.
+// initWorkflowCommit makes a source repo whose first commit carries a valid
+// workflow, so a push through the dispatcher discovers work and enqueues a run.
+func initWorkflowCommit(t *testing.T) string {
+	t.Helper()
+	src := t.TempDir()
+	git(t, src, "init", "-b", "main", ".")
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(src, ".github", "workflows"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".github", "workflows", "ci.yml"),
+		[]byte("name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "add", "-A")
+	git(t, src, "commit", "-m", "commit")
+	return src
+}
+
+// TestAfterCommitEnqueuesRun drives a real git push of a repo with a workflow
+// and asserts the after-commit seam discovers it and records one queued run and
+// job for the advanced branch tip.
 func TestAfterCommitEnqueuesRun(t *testing.T) {
 	ctx := context.Background()
-	srv, m, _, writer := newWriteServer(t)
-	wireDispatcher(writer, m)
+	srv, m, s, writer := newWriteServer(t)
+	wireDispatcher(t, writer, m, s)
 
 	r, err := m.CreateRepo(ctx, repoName, "main")
 	if err != nil {
@@ -256,7 +280,7 @@ func TestAfterCommitEnqueuesRun(t *testing.T) {
 	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
 	remote := authedURL(srv.URL, raw) + "/" + repoName
 
-	src := initCommit(t, "hello\n")
+	src := initWorkflowCommit(t)
 	head := git(t, src, "rev-parse", "HEAD")
 	git(t, src, "push", remote, "main")
 
@@ -270,21 +294,44 @@ func TestAfterCommitEnqueuesRun(t *testing.T) {
 	if runs[0].Ref != "refs/heads/main" || runs[0].SHA != head || runs[0].Status != meta.RunQueued {
 		t.Errorf("run = %+v, want ref refs/heads/main sha %q queued", runs[0], head)
 	}
+	jobs, _ := m.ListJobs(ctx, runs[0].ID)
+	if len(jobs) != 1 || jobs[0].Name != "ci.yml" {
+		t.Errorf("jobs = %+v, want one job named ci.yml", jobs)
+	}
+}
+
+// TestAfterCommitNoWorkflowNoRun confirms the discovery gate end-to-end: a real
+// push of a repo without .github/workflows records no run.
+func TestAfterCommitNoWorkflowNoRun(t *testing.T) {
+	ctx := context.Background()
+	srv, m, s, writer := newWriteServer(t)
+	wireDispatcher(t, writer, m, s)
+
+	r, _ := m.CreateRepo(ctx, repoName, "main")
+	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
+	remote := authedURL(srv.URL, raw) + "/" + repoName
+
+	src := initCommit(t, "hello\n") // no workflow file
+	git(t, src, "push", remote, "main")
+
+	if runs, _ := m.ListRuns(ctx, r.ID, 0); len(runs) != 0 {
+		t.Errorf("runs = %d, want 0 (no workflows)", len(runs))
+	}
 }
 
 // TestRejectedPushEnqueuesNoRun asserts a non-fast-forward push — refused at the
 // CAS — never fires the after-commit seam, so no run is recorded for it.
 func TestRejectedPushEnqueuesNoRun(t *testing.T) {
 	ctx := context.Background()
-	srv, m, _, writer := newWriteServer(t)
-	wireDispatcher(writer, m)
+	srv, m, s, writer := newWriteServer(t)
+	wireDispatcher(t, writer, m, s)
 
 	r, _ := m.CreateRepo(ctx, repoName, "main")
 	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
 	remote := authedURL(srv.URL, raw) + "/" + repoName
 
-	// Establish main (one accepted push → one run).
-	src := initCommit(t, "one\n")
+	// Establish main with a workflow (one accepted push → one run).
+	src := initWorkflowCommit(t)
 	git(t, src, "push", remote, "main")
 
 	// A stale clone diverges and pushes a non-fast-forward, which is rejected.

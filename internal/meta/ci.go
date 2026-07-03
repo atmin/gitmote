@@ -2,6 +2,7 @@ package meta
 
 import (
 	"context"
+	"database/sql"
 	"time"
 )
 
@@ -131,4 +132,90 @@ func (m *Metadata) ListRuns(ctx context.Context, repoID int64, limit int) ([]Run
 		runs = append(runs, r)
 	}
 	return runs, rows.Err()
+}
+
+// Job is one unit of a run: a single workflow file. Name is the workflow file's
+// base name (stage 2); LogKey is the ci/ object key, set on completion (stage 4).
+type Job struct {
+	ID        int64
+	RunID     int64
+	Name      string
+	Status    RunStatus
+	LogKey    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// CreateJob records a queued job under a run and returns it.
+func (m *Metadata) CreateJob(ctx context.Context, runID int64, name string) (*Job, error) {
+	ts := now()
+	res, err := m.db.ExecContext(ctx,
+		`INSERT INTO ci_jobs (run_id, name, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		runID, name, string(RunQueued), ts, ts)
+	if err != nil {
+		return nil, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	return &Job{
+		ID:        id,
+		RunID:     runID,
+		Name:      name,
+		Status:    RunQueued,
+		CreatedAt: parseTime(ts),
+		UpdatedAt: parseTime(ts),
+	}, nil
+}
+
+// SetJobStatus transitions a job to status. It returns ErrNotFound when no job
+// has the given id.
+func (m *Metadata) SetJobStatus(ctx context.Context, jobID int64, status RunStatus) error {
+	res, err := m.db.ExecContext(ctx,
+		`UPDATE ci_jobs SET status = ?, updated_at = ? WHERE id = ?`,
+		string(status), now(), jobID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListJobs returns a run's jobs ordered by creation (id).
+func (m *Metadata) ListJobs(ctx context.Context, runID int64) ([]Job, error) {
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT id, run_id, name, status, log_key, created_at, updated_at
+		   FROM ci_jobs WHERE run_id = ? ORDER BY id`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var (
+			j      Job
+			status string
+			logKey sql.NullString
+			cts    string
+			uts    string
+		)
+		if err := rows.Scan(&j.ID, &j.RunID, &j.Name, &status, &logKey, &cts, &uts); err != nil {
+			return nil, err
+		}
+		j.Status = RunStatus(status)
+		j.LogKey = logKey.String
+		j.CreatedAt = parseTime(cts)
+		j.UpdatedAt = parseTime(uts)
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
 }

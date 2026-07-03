@@ -173,6 +173,12 @@ func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, repoN
 		"GITMOTE_NONCE="+push.Nonce,
 	)
 	h.serveCGI(w, r, extra)
+
+	// receive-pack has finished (response flushed, on-disk refs updated). Fire the
+	// after-commit hook now, so a CI dispatch reads a warm, consistent repo — never
+	// racing receive-pack's ref finalization. Fire-and-forget: it never fails the
+	// already-committed push.
+	h.writer.FireAfterCommit(push.Committed())
 }
 
 // materialize builds the on-disk repo, writing the HTTP error itself on failure

@@ -213,9 +213,11 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		_ = md.Close()
 		return nil, nil, noop, fmt.Errorf("write path: %w", err)
 	}
-	// A successful, branch-advancing push enqueues a CI run — fire-and-forget, so
-	// dispatch never fails the push (tasks/16-ci.md).
-	dispatcher := ci.NewDispatcher(md, logger)
+	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
+	materializer := repo.New(md, objs, cacheRoot)
+	// A successful, branch-advancing push discovers its workflows and enqueues a
+	// CI run — fire-and-forget, so dispatch never fails the push (tasks/16-ci.md).
+	dispatcher := ci.NewDispatcher(md, materializer, logger)
 	writer.AfterCommit = func(ctx context.Context, commits []githttp.CommitInfo) {
 		for _, c := range commits {
 			dispatcher.Dispatch(ctx, ci.Event{
@@ -242,8 +244,6 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	}
 
 	guard := auth.NewGuard(md)
-	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
-	materializer := repo.New(md, objs, cacheRoot)
 	handler, err := githttp.New(githttp.Config{
 		Materializer: materializer,
 		Authorizer:   guard,
