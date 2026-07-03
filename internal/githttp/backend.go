@@ -14,9 +14,11 @@ package githttp
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/cgi"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -184,6 +186,22 @@ func (h *Handler) materialize(w http.ResponseWriter, r *http.Request, repoName s
 // path (empty CGI Root) and GIT_PROJECT_ROOT is the cache root, so http-backend
 // resolves the repo dir the materializer just wrote.
 func (h *Handler) serveCGI(w http.ResponseWriter, r *http.Request, extraEnv []string) {
+	// git http-backend runs via CGI and needs CONTENT_LENGTH. A request with an
+	// unknown length — chunked transfer-encoding, which git uses for a pack larger
+	// than the client's http.postBuffer (default 1 MiB) — carries none, and
+	// http-backend rejects it with 400. Buffer such a body to a temp file to give
+	// it a fixed length before handing off, so a large push works with no client
+	// http.postBuffer tuning. Bodies with a known length stream through unchanged.
+	if r.Body != nil && r.ContentLength < 0 {
+		cleanup, err := bufferBodyToFile(r)
+		if err != nil {
+			h.logger.Error("buffering request body", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		defer cleanup()
+	}
+
 	env := append([]string{
 		"GIT_PROJECT_ROOT=" + h.mz.Root(),
 		"GIT_HTTP_EXPORT_ALL=1",
@@ -195,6 +213,33 @@ func (h *Handler) serveCGI(w http.ResponseWriter, r *http.Request, extraEnv []st
 		Env:  env,
 	}
 	backend.ServeHTTP(w, r)
+}
+
+// bufferBodyToFile drains r.Body to a temp file and rewires the request to read
+// from it with a known ContentLength, turning a length-unknown (chunked) body
+// into a fixed-length one for the CGI child. It returns a cleanup that closes and
+// removes the file after the response is served. Spilling to disk (not memory)
+// keeps a large pack off the heap.
+func bufferBodyToFile(r *http.Request) (func(), error) {
+	f, err := os.CreateTemp("", "gitmote-body-*")
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func() { _ = f.Close(); _ = os.Remove(f.Name()) }
+	n, err := io.Copy(f, r.Body)
+	_ = r.Body.Close()
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, err
+	}
+	r.Body = f
+	r.ContentLength = n
+	r.TransferEncoding = nil
+	return cleanup, nil
 }
 
 // writeAuthError maps an Authorize error to the HTTP response git expects: a

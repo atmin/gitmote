@@ -2,6 +2,7 @@ package githttp
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -179,6 +180,47 @@ func TestWriteGateFollowerRefusesPush(t *testing.T) {
 	git(t, src, "push", remote, "main")
 	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head2 {
 		t.Errorf("after promotion, server main = %q, want %q", got, head2)
+	}
+}
+
+// TestPushChunkedLargePack pushes a pack larger than git's default
+// http.postBuffer (1 MiB) with the client at its defaults, so git sends the body
+// with chunked transfer-encoding (no Content-Length). The server must buffer it
+// to a length before the CGI hand-off; without that, git http-backend 400s.
+func TestPushChunkedLargePack(t *testing.T) {
+	ctx := context.Background()
+	srv, m, s, _ := newWriteServer(t)
+
+	r, err := m.CreateRepo(ctx, repoName, "main")
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
+	remote := authedURL(srv.URL, raw) + "/" + repoName
+
+	// A 3 MiB incompressible blob → a pack well over the 1 MiB postBuffer, so the
+	// client streams it chunked (the harness git uses default config: no override).
+	src := t.TempDir()
+	git(t, src, "init", "-b", "main", ".")
+	big := make([]byte, 3<<20)
+	if _, err := rand.Read(big); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "big.bin"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "add", ".")
+	git(t, src, "commit", "-m", "big")
+	head := git(t, src, "rev-parse", "HEAD")
+
+	git(t, src, "push", remote, "main") // fails (HTTP 400) before the server-side buffering
+
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head {
+		t.Fatalf("server main = %q, want %q", got, head)
+	}
+	objs, _ := s.List(ctx, repoName+"/objects/")
+	if len(objs) == 0 {
+		t.Fatal("no objects uploaded after chunked push")
 	}
 }
 
