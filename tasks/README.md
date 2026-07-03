@@ -6,12 +6,8 @@ lands** (commits are the record — this list never becomes a changelog).
 
 Ordered by dependency; each task lands in a non-breaking, tested state.
 
-The **gitmote can host itself** milestone is reached: it runs on Scaleway at
-`gitmote.atmin.net`, deploys itself on every green master push, and survives cold
-starts (litestream restore). Speculative directions live in
-[../docs/evolution/](../docs/evolution/).
-
-- [12-leased-writer.md](12-leased-writer.md) — adopt s3lite `RoleAuto` so the
-  writer is a lease-holder: two-writers becomes impossible by construction,
-  retiring the stop-first deploy drain. (`max-scale=1` stays; read replicas are a
-  later follow-up gated on follower freshness.)
+_No active tasks._ The **gitmote can host itself** milestone is reached: it runs
+on Scaleway at `gitmote.atmin.net`, deploys itself on every green master push,
+survives cold starts (litestream restore), and enforces the single writer by a
+lease (s3lite `RoleAuto`), so rolling deploys are safe by construction.
+Speculative directions live in [../docs/evolution/](../docs/evolution/).

@@ -28,36 +28,37 @@ replicates its metadata SQLite to S3 with litestream; two instances writing the
 same WAL can corrupt the replica. This is stronger than a stateless service's
 in-process-race concern: it is a data-integrity precondition.
 
-- **`max-scale = 1`** on the container, asserted on every deploy (the CI deploy
-  step sets it; it is not left to a console default). Autoscaling above 1 opens
-  the forbidden state. `min-scale = 0` (idle to zero) is fine — it only changes
-  cost/latency, not the invariant; `max-scale = 1` is what guards *steady state*.
-- **Deploys are stop-first, because `max-scale = 1` does *not* cover the deploy
-  swap.** Scaleway's rolling deploy briefly runs old + new together (observed:
-  instance count spikes to 2 in Cockpit), and Scaleway won't let you scale to 0
-  (`max-scale` min is 1), so it can't stop-first on its own. Instead the pipeline
-  drains the running writer itself before swapping the image: `POST /admin/quit`
-  (bearer `GITMOTE_DEPLOY_KEY`) self-SIGTERMs the instance → graceful flush + exit
-  → the image swap then starts a fresh instance with no old one to overlap. The
-  drain step **waits** rather than polls, because any request (a health poll
-  included) would re-wake the instance.
-- **Residual gap (accepted):** if a request lands in the ~20 s drain→swap window
-  it can re-wake the old image and reintroduce a brief overlap. Negligible for an
-  operator-triggered deploy with no concurrent push. The *airtight* fix is a
-  reader/writer split with a writer lease — deliberately deferred, written up in
-  [reader-writer-split](evolution/reader-writer-split.md). And by the
-  content-before-pointer ordering ([safety.md §3](architecture/safety.md)) even a
-  hit window can only leak orphan objects (garbage `gc` reclaims), never a ref
-  pointing at a missing object.
+The invariant is now enforced **by a lease, not by procedure.** The server opens
+its metadata in s3lite `RoleAuto`: it becomes the writer only while it holds a
+lease (litestream's `s3.Leaser` — an `If-None-Match`/`If-Match` conditional-write
+CAS on `lock.json` in the same bucket, now that Scaleway supports conditional
+writes), and runs as a read-only follower otherwise. gitmote gates receive-pack
+on `IsLeader()`, so a follower refuses pushes with a retryable `503` while still
+serving clones/fetches.
 
-Note: Scaleway Object Storage **now supports conditional writes** (`If-Match` /
-`If-None-Match`). gitmote's ref CAS is still a SQL transaction in the metadata DB
-(unchanged — it never needed an S3 precondition), but this unlocks two things on
-Scaleway itself: a real single-writer **lease** (litestream ships the primitive;
-the leader lifecycle is specced in s3lite `tasks/single-writer-lease.md`), which
-would make deploys safe by construction instead of via the stop-first drain; and
-the [safety.md §4](architecture/safety.md) escape hatch (refs behind a
-conditional-PUT CAS on object storage) is now possible here if ever wanted.
+- **Rolling deploys are safe by construction.** Scaleway's rolling deploy briefly
+  runs old + new together (observed: instance count spikes to 2 in Cockpit). The
+  new instance boots as a **follower** (the old still holds the lease); the old
+  releases on its graceful SIGTERM (`Close` flushes, then releases the lease
+  last); the new then **promotes** on its next lease poll. Never two writers — no
+  drain step, no `POST /admin/quit`. Brief handoff window: the new instance is up
+  read-only for ≤ ~lease-TTL/3 after the old exits, so a push in that gap gets the
+  retryable `503`; reads are unaffected. (After a *hard* kill the successor waits
+  out the ≤30 s lease TTL before acquiring — a graceful exit releases at once.)
+- **`max-scale = 1`** still holds, re-asserted on every deploy. Not for the
+  writer invariant anymore (the lease covers that) but because a follower serves
+  a *restored snapshot* and polls — it is not a continuously-fresh read replica —
+  so scaling out for read throughput needs follower-freshness work first. Raising
+  it is the tracked follow-up ([reader-writer-split](evolution/reader-writer-split.md));
+  until then keep it at 1. `min-scale = 0` (idle to zero) is orthogonal — cost/latency only.
+- By the content-before-pointer ordering ([safety.md §3](architecture/safety.md)),
+  even a hypothetical overlap could only leak orphan objects (garbage `gc`
+  reclaims), never a ref pointing at a missing object.
+
+The [safety.md §4](architecture/safety.md) escape hatch (refs behind a
+conditional-PUT CAS on object storage) is likewise possible on Scaleway now if
+ever wanted; gitmote's ref CAS remains a SQL transaction in the metadata DB
+(unchanged — it never needed an S3 precondition).
 
 ## Runtime env vars (on the container)
 
@@ -68,11 +69,11 @@ pipeline's Scaleway API keys are separate GitHub Actions secrets (next section).
 Setting these on the container does nothing for CI, and vice versa.
 
 > ⚠️ **`update` replaces the entire `secret-environment-variables` map — it does
-> not merge.** Passing one secret wipes the rest (observed: setting only
-> `GITMOTE_DEPLOY_KEY` dropped the AWS keys, so litestream fell back to EC2 IMDS
-> and the server crash-looped on restore). **Always pass *all* secret env vars
-> together on every `update`.** Plain `environment-variables` are a separate map,
-> unaffected. The CI deploy's `update` sets no env vars, so it preserves both maps.
+> not merge.** Passing one secret wipes the rest (observed: setting a single
+> secret dropped the AWS keys, so litestream fell back to EC2 IMDS and the server
+> crash-looped on restore). **Always pass *all* secret env vars together on every
+> `update`.** Plain `environment-variables` are a separate map, unaffected. The CI
+> deploy's `update` sets no env vars, so it preserves both maps.
 
 | Variable | Value / meaning |
 |----------|-----------------|
@@ -85,7 +86,6 @@ Setting these on the container does nothing for CI, and vice versa.
 | `GITMOTE_CACHE` | `/tmp/gitmote/cache` — ephemeral; materialized repos rebuild from S3 |
 | `GITMOTE_SOCK` | `/tmp/gitmote/gitmote.sock` — pre-receive hook RPC socket |
 | `GITMOTE_COOKIE_KEY` | secret — signs management-UI session cookies (enables `/ui`) |
-| `GITMOTE_DEPLOY_KEY` | secret — bearer token for `POST /admin/quit` (deploy stop-first drain); enables the route |
 | `AWS_REGION` | `fr-par` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | secret — Scaleway API key pair; covers both the object store and the litestream replica |
 
@@ -106,9 +106,11 @@ Scale: **`min-scale = 0`** (idle to zero). A remote pushed to occasionally is id
 almost always, and even at 512 MB always-on exceeds Scaleway's free tier
 (~2.6M GB-s/mo vs 400k), so scale-to-zero is the cheaper default. The cost is a few seconds of
 cold start on the first request after idle (restore + materialize, the path above);
-scale-down is a graceful SIGTERM, so the shutdown `Sync` flushes the WAL — no lost
-writes. Set `min-scale = 1` only if instant first-push latency is worth the
-always-on cost. `max-scale` stays **1** regardless (single-writer invariant).
+scale-down is a graceful SIGTERM, so the shutdown `Close` durably flushes the WAL
+(and releases the writer lease) — no lost writes. Set `min-scale = 1` only if
+instant first-push latency is worth the always-on cost. `max-scale` stays **1**
+regardless (see the single-writer section — follower reads aren't fresh enough to
+scale out yet).
 
 ## CI secrets (GitHub Actions)
 
@@ -132,7 +134,6 @@ login fails with `api_key … not_found`.
 | `SCW_ORGANIZATION_ID` | Scaleway organization ID |
 | `SCW_PROJECT_ID` | Scaleway project ID |
 | `SCW_CONTAINER_ID` | the gitmote Serverless Container ID |
-| `GITMOTE_DEPLOY_KEY` | bearer token the deploy sends to `/admin/quit` — must equal the container's `GITMOTE_DEPLOY_KEY` env |
 
 If a secret reads as empty despite being set, check: it's under **Secrets** not
 **Variables**; it's a **Repository** secret (a job with no `environment:` can't see
@@ -174,13 +175,9 @@ scw container container create \
   environment-variables.GITMOTE_SOCK=/tmp/gitmote/gitmote.sock \
   environment-variables.AWS_REGION=fr-par \
   secret-environment-variables.GITMOTE_COOKIE_KEY="$(openssl rand -base64 32)" \
-  secret-environment-variables.GITMOTE_DEPLOY_KEY=<DEPLOY_KEY> \
   secret-environment-variables.AWS_ACCESS_KEY_ID=<KEY> \
   secret-environment-variables.AWS_SECRET_ACCESS_KEY=<SECRET>
-# <DEPLOY_KEY>: generate once (`openssl rand -base64 32`) and use the SAME value
-# here and as the GITMOTE_DEPLOY_KEY GitHub Actions secret — the deploy's drain
-# call authenticates against it. GITMOTE_COOKIE_KEY is container-only, so a fresh
-# random inline is fine for it.
+# GITMOTE_COOKIE_KEY is container-only, so a fresh random inline is fine for it.
 
 # 4. Custom domain — two parts:
 #    (a) DNS: add a CNAME  gitmote.atmin.net → <container-endpoint>.scw.cloud
@@ -200,8 +197,10 @@ scw container domain list   container-id=<CONTAINER_ID>   # status pending → r
 
 An empty instance has no admin/token. Bootstrap **from your machine against the
 prod bucket** so you are transiently the single writer — do this *before* the
-container serves traffic (or while it is scaled to zero), never as a job while
-the server runs, or that is two writers.
+container serves traffic (or while it is scaled to zero). Bootstrap opens in
+`RoleWriter`: it **acquires the writer lease** and fails loudly if the server
+already holds it, so running it while the server is live can no longer produce
+two writers — it just refuses.
 
 ```bash
 GITMOTE_DB=/tmp/bootstrap.sqlite3 \
@@ -211,17 +210,18 @@ AWS_REGION=fr-par AWS_ACCESS_KEY_ID=<KEY> AWS_SECRET_ACCESS_KEY=<SECRET> \
   gitmote bootstrap -handle atmin -repo atmin/gitmote -default-branch master
 ```
 
-It prints the access token once (save it) and `Sync`s the new state to
-`s3://gitmote/meta`; the server restores it on first start. Re-running is safe —
-it refuses to clobber an existing admin.
+It prints the access token once (save it) and durably flushes the new state to
+`s3://gitmote/meta` on `Close`; the server restores it on first start. Re-running
+is safe — it refuses to clobber an existing admin.
 
 ## Deploying
 
 Automatic on every green push to `master` (`.github/workflows/ci.yml`, `deploy`
 job): `ci` (lint/test/build) → `e2e` (local push/clone + litestream restore) →
-build+push the amd64 image → **drain the running writer** (`POST /admin/quit`,
-stop-first — see the single-writer section) → `scw container container update …
-min-scale=0 max-scale=1 --wait`.
+build+push the amd64 image → `scw container container update … min-scale=0
+max-scale=1 --wait`. No drain step: the writer lease makes the rolling deploy
+safe by construction (new boots as a follower, old releases on SIGTERM, new
+promotes — see the single-writer section).
 
 ```bash
 git push origin master

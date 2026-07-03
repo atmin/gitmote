@@ -4,18 +4,22 @@
 
 **"Safe" is a hard requirement.** The model rests on four points:
 
-1. **Single writer = single _container_, not single _user_.** s3lite requires
+1. **Single writer = single _lease-holder_, not single _user_.** s3lite requires
    exactly one writer instance; that's a deployment fact, not a limit on
    collaborators. A few invited users and the web UI's service commits all funnel
-   into one container. This suits the scale-to-zero shape: 0↔1 instances is fine.
-   **The one operational rule: never run two writer instances** — no overlapping
-   deploys of the writer. A rolling deploy would violate this (it briefly runs
-   old + new), so the deploy is **stop-first**: it drains the running writer to
-   exit before starting the replacement (see [ops.md](../ops.md) — deploy). The
-   airtight version — read replicas plus a single leased writer, so overlap is
-   safe by construction — is the planned evolution
-   ([reader-writer-split](../evolution/reader-writer-split.md)); the current
-   drain closes the window in practice, not by proof.
+   into one writer. **The one rule: never two writers on the same WAL** — and this
+   is now enforced by a **lease**, not by procedure. The server opens s3lite in
+   `RoleAuto`: it writes only while it holds the lease (litestream's `s3.Leaser`,
+   a conditional-write CAS on `lock.json` in the replica bucket) and otherwise runs
+   as a read-only follower. gitmote gates receive-pack on `IsLeader()` — a follower
+   refuses pushes with a retryable `503` and still serves reads. A rolling deploy's
+   brief old+new overlap is therefore one writer + one follower: the new instance
+   boots as a follower, the old releases the lease on its graceful SIGTERM `Close`,
+   and the new promotes on its next lease poll. **Overlap is safe by construction**,
+   so there is no stop-first drain. This is the writer half of
+   [reader-writer-split](../evolution/reader-writer-split.md), now shipped; the
+   remaining half — *fresh* followers that scale reads out (a follower serves only
+   a restored snapshot today) — is why the container still pins `max-scale = 1`.
 
 2. **In-process mutex linearizes writes.** Git's own lockfiles can't be trusted
    across a synced/object backend, so a per-repo mutex in the process does the

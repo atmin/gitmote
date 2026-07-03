@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -68,7 +66,10 @@ func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 
-	md, err := meta.Open(ctx, metaConfigFromEnv(nil))
+	// Bootstrap is a deliberate single-shot writer: RoleWriter acquires the lease
+	// (when a replica is configured) and fails loudly if a live server already
+	// holds it, so bootstrapping can never race the running writer.
+	md, err := meta.Open(ctx, metaConfigFromEnv(nil, s3lite.RoleWriter))
 	if err != nil {
 		return fmt.Errorf("open metadata: %w", err)
 	}
@@ -115,7 +116,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: newHandler(gitHandler, ui, os.Getenv("GITMOTE_DEPLOY_KEY")),
+		Handler: newHandler(gitHandler, ui),
 	}
 
 	errCh := make(chan error, 1)
@@ -145,9 +146,8 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 // newHandler returns the server's HTTP routes. ui, when non-nil, registers the
 // management UI under /ui/ and /login (more specific patterns that win over the
 // git catch-all). gitHandler, when non-nil, serves the git smart-HTTP endpoints
-// at "/"; the exact health/version routes stay more specific. deployKey, when
-// non-empty, enables POST /admin/quit — the deploy-time self-drain.
-func newHandler(gitHandler http.Handler, ui *webui.Handler, deployKey string) http.Handler {
+// at "/"; the exact health/version routes stay more specific.
+func newHandler(gitHandler http.Handler, ui *webui.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -155,16 +155,6 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler, deployKey string) ht
 	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, version)
 	})
-	if deployKey != "" {
-		// Deploy-time stop-first: the pipeline drains the running writer before
-		// swapping the image, so the rolling deploy never runs two litestream
-		// writers (docs/ops.md, safety.md §1). Self-SIGTERM drops into the same
-		// graceful-shutdown path that flushes replication.
-		mux.HandleFunc("POST /admin/quit", adminQuitHandler(deployKey, func() {
-			time.Sleep(200 * time.Millisecond) // let the response flush first
-			_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
-		}))
-	}
 	if ui != nil {
 		ui.Register(mux)
 	}
@@ -172,24 +162,6 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler, deployKey string) ht
 		mux.Handle("/", gitHandler)
 	}
 	return mux
-}
-
-// adminQuitHandler authenticates a deploy-key bearer token in constant time and,
-// on success, acknowledges and triggers quit (graceful shutdown). quit is a seam
-// so tests exercise auth without killing the test process.
-func adminQuitHandler(deployKey string, quit func()) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(got), []byte(deployKey)) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		_, _ = io.WriteString(w, "draining\n")
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		go quit()
-	}
 }
 
 // buildGitHandler wires the git read + write paths when an object store is
@@ -218,10 +190,21 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		return nil, nil, noop, fmt.Errorf("object store: %w", err)
 	}
 
-	md, err := meta.Open(ctx, metaConfigFromEnv(logger))
+	// RoleAuto: this instance becomes the writer when it can acquire the lease,
+	// otherwise a read-only follower — so a rolling deploy's brief old+new overlap
+	// is one writer + one follower, never two writers (safety.md §1). With no
+	// replica configured this is RoleOff (always writer): tests and local dev
+	// unchanged.
+	md, err := meta.Open(ctx, metaConfigFromEnv(logger, s3lite.RoleAuto))
 	if err != nil {
 		return nil, nil, noop, fmt.Errorf("metadata: %w", err)
 	}
+	md.OnPromote(func() {
+		logger.Info("became writer: acquired the lease", "generation", md.Generation())
+	})
+	md.OnDemote(func(err error) {
+		logger.Warn("lost the writer lease; now read-only", "error", err)
+	})
 
 	sockPath := envOr("GITMOTE_SOCK", filepath.Join(os.TempDir(), "gitmote.sock"))
 	writer, err := githttp.NewWriter(md, objs, hookBinaryPath(), sockPath, logger)
@@ -249,6 +232,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		Materializer: repo.New(md, objs, cacheRoot),
 		Authorizer:   guard,
 		Writer:       writer,
+		IsWritable:   md.IsLeader,
 		Logger:       logger,
 	})
 	if err != nil {
@@ -294,15 +278,24 @@ func hookBinaryPath() string {
 // local dev), so the same binary runs unreplicated or replicated by env alone.
 // The replica reuses the object store's endpoint and the AWS default credential
 // chain, so one credential set covers both git objects and the metadata WAL.
-func metaConfigFromEnv(logger *slog.Logger) meta.Config {
+//
+// role selects single-writer coordination and is applied only when a replica is
+// configured — there is nothing to coordinate on without a shared WAL, so an
+// unreplicated database stays RoleOff (always writer), keeping tests and local
+// dev unchanged.
+func metaConfigFromEnv(logger *slog.Logger, role s3lite.Role) meta.Config {
 	replica := os.Getenv("GITMOTE_DB_REPLICA")
-	return meta.Config{
+	cfg := meta.Config{
 		LocalPath:   envOr("GITMOTE_DB", "gitmote.sqlite3"),
 		RestoreFrom: replica,
 		BackupTo:    replica,
 		S3:          s3lite.S3Config{Endpoint: os.Getenv("GITMOTE_S3_ENDPOINT")},
 		Logger:      logger,
 	}
+	if replica != "" {
+		cfg.Role = role
+	}
+	return cfg
 }
 
 // envOr returns the value of the environment variable key, or fallback if

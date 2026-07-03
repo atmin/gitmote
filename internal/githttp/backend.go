@@ -41,6 +41,11 @@ type Config struct {
 	// Writer enables the push path. Nil serves the read path only; write
 	// endpoints then 404.
 	Writer *Writer
+	// IsWritable reports whether this instance may serve writes — it holds the
+	// litestream lease (see meta.Metadata.IsLeader). Nil means always writable
+	// (unreplicated / tests). A follower refuses receive-pack with a retryable
+	// 503; reads are unaffected.
+	IsWritable func() bool
 	// Logger is optional; nil discards.
 	Logger *slog.Logger
 }
@@ -49,11 +54,12 @@ type Config struct {
 // git URL suffix. Mount it at "/"; more specific routes (e.g. /healthz) still
 // win under http.ServeMux.
 type Handler struct {
-	mz      *repo.Materializer
-	authz   Authorizer
-	writer  *Writer
-	gitPath string
-	logger  *slog.Logger
+	mz         *repo.Materializer
+	authz      Authorizer
+	writer     *Writer
+	isWritable func() bool
+	gitPath    string
+	logger     *slog.Logger
 }
 
 // New returns a handler. It fails if the `git` executable is not on PATH, since
@@ -68,11 +74,12 @@ func New(cfg Config) (*Handler, error) {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Handler{
-		mz:      cfg.Materializer,
-		authz:   cfg.Authorizer,
-		writer:  cfg.Writer,
-		gitPath: gitPath,
-		logger:  logger,
+		mz:         cfg.Materializer,
+		authz:      cfg.Authorizer,
+		writer:     cfg.Writer,
+		isWritable: cfg.IsWritable,
+		gitPath:    gitPath,
+		logger:     logger,
 	}, nil
 }
 
@@ -90,6 +97,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Writes are served only when a Writer is configured.
 	if isReceive && h.writer == nil {
 		http.NotFound(w, r)
+		return
+	}
+	// Only the lease-holding writer serves receive-pack; a read-only follower
+	// refuses pushes (safety.md §1) with a retryable 503 so the client can try
+	// again once the leader is up. This gates both the advertisement and the
+	// push POST. Reads (upload-pack) are served in either role.
+	if isReceive && h.isWritable != nil && !h.isWritable() {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "gitmote: not the current writer, retry shortly", http.StatusServiceUnavailable)
 		return
 	}
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -92,6 +93,93 @@ func newWriteServer(t *testing.T) (*httptest.Server, *meta.Metadata, store.Store
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv, m, s, writer
+}
+
+// newGatedServer is newWriteServer with a controllable writer-lease gate
+// (backend Config.IsWritable), to exercise a follower's push refusal.
+func newGatedServer(t *testing.T, isWritable func() bool) (*httptest.Server, *meta.Metadata, store.Store) {
+	t.Helper()
+	m := openMeta(t)
+	s := store.NewMem()
+	sockDir, err := os.MkdirTemp("", "gm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	writer, err := NewWriter(m, s, buildHook(t), filepath.Join(sockDir, "s.sock"), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+	h, err := New(Config{
+		Materializer: repo.New(m, s, t.TempDir()),
+		Authorizer:   auth.NewGuard(m),
+		Writer:       writer,
+		IsWritable:   isWritable,
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatalf("githttp.New: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv, m, s
+}
+
+// TestWriteGateFollowerRefusesPush exercises the writer-lease gate: a follower
+// (IsWritable false) refuses receive-pack while still serving reads; promoting
+// back to leader accepts the same push. Mirrors the deploy-handoff window where
+// a new instance is up read-only before it acquires the lease (safety.md §1).
+func TestWriteGateFollowerRefusesPush(t *testing.T) {
+	ctx := context.Background()
+	leader := true
+	srv, m, _ := newGatedServer(t, func() bool { return leader })
+
+	r, err := m.CreateRepo(ctx, repoName, "main")
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
+	remote := authedURL(srv.URL, raw) + "/" + repoName
+
+	// Golden path: the leader accepts the first push.
+	src := initCommit(t, "hello\n")
+	head1 := git(t, src, "rev-parse", "HEAD")
+	git(t, src, "push", remote, "main")
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head1 {
+		t.Fatalf("after leader push, server main = %q, want %q", got, head1)
+	}
+
+	// Become a follower: reads still serve, pushes are refused, ref unchanged.
+	leader = false
+	dst := filepath.Join(t.TempDir(), "clone")
+	git(t, "", "clone", remote, dst) // a read succeeds on a follower
+	if got := git(t, dst, "rev-parse", "HEAD"); got != head1 {
+		t.Errorf("follower clone HEAD = %q, want %q", got, head1)
+	}
+
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("hello\nagain\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "commit", "-am", "second")
+	head2 := git(t, src, "rev-parse", "HEAD")
+	out, err := tryGit(src, "push", remote, "main")
+	if err == nil {
+		t.Fatalf("follower push succeeded, want rejection\n%s", out)
+	}
+	if !strings.Contains(out, "503") {
+		t.Errorf("follower push error missing 503 signal:\n%s", out)
+	}
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head1 {
+		t.Errorf("follower push advanced ref to %q, want unchanged %q", got, head1)
+	}
+
+	// Promote back to leader: the same push now succeeds.
+	leader = true
+	git(t, src, "push", remote, "main")
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head2 {
+		t.Errorf("after promotion, server main = %q, want %q", got, head2)
+	}
 }
 
 // tryGit runs a git command hermetically and returns its combined output and

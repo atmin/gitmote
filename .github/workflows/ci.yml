@@ -31,8 +31,10 @@ jobs:
       - run: make e2e-restore
 
   # Deploy the single writer to Scaleway on every green master push (docs/ops.md).
-  # max-scale=1 is asserted here, not left to a console default: two writers to the
-  # shared litestream WAL is the one forbidden state (safety.md §1).
+  # Safety is by lease now, not procedure: the server runs in s3lite RoleAuto, so a
+  # rolling deploy's brief old+new overlap is one writer + one read-only follower,
+  # never two writers (safety.md §1). max-scale=1 is still asserted (read replicas
+  # need fresh followers first — a later step).
   deploy:
     if: github.ref == 'refs/heads/master'
     needs: [ci, e2e]
@@ -67,23 +69,13 @@ jobs:
           sudo curl -fsSL "$SCW_URL" -o /usr/local/bin/scw
           sudo chmod +x /usr/local/bin/scw
 
-      # Stop-first: drain the running writer to zero BEFORE swapping the image, so
-      # the rolling deploy doesn't briefly run two litestream writers (safety.md
-      # §1). POST /admin/quit self-SIGTERMs the instance → graceful flush + exit.
-      # We then wait (NOT poll — a request would re-wake it) for it to exit; the
-      # image swap below then starts a fresh instance with no old one to overlap.
-      # Residual: a request racing this ~20s window can re-wake the old image;
-      # negligible for an operator-triggered deploy (docs/ops.md).
-      - name: Drain the running writer
-        env:
-          DEPLOY_KEY: ${{ secrets.GITMOTE_DEPLOY_KEY }}
-        run: |
-          curl -fsS -m 15 -X POST -H "Authorization: Bearer $DEPLOY_KEY" \
-            https://gitmote.atmin.net/admin/quit || true
-          sleep 20
-
+      # No drain step: the writer lease makes the rolling deploy safe by
+      # construction. The new instance boots as a read-only follower (the old one
+      # holds the lease), the old releases on its graceful SIGTERM, then the new
+      # promotes — never two writers (safety.md §1, docs/ops.md).
+      #
       # A unique (SHA-tagged) image reference makes this a clean replacement, and
-      # max-scale=1 (the single-writer invariant) is re-asserted every deploy.
+      # max-scale=1 (still the steady-state pin) is re-asserted every deploy.
       # min-scale=0 idles to zero between uses. --wait blocks until the new
       # deployment is serving. See docs/ops.md for the single-writer deploy note.
       - name: Deploy (single writer)
