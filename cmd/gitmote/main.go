@@ -56,9 +56,9 @@ func main() {
 
 // runBootstrap creates the first admin, token, and repo from an empty instance.
 // It opens the metadata DB per the environment (GITMOTE_DB, and GITMOTE_DB_REPLICA
-// for litestream) and prints the one-time token to out on success. When a replica
-// is configured it Syncs before returning, so this short-lived process reliably
-// pushes the new admin/token/repo to S3 for the server to restore.
+// for litestream) and prints the one-time token to out on success. The deferred
+// Close durably flushes replication, so this short-lived process reliably pushes
+// the new admin/token/repo to S3 for the server to restore.
 func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 	handle := fs.String("handle", os.Getenv("GITMOTE_ADMIN_HANDLE"), "admin user handle (or GITMOTE_ADMIN_HANDLE)")
@@ -86,12 +86,6 @@ func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 	if res.AlreadyBootstrapped {
 		_, err := io.WriteString(out, "already bootstrapped: an admin exists; nothing to do\n")
 		return err
-	}
-
-	// Force the just-written admin/token/repo out to the replica before this
-	// short-lived process exits; Close alone does not guarantee an initial flush.
-	if err := md.Sync(ctx); err != nil {
-		return fmt.Errorf("replicate metadata: %w", err)
 	}
 
 	_, err = fmt.Fprintf(out,
@@ -237,16 +231,13 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	}
 	cleanup := func() error {
 		err := writer.Close()
-		// Flush replication on clean shutdown so a redeploy/restart is lossless
-		// (a no-op without a replica). Bounded so an unreachable S3 can't hang
-		// shutdown; the accepted crash-loss window (safety.md §4) still covers a
-		// hard kill.
+		// Close durably flushes replication on clean shutdown so a redeploy/restart
+		// is lossless (a no-op without a replica). Bound the flush so an unreachable
+		// S3 can't hang shutdown; the accepted crash-loss window (safety.md §4)
+		// still covers a hard kill.
 		syncCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		if serr := md.Sync(syncCtx); err == nil {
-			err = serr
-		}
-		if cerr := md.Close(); err == nil {
+		if cerr := md.CloseContext(syncCtx); err == nil {
 			err = cerr
 		}
 		return err

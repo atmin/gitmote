@@ -64,11 +64,13 @@ func Open(ctx context.Context, cfg Config) (*Metadata, error) {
 	return &Metadata{db: db}, nil
 }
 
-// Close flushes replication and closes the database.
+// Close durably flushes pending replication and closes the database; the flush
+// is bounded by s3lite's ShutdownSyncTimeout. A no-op flush without replication.
 func (m *Metadata) Close() error { return m.db.Close() }
 
-// Sync blocks until the replica has caught up; a no-op without replication.
-func (m *Metadata) Sync(ctx context.Context) error { return m.db.Sync(ctx) }
+// CloseContext is Close with the final replication flush bounded by ctx instead
+// of the default timeout, for wiring into a graceful-shutdown deadline.
+func (m *Metadata) CloseContext(ctx context.Context) error { return m.db.CloseContext(ctx) }
 
 // now is the timestamp format for the TEXT *_at columns: RFC 3339, UTC.
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }

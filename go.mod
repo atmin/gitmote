@@ -3,7 +3,7 @@ module github.com/atmin/gitmote
 go 1.26.1
 
 require (
-	github.com/atmin/s3lite v0.0.0-20260426092427-3ca2e2a3f77b
+	github.com/atmin/s3lite v0.1.0
 	github.com/aws/aws-sdk-go-v2 v1.42.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.27
 	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.2.13
@@ -27,7 +27,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.36.8 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.43.5 // indirect
 	github.com/aws/smithy-go v1.27.3 // indirect
-	github.com/benbjohnson/litestream v0.5.11 // indirect
+	github.com/benbjohnson/litestream v0.5.13 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -54,9 +54,9 @@ require (
 	github.com/wasilibs/go-re2 v1.3.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
-	google.golang.org/protobuf v1.34.2 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
+	google.golang.org/protobuf v1.36.10 // indirect
 	modernc.org/libc v1.67.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
