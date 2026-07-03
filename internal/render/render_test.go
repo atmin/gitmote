@@ -1,0 +1,96 @@
+package render
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestHighlightByExtension(t *testing.T) {
+	out, err := Highlight([]byte("package main\n\nfunc main() {}\n"), "main.go")
+	if err != nil {
+		t.Fatalf("Highlight: %v", err)
+	}
+	s := string(out)
+	// Class-based output: keywords wrapped in class spans, no inline styles.
+	if !strings.Contains(s, "<pre") || !strings.Contains(s, `class="`) {
+		t.Fatalf("go highlight missing class spans:\n%s", s)
+	}
+	if strings.Contains(s, "style=") {
+		t.Fatalf("expected class-based output, got inline styles:\n%s", s)
+	}
+}
+
+func TestHighlightUnknownExtensionFallsBack(t *testing.T) {
+	out, err := Highlight([]byte("just some text\n"), "notes.zzz")
+	if err != nil {
+		t.Fatalf("Highlight: %v", err)
+	}
+	if !strings.Contains(string(out), "just some text") {
+		t.Fatalf("fallback dropped content:\n%s", out)
+	}
+}
+
+func TestHighlightEmpty(t *testing.T) {
+	out, err := Highlight(nil, "empty.go")
+	if err != nil {
+		t.Fatalf("Highlight(empty): %v", err)
+	}
+	if !strings.Contains(string(out), "<pre") {
+		t.Fatalf("empty input produced no <pre>:\n%s", out)
+	}
+}
+
+func TestHighlightCSS(t *testing.T) {
+	css := string(HighlightCSS())
+	if css == "" || !strings.Contains(css, ".chroma") {
+		t.Fatalf("HighlightCSS looks wrong:\n%s", css)
+	}
+}
+
+func TestMarkdownGFM(t *testing.T) {
+	src := []byte("# Title\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```go\nfunc main() {}\n```\n")
+	out := string(Markdown(src))
+	if !strings.Contains(out, "<h1") {
+		t.Fatalf("heading not rendered:\n%s", out)
+	}
+	if !strings.Contains(out, "<table") {
+		t.Fatalf("GFM table not rendered:\n%s", out)
+	}
+	// Fenced code highlighted via goldmark-highlighting → chroma class spans.
+	if !strings.Contains(out, `class="`) {
+		t.Fatalf("fenced code not highlighted:\n%s", out)
+	}
+}
+
+func TestMarkdownSanitizesXSS(t *testing.T) {
+	src := []byte("# Hi\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[click](javascript:alert(1))\n")
+	out := string(Markdown(src))
+	if strings.Contains(out, "<script") {
+		t.Fatalf("script tag survived sanitization:\n%s", out)
+	}
+	if strings.Contains(out, "onerror") {
+		t.Fatalf("event handler survived sanitization:\n%s", out)
+	}
+	if strings.Contains(strings.ToLower(out), "javascript:") {
+		t.Fatalf("javascript: URL survived sanitization:\n%s", out)
+	}
+}
+
+func TestIsMarkdownAndReadme(t *testing.T) {
+	for _, name := range []string{"a.md", "A.MARKDOWN", "docs/x.Md"} {
+		if !IsMarkdown(name) {
+			t.Fatalf("IsMarkdown(%q) = false", name)
+		}
+	}
+	if IsMarkdown("main.go") {
+		t.Fatal("IsMarkdown(main.go) = true")
+	}
+	for _, name := range []string{"README.md", "readme.markdown", "ReadMe.MD"} {
+		if !IsReadme(name) {
+			t.Fatalf("IsReadme(%q) = false", name)
+		}
+	}
+	if IsReadme("readme.txt") || IsReadme("CONTRIBUTING.md") {
+		t.Fatal("IsReadme matched a non-README")
+	}
+}

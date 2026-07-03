@@ -40,8 +40,10 @@ func (x *harness) seedBrowseRepo(name, branch string) (head, first string) {
 	src := x.t.TempDir()
 	gitTest(x.t, src, "init", "-b", branch, ".")
 	write(x.t, src, "hello.go", "package main\n\nfunc main() {}\n")
+	write(x.t, src, "README.md", "# App\n\nHello **world**.\n\n```go\nfunc main() {}\n```\n")
 	write(x.t, src, "sub/note.txt", "nested\n")
 	write(x.t, src, "bin.dat", "a\x00b\x00c")
+	write(x.t, src, "big.go", "package main\n"+strings.Repeat("// filler line\n", 40000))
 	gitTest(x.t, src, "add", "-A")
 	gitTest(x.t, src, "commit", "-m", "first")
 	first = gitTest(x.t, src, "rev-parse", "HEAD")
@@ -129,12 +131,13 @@ func TestBrowseTreeAndBlob(t *testing.T) {
 		t.Fatalf("sub tree = %d (%s)", rec.Code, rec.Body)
 	}
 
-	// Text blob renders inside a <pre>.
+	// Text blob renders its content (highlighting splits tokens into spans, so
+	// assert on a single token that survives).
 	rec = x.do(http.MethodGet, "/browse/alice/app/-/blob/hello.go?ref=main", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("blob = %d (%s)", rec.Code, rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), "package main") {
+	if !strings.Contains(rec.Body.String(), "package") {
 		t.Fatalf("blob body missing content:\n%s", rec.Body)
 	}
 
@@ -198,6 +201,54 @@ func TestBrowseCommitsAndCommit(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), head) {
 		t.Fatalf("commit body missing sha:\n%s", rec.Body)
+	}
+}
+
+func TestBrowseHighlightAndMarkdown(t *testing.T) {
+	x := newHarness(t)
+	x.seedBrowseRepo("alice/app", "main")
+	session := x.login(x.mintTokenFor(x.admin.ID))
+
+	// A .go blob is syntax-highlighted: chroma class spans, not a bare <pre>.
+	rec := x.do(http.MethodGet, "/browse/alice/app/-/blob/hello.go?ref=main", nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("go blob = %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `class="`) || !strings.Contains(rec.Body.String(), "chroma") {
+		t.Fatalf("go blob not highlighted:\n%s", rec.Body)
+	}
+
+	// A .md blob renders markdown in place of highlighted source.
+	rec = x.do(http.MethodGet, "/browse/alice/app/-/blob/README.md?ref=main", nil, session)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<h1") {
+		t.Fatalf("md blob not rendered:\n%s", rec.Body)
+	}
+
+	// The tree page renders the directory's README below the listing.
+	rec = x.do(http.MethodGet, "/browse/alice/app/-/tree/", nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tree = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "markdown-body") || !strings.Contains(rec.Body.String(), "<h1") {
+		t.Fatalf("tree missing rendered README:\n%s", rec.Body)
+	}
+}
+
+func TestBrowseBlobSizeGuard(t *testing.T) {
+	x := newHarness(t)
+	x.seedBrowseRepo("alice/app", "main")
+	session := x.login(x.mintTokenFor(x.admin.ID))
+
+	// A blob over the cap falls back to a plain <pre>, no chroma markup.
+	rec := x.do(http.MethodGet, "/browse/alice/app/-/blob/big.go?ref=main", nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("big blob = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), `class="chroma"`) {
+		t.Fatalf("oversize blob was highlighted; expected plain <pre>")
+	}
+	if !strings.Contains(rec.Body.String(), "<pre>package main") {
+		t.Fatalf("oversize blob not shown as plain pre:\n%s", rec.Body.String()[:200])
 	}
 }
 

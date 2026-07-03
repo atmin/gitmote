@@ -12,10 +12,4 @@ starts (litestream restore), and enforces the single writer by a lease (s3lite
 `RoleAuto`), so rolling deploys are safe by construction. Speculative directions
 live in [../docs/evolution/](../docs/evolution/).
 
-- [14-browse-repo.md](14-browse-repo.md) — read-only repo browsing in the web UI
-  (admin-gated): tree, blob, raw download, commit log, single-commit diff, ref
-  switcher — all cheap `git` plumbing over the already-materialized repo. No
-  syntax highlighting / markdown rendering yet.
-- [15-highlight-and-markdown.md](15-highlight-and-markdown.md) — layer syntax
-  highlighting (chroma) and markdown/README rendering (goldmark + bluemonday
-  sanitize) onto the browse UI. Purely additive on task 14's blob/tree templates.
+_No active tasks — the frontier is clear. Add the next unit of work here._

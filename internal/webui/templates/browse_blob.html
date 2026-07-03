@@ -3,6 +3,10 @@
 <p>{{.Size}} bytes · <a href="/browse/{{.Repo}}/-/raw/{{.Path}}?ref={{.Ref}}">raw</a></p>
 {{if .Binary}}
 <p>Binary file — <a href="/browse/{{.Repo}}/-/raw/{{.Path}}?ref={{.Ref}}">download</a>.</p>
+{{else if .Rendered}}
+<div class="markdown-body">{{.Rendered}}</div>
+{{else if .Highlighted}}
+{{.Highlighted}}
 {{else}}
 <pre>{{.Text}}</pre>
 {{end}}

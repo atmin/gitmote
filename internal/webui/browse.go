@@ -2,6 +2,7 @@ package webui
 
 import (
 	"errors"
+	"html/template"
 	"io"
 	"mime"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/atmin/gitmote/internal/meta"
+	"github.com/atmin/gitmote/internal/render"
 	"github.com/atmin/gitmote/internal/repo"
 )
 
@@ -142,6 +144,7 @@ func (h *Handler) browseTree(w http.ResponseWriter, r *http.Request, repoName, t
 		Path:       treePath,
 		Crumbs:     crumbs(treePath),
 		Entries:    entries,
+		Readme:     h.readme(r, c, entries),
 	})
 }
 
@@ -166,8 +169,21 @@ func (h *Handler) browseBlob(w http.ResponseWriter, r *http.Request, repoName, b
 		Binary:     binary,
 		Size:       size,
 	}
-	if !binary {
+	// Text under the size cap is rendered: markdown for a .md blob, otherwise
+	// syntax-highlighted source. Anything else (binary, oversize, or a
+	// highlight error) falls back to the plain <pre> on .Text.
+	switch {
+	case binary:
+	case size > render.MaxSize:
 		data.Text = string(content)
+	case render.IsMarkdown(blobPath):
+		data.Rendered = render.Markdown(content)
+	default:
+		if hl, err := render.Highlight(content, blobPath); err == nil {
+			data.Highlighted = hl
+		} else {
+			data.Text = string(content)
+		}
 	}
 	h.render(w, "browse_blob.html", data)
 }
@@ -248,6 +264,23 @@ func (h *Handler) browseCommit(w http.ResponseWriter, r *http.Request, repoName,
 		Commit:     commit,
 		Diff:       diff,
 	})
+}
+
+// readme renders a directory's README.md (if any) to HTML for display below
+// the tree listing. It is best-effort: a missing, binary, oversize, or
+// unreadable README simply yields no rendered block.
+func (h *Handler) readme(r *http.Request, c browseCtx, entries []repo.TreeEntry) template.HTML {
+	for _, e := range entries {
+		if e.Type != "blob" || !render.IsReadme(e.Name) {
+			continue
+		}
+		content, size, binary, err := repo.Blob(r.Context(), c.dir, c.sha, e.Path)
+		if err != nil || binary || size > render.MaxSize {
+			return ""
+		}
+		return render.Markdown(content)
+	}
+	return ""
 }
 
 // crumbs turns a path into its breadcrumb trail, each segment linking to the

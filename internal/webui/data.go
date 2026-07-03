@@ -1,6 +1,8 @@
 package webui
 
 import (
+	"html/template"
+
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
 )
@@ -72,15 +74,18 @@ type treeData struct {
 	Path    string
 	Crumbs  []crumb
 	Entries []repo.TreeEntry
+	Readme  template.HTML // rendered README.md for this dir, if present
 }
 
 type blobData struct {
 	browseBase
-	Path   string
-	Crumbs []crumb
-	Text   string // decoded text content (text branch); empty for binary
-	Binary bool
-	Size   int64
+	Path        string
+	Crumbs      []crumb
+	Text        string        // decoded text content; the plain-<pre> fallback
+	Highlighted template.HTML // syntax-highlighted source, when available
+	Rendered    template.HTML // rendered markdown, for a .md blob
+	Binary      bool
+	Size        int64
 }
 
 type commitsData struct {

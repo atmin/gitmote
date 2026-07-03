@@ -25,6 +25,7 @@ import (
 
 	"github.com/atmin/gitmote/internal/auth"
 	"github.com/atmin/gitmote/internal/meta"
+	"github.com/atmin/gitmote/internal/render"
 	"github.com/atmin/gitmote/internal/repo"
 )
 
@@ -74,6 +75,9 @@ func New(md *meta.Metadata, mz *repo.Materializer, a Authenticator, cookieKey []
 			}
 			return ""
 		},
+		// highlightCSS is chroma's class stylesheet, included once in the head so
+		// highlighted blobs and README code blocks share one theme.
+		"highlightCSS": render.HighlightCSS,
 	}).ParseFS(templatesFS, "templates/*.html")
 	if err != nil {
 		return nil, err
