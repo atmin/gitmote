@@ -15,6 +15,13 @@ import (
 // strips the prefix and forwards each as an act secret.
 const secretEnvPrefix = "GITMOTE_CI_SECRET_"
 
+// actPlatformsEnv, when set, is a comma-separated list of act -P platform
+// mappings (e.g. "ubuntu-latest=-self-hosted"). The cloud runner image sets it
+// to run steps directly in the Job container — Serverless Jobs have no Docker
+// daemon for act to nest into. Unset (local dev, where a real daemon exists) →
+// act's default nested-container behavior, unchanged.
+const actPlatformsEnv = "GITMOTE_ACT_PLATFORMS"
+
 // ActEngine runs .github/workflows with nektos/act — the locked engine
 // (tasks/16-ci.md Stage 0 #1). act runs each job in a container via the local
 // Docker/podman daemon, so one definition runs both self-hosted and on the
@@ -34,16 +41,8 @@ func (ActEngine) Run(ctx context.Context, repoDir, workflowDir string) ([]byte, 
 		return nil, false, fmt.Errorf("act not found on PATH — install nektos/act (https://github.com/nektos/act): %w", err)
 	}
 
-	args := []string{"--workflows", workflowDir}
-	actEnv := os.Environ()
-	for _, kv := range os.Environ() {
-		name, val, _ := strings.Cut(kv, "=")
-		if secret, ok := strings.CutPrefix(name, secretEnvPrefix); ok && secret != "" {
-			// Re-export under the bare name so `act -s NAME` finds it in the env.
-			actEnv = append(actEnv, secret+"="+val)
-			args = append(args, "-s", secret)
-		}
-	}
+	args, extraEnv := actArgs(workflowDir, os.Environ())
+	actEnv := append(os.Environ(), extraEnv...)
 
 	cmd := exec.CommandContext(ctx, "act", args...)
 	cmd.Dir = repoDir
@@ -63,4 +62,30 @@ func (ActEngine) Run(ctx context.Context, repoDir, workflowDir string) ([]byte, 
 		return buf.Bytes(), false, nil
 	}
 	return buf.Bytes(), false, err
+}
+
+// actArgs builds act's arguments and the extra env for one invocation from the
+// process environment. Injected secrets (GITMOTE_CI_SECRET_<NAME>) become
+// `-s NAME` plus a bare NAME=value in extraEnv (act reads the value from its env,
+// keeping it off the argv). GITMOTE_ACT_PLATFORMS becomes one `-P` per mapping.
+// Pure, so it is unit-testable without act on PATH.
+func actArgs(workflowDir string, environ []string) (args, extraEnv []string) {
+	args = []string{"--workflows", workflowDir}
+	for _, kv := range environ {
+		name, val, _ := strings.Cut(kv, "=")
+		switch {
+		case name == actPlatformsEnv:
+			for _, p := range strings.Split(val, ",") {
+				if p = strings.TrimSpace(p); p != "" {
+					args = append(args, "-P", p)
+				}
+			}
+		default:
+			if secret, ok := strings.CutPrefix(name, secretEnvPrefix); ok && secret != "" {
+				extraEnv = append(extraEnv, secret+"="+val)
+				args = append(args, "-s", secret)
+			}
+		}
+	}
+	return args, extraEnv
 }
