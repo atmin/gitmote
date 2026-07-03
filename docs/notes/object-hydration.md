@@ -30,10 +30,24 @@ thing at the git layer. The needed closure must be present _before_ git runs.
 life. Revisit (3) only if large repos become real. This is the "scaling wall for
 large repos" the architecture refers to.
 
+## Progress
+
+- **Advertisement needs no objects (being done — `tasks/13`).** The `info/refs`
+  GET only lists refs, which live in s3lite; it can serve from `packed-refs` with
+  zero object hydration (spiked: `git upload-pack --advertise-refs` advertises
+  refs whose objects are absent, branches and annotated tags alike). This carves
+  the most common cold round-trip off the full-hydrate path first.
+- **Bounded closure for the data POSTs is deferred.** The sharp part: computing
+  "objects reachable from ref X" without the objects present needs a precomputed
+  **reachability + pack-location index** (built at push, consumed at hydrate),
+  because stock git can't fetch mid-operation and packs are all-or-nothing. That
+  index is the real design work; parked until it's understood well enough to spec.
+
 ## Open sub-points
 
-- Computing the served closure for reads (reachable from advertised refs, capped
-  by what the client may request).
+- The reachability+location index for bounded POST hydration: shape (commit graph
+  + object→pack map in s3lite), how it's kept consistent with content-before-
+  pointer, and its interaction with any future server-side `gc`/repack.
 - Eviction policy for warm repos under disk pressure.
 - Whether a write needs the _full_ history or just enough for the
   fast-forward / merge-base check (bounded hydration).
