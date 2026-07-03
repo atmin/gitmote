@@ -43,26 +43,34 @@ This is the split [safety.md §2](../architecture/safety.md) already anticipates
 and the "litestream read replicas" the read-scaling
 [open question](../architecture/open-questions.md) names.
 
-## Why it isn't shipped
+## What it needs — now unblocked
 
-The lease needs a coordination substrate with **atomic compare-and-swap**, which
-is exactly what **Scaleway Object Storage lacks** (no `If-Match`/`If-None-Match`).
-So it requires two real changes:
+The lease needs a coordination substrate with **atomic compare-and-swap**. When
+this note was written, Scaleway Object Storage lacked it — but **Scaleway now
+supports conditional writes** (`If-Match` / `If-None-Match`), so the lease can
+live on the same Scaleway bucket; no second provider, no moving the WAL.
 
-1. **Move the metadata WAL/lease to conditional-write storage** — Cloudflare R2 or
-   AWS S3 support preconditions; Scaleway doesn't. Compute can stay on Scaleway.
-2. **Leader election in s3lite** — acquire/refresh a lease (fencing token), and a
-   litestream lifecycle that only replicates while leader. gitmote grows a
-   reader/leader mode and promotion.
+Better still, **litestream already ships the lease primitive** (v0.5.8+,
+`litestream.Leaser` / `s3.Leaser`): `If-None-Match: *` to acquire, `If-Match` to
+renew, a 30 s TTL and a monotonic `Generation` (fencing token). We do **not**
+hand-roll CAS/fencing. The catch: litestream does **not** auto-gate its own
+replication on the lease (neither `Store` nor `DB` checks it, as of v0.5.13) — so
+the leader lifecycle (acquire → replicate → renew → step down on loss → release)
+is orchestration s3lite must add around litestream's primitive.
 
 The cold-start subtlety that motivates the lease: a lone instance waking on a
 push can't tell "I'm the only one, safe to write" from "I'm a new deploy while
 the old still writes" — they look identical from inside. Only an external lease
 answers "am I allowed to be the writer?".
 
+This is now a concrete piece of work, specced in s3lite (`tasks/single-writer-lease.md`
+in that repo), since the primitive lives there. gitmote then consumes it: boot as
+reader, promote on lease acquisition, reject pushes when not leader.
+
 ## Trigger to build it
 
 When any of: reads get heavy enough to want replicas; deploy-time write pauses or
 the residual overlap window become unacceptable; or `max-scale` needs to exceed 1
 for throughput. Until then the single-writer pin plus stop-first drain is
-sufficient and far simpler.
+sufficient and far simpler — the value now is that the substrate is available, so
+it's build-when-ready rather than blocked.

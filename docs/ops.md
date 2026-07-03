@@ -50,11 +50,14 @@ in-process-race concern: it is a data-integrity precondition.
   hit window can only leak orphan objects (garbage `gc` reclaims), never a ref
   pointing at a missing object.
 
-Note: Scaleway Object Storage has **no conditional writes** (`If-Match` /
-`If-None-Match`). This does **not** affect gitmote — the ref CAS is a SQL
-transaction in the metadata DB, not an S3 precondition. (It does rule out the
-safety.md §4 escape hatch of moving refs to a conditional-PUT on S3 *while on
-Scaleway*; that would need a provider with preconditions.)
+Note: Scaleway Object Storage **now supports conditional writes** (`If-Match` /
+`If-None-Match`). gitmote's ref CAS is still a SQL transaction in the metadata DB
+(unchanged — it never needed an S3 precondition), but this unlocks two things on
+Scaleway itself: a real single-writer **lease** (litestream ships the primitive;
+the leader lifecycle is specced in s3lite `tasks/single-writer-lease.md`), which
+would make deploys safe by construction instead of via the stop-first drain; and
+the [safety.md §4](architecture/safety.md) escape hatch (refs behind a
+conditional-PUT CAS on object storage) is now possible here if ever wanted.
 
 ## Runtime env vars (on the container)
 
