@@ -17,6 +17,7 @@ import (
 
 	"github.com/atmin/gitmote/internal/auth"
 	"github.com/atmin/gitmote/internal/bootstrap"
+	"github.com/atmin/gitmote/internal/ci"
 	"github.com/atmin/gitmote/internal/githttp"
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
@@ -211,6 +212,20 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	if err != nil {
 		_ = md.Close()
 		return nil, nil, noop, fmt.Errorf("write path: %w", err)
+	}
+	// A successful, branch-advancing push enqueues a CI run — fire-and-forget, so
+	// dispatch never fails the push (tasks/16-ci.md).
+	dispatcher := ci.NewDispatcher(md, logger)
+	writer.AfterCommit = func(ctx context.Context, commits []githttp.CommitInfo) {
+		for _, c := range commits {
+			dispatcher.Dispatch(ctx, ci.Event{
+				RepoID:   c.RepoID,
+				RepoName: c.RepoName,
+				Ref:      c.Ref,
+				OldSHA:   c.Old,
+				NewSHA:   c.New,
+			})
+		}
 	}
 	cleanup := func() error {
 		err := writer.Close()

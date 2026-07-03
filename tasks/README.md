@@ -17,8 +17,6 @@ index [16-ci.md](16-ci.md) (the *why* is in
 [../docs/evolution/ci-runner.md](../docs/evolution/ci-runner.md)). Split into
 dependency-ordered stages, each implementable from fresh context:
 
-- [17-ci-data-model.md](17-ci-data-model.md) — run/job tables + the fire-and-forget
-  after-commit dispatch seam (no execution).
 - [18-ci-config-discovery.md](18-ci-config-discovery.md) — read `.github/workflows`
   at the pushed SHA; create jobs, or no run / a failed run.
 - [19-ci-scaleway-trigger.md](19-ci-scaleway-trigger.md) — Scaleway Serverless Jobs

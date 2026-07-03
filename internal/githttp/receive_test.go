@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/atmin/gitmote/internal/auth"
+	"github.com/atmin/gitmote/internal/ci"
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
 	"github.com/atmin/gitmote/internal/store"
@@ -221,6 +222,119 @@ func TestPushChunkedLargePack(t *testing.T) {
 	objs, _ := s.List(ctx, repoName+"/objects/")
 	if len(objs) == 0 {
 		t.Fatal("no objects uploaded after chunked push")
+	}
+}
+
+// wireDispatcher points the writer's after-commit hook at a real ci.Dispatcher
+// backed by m, mirroring the main.go wiring.
+func wireDispatcher(w *Writer, m *meta.Metadata) {
+	d := ci.NewDispatcher(m, slog.New(slog.DiscardHandler))
+	w.AfterCommit = func(ctx context.Context, commits []CommitInfo) {
+		for _, c := range commits {
+			d.Dispatch(ctx, ci.Event{
+				RepoID:   c.RepoID,
+				RepoName: c.RepoName,
+				Ref:      c.Ref,
+				OldSHA:   c.Old,
+				NewSHA:   c.New,
+			})
+		}
+	}
+}
+
+// TestAfterCommitEnqueuesRun drives a real git push and asserts the after-commit
+// seam records exactly one queued run for the advanced branch tip.
+func TestAfterCommitEnqueuesRun(t *testing.T) {
+	ctx := context.Background()
+	srv, m, _, writer := newWriteServer(t)
+	wireDispatcher(writer, m)
+
+	r, err := m.CreateRepo(ctx, repoName, "main")
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
+	remote := authedURL(srv.URL, raw) + "/" + repoName
+
+	src := initCommit(t, "hello\n")
+	head := git(t, src, "rev-parse", "HEAD")
+	git(t, src, "push", remote, "main")
+
+	runs, err := m.ListRuns(ctx, r.ID, 0)
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("after push, runs = %d, want exactly 1", len(runs))
+	}
+	if runs[0].Ref != "refs/heads/main" || runs[0].SHA != head || runs[0].Status != meta.RunQueued {
+		t.Errorf("run = %+v, want ref refs/heads/main sha %q queued", runs[0], head)
+	}
+}
+
+// TestRejectedPushEnqueuesNoRun asserts a non-fast-forward push — refused at the
+// CAS — never fires the after-commit seam, so no run is recorded for it.
+func TestRejectedPushEnqueuesNoRun(t *testing.T) {
+	ctx := context.Background()
+	srv, m, _, writer := newWriteServer(t)
+	wireDispatcher(writer, m)
+
+	r, _ := m.CreateRepo(ctx, repoName, "main")
+	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
+	remote := authedURL(srv.URL, raw) + "/" + repoName
+
+	// Establish main (one accepted push → one run).
+	src := initCommit(t, "one\n")
+	git(t, src, "push", remote, "main")
+
+	// A stale clone diverges and pushes a non-fast-forward, which is rejected.
+	stale := filepath.Join(t.TempDir(), "stale")
+	git(t, "", "clone", remote, stale)
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "commit", "-am", "advance")
+	git(t, src, "push", remote, "main")
+
+	if err := os.WriteFile(filepath.Join(stale, "file.txt"), []byte("one\ndivergent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, stale, "commit", "-am", "divergent")
+	if out, err := tryGit(stale, "push", remote, "main"); err == nil {
+		t.Fatalf("stale push succeeded, want rejection\n%s", out)
+	}
+
+	// Two accepted pushes → two runs; the rejected push adds none.
+	runs, err := m.ListRuns(ctx, r.ID, 0)
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Errorf("runs = %d, want 2 (rejected push enqueues none)", len(runs))
+	}
+}
+
+// TestAfterCommitPanicLeavesPushGreen is the safety invariant: an after-commit
+// hook that panics must not fail the push — the ref still advances and the
+// client sees a green push (content-before-pointer applied to CI).
+func TestAfterCommitPanicLeavesPushGreen(t *testing.T) {
+	ctx := context.Background()
+	srv, m, _, writer := newWriteServer(t)
+	writer.AfterCommit = func(context.Context, []CommitInfo) {
+		panic("dispatch blew up")
+	}
+
+	r, _ := m.CreateRepo(ctx, repoName, "main")
+	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
+	remote := authedURL(srv.URL, raw) + "/" + repoName
+
+	src := initCommit(t, "hello\n")
+	head := git(t, src, "rev-parse", "HEAD")
+	if out, err := tryGit(src, "push", remote, "main"); err != nil {
+		t.Fatalf("push failed despite panicking after-commit hook: %v\n%s", err, out)
+	}
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head {
+		t.Errorf("main = %q, want %q — ref must advance even when the hook panics", got, head)
 	}
 }
 

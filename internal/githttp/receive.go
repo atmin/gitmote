@@ -46,7 +46,28 @@ type Writer struct {
 	// is a test seam for the ordering invariant; a non-nil error rejects the
 	// push after the objects are already durable.
 	beforeCAS func() error
+
+	// AfterCommit, when set, runs once after the ref CAS succeeds, before the
+	// push returns OK. It is fire-and-forget: the push has already committed, so
+	// any panic or slowness must not fail the push (content-before-pointer
+	// applied to CI — safety.md §3). It receives one CommitInfo per updated ref.
+	AfterCommit func(context.Context, []CommitInfo)
 }
+
+// CommitInfo describes one ref an accepted push advanced. It carries the repo
+// identity so the after-commit hook is self-contained (a push targets one repo,
+// so RepoID/RepoName repeat across a multi-ref push's entries).
+type CommitInfo struct {
+	RepoID   int64
+	RepoName string
+	Ref      string
+	Old      string
+	New      string
+}
+
+// afterCommitTimeout bounds the fire-and-forget after-commit hook so a slow
+// dispatch can't hold the push handler open indefinitely.
+const afterCommitTimeout = 30 * time.Second
 
 // pushOp is the parent-side context a nonce resolves to.
 type pushOp struct {
@@ -221,7 +242,38 @@ func (w *Writer) handle(req hookrpc.Request) hookrpc.Response {
 		w.logger.Error("ref cas failed", "repo", op.repoName, "error", err)
 		return hookrpc.Response{Reason: "ref update failed"}
 	}
+
+	// The push is committed. Fire the after-commit hook fire-and-forget: it must
+	// never turn a green push red.
+	w.fireAfterCommit(op, req.Commands)
 	return hookrpc.Response{OK: true}
+}
+
+// fireAfterCommit invokes the after-commit hook (if set) under its own bounded
+// context, recovering any panic. The ref CAS has already committed, so a failure
+// here is a missed dispatch, never a failed push.
+func (w *Writer) fireAfterCommit(op pushOp, cmds []hookrpc.RefCommand) {
+	if w.AfterCommit == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			w.logger.Error("after-commit hook panicked", "repo", op.repoName, "panic", r)
+		}
+	}()
+	commits := make([]CommitInfo, len(cmds))
+	for i, c := range cmds {
+		commits[i] = CommitInfo{
+			RepoID:   op.repoID,
+			RepoName: op.repoName,
+			Ref:      c.Ref,
+			Old:      c.Old,
+			New:      c.New,
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), afterCommitTimeout)
+	defer cancel()
+	w.AfterCommit(ctx, commits)
 }
 
 // putObjects mirrors the quarantine's git objects into the store under the

@@ -49,3 +49,24 @@ CREATE TABLE IF NOT EXISTS acls (
   perm       TEXT NOT NULL CHECK (perm IN ('read','write','admin')),
   PRIMARY KEY (repo_id, user_id)
 );
+
+-- CI: a queued/running/finished workflow run per ref advance, written only by
+-- the leader (like refs). See docs/evolution/ci-runner.md and tasks 16/17.
+CREATE TABLE IF NOT EXISTS ci_runs (
+  id         INTEGER PRIMARY KEY,
+  repo_id    INTEGER NOT NULL REFERENCES repos(id),
+  ref        TEXT NOT NULL,                    -- "refs/heads/main"
+  sha        TEXT NOT NULL,                    -- the new tip
+  status     TEXT NOT NULL,                    -- queued|running|passed|failed|error|superseded
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ci_jobs (
+  id          INTEGER PRIMARY KEY,
+  run_id      INTEGER NOT NULL REFERENCES ci_runs(id),
+  name        TEXT NOT NULL,                   -- workflow file / job name (filled in stage 2)
+  status      TEXT NOT NULL,                   -- queued|running|passed|failed|error
+  log_key     TEXT,                            -- ci/ object key, set on completion (stage 4)
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
