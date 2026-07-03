@@ -1,0 +1,19 @@
+{{define "browse_head"}}
+<h1>{{.Repo}}</h1>
+<p>
+  <a href="/browse/{{.Repo}}/-/tree/?ref={{.Ref}}">{{.Repo}}</a>
+  {{range .Crumbs}} / <a href="/browse/{{$.Repo}}/-/tree/{{.Path}}?ref={{$.Ref}}">{{.Name}}</a>{{end}}
+  &nbsp;·&nbsp;
+  <a href="/browse/{{.Repo}}/-/commits?ref={{.Ref}}{{if .Path}}&path={{.Path}}{{end}}">history</a>
+</p>
+{{if .Refs}}
+<form class="inline" method="get" action="/browse/{{.Repo}}/-/tree/{{.Path}}">
+  <label>Ref
+    <select name="ref" onchange="this.form.submit()">
+      {{range .Refs}}<option value="{{.Ref}}"{{if eq .Ref $.Ref}} selected{{end}}>{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <noscript><button type="submit">Go</button></noscript>
+</form>
+{{end}}
+{{end}}

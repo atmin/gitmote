@@ -1,8 +1,10 @@
 // Package webui serves the authenticated management UI — the operations that
 // can't be done over git: create/list repos, mint/revoke tokens, and manage
-// per-repo ACLs (docs/architecture/storage.md, the "web UI" component). It is a
-// thin server-rendered layer over the same s3lite tables the git path uses; it
-// introduces no new source of truth.
+// per-repo ACLs (docs/architecture/storage.md, the "web UI" component). It also
+// serves read-only repo browsing (tree/blob/raw/commits/commit) over the
+// materialized bare repo. It is a thin server-rendered layer over the same
+// s3lite tables and object store the git path uses; it introduces no new source
+// of truth.
 //
 // Access is gated on the global-admin role (users.is_admin). A browser logs in
 // by pasting a personal access token once (verified through the same path git
@@ -23,6 +25,7 @@ import (
 
 	"github.com/atmin/gitmote/internal/auth"
 	"github.com/atmin/gitmote/internal/meta"
+	"github.com/atmin/gitmote/internal/repo"
 )
 
 //go:embed templates/*.html
@@ -46,6 +49,7 @@ var nameSegment = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 // Handler serves the management UI.
 type Handler struct {
 	md   *meta.Metadata
+	mz   *repo.Materializer
 	auth Authenticator
 	sess *sessions
 	tmpl *template.Template
@@ -54,12 +58,23 @@ type Handler struct {
 }
 
 // New builds the UI handler. cookieKey signs session cookies and must be
-// non-empty; the auth verifier backs the login form.
-func New(md *meta.Metadata, a Authenticator, cookieKey []byte, logger *slog.Logger) (*Handler, error) {
+// non-empty; the auth verifier backs the login form; mz materializes repos for
+// the read-only browse pages.
+func New(md *meta.Metadata, mz *repo.Materializer, a Authenticator, cookieKey []byte, logger *slog.Logger) (*Handler, error) {
 	if len(cookieKey) == 0 {
 		return nil, errors.New("webui: empty cookie key")
 	}
-	tmpl, err := template.ParseFS(templatesFS, "templates/*.html")
+	tmpl, err := template.New("webui").Funcs(template.FuncMap{
+		// parentPath is the enclosing directory of a browse path, "" at the root
+		// — used only to build the ".." link in the tree view.
+		"parentPath": func(p string) string {
+			p = strings.Trim(p, "/")
+			if i := strings.LastIndex(p, "/"); i >= 0 {
+				return p[:i]
+			}
+			return ""
+		},
+	}).ParseFS(templatesFS, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +83,7 @@ func New(md *meta.Metadata, a Authenticator, cookieKey []byte, logger *slog.Logg
 	}
 	return &Handler{
 		md:   md,
+		mz:   mz,
 		auth: a,
 		sess: &sessions{key: cookieKey},
 		tmpl: tmpl,
@@ -95,6 +111,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui/acls", h.requireAdmin(h.getACLs))
 	mux.HandleFunc("POST /ui/acls", h.requireAdmin(h.postACL))
 	mux.HandleFunc("POST /ui/acls/revoke", h.requireAdmin(h.postRevokeACL))
+
+	// Read-only browsing. The repo name contains slashes and the action tail is
+	// split manually on "/-/" (see browse), so one subtree handler covers all
+	// of tree/blob/raw/commits/commit.
+	mux.HandleFunc("GET /browse/{rest...}", h.requireAdmin(h.browse))
 }
 
 // ctxUser carries the authenticated admin from the middleware to the handler.

@@ -1,0 +1,10 @@
+{{define "browse_commit.html"}}{{template "top" .}}
+{{template "browse_head" .}}
+<h1>{{.Commit.Subject}}</h1>
+<p>
+  <code>{{.Commit.SHA}}</code><br>
+  {{.Commit.Author}} &lt;{{.Commit.Email}}&gt; · {{.Commit.When.Format "2006-01-02 15:04"}}
+</p>
+{{if .Commit.Body}}<pre>{{.Commit.Body}}</pre>{{end}}
+<pre>{{.Diff}}</pre>
+{{template "bottom" .}}{{end}}

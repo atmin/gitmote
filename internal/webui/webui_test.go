@@ -13,6 +13,8 @@ import (
 
 	"github.com/atmin/gitmote/internal/auth"
 	"github.com/atmin/gitmote/internal/meta"
+	"github.com/atmin/gitmote/internal/repo"
+	"github.com/atmin/gitmote/internal/store"
 )
 
 // harness wires a real meta DB + auth guard behind the UI handler, seeds one
@@ -21,6 +23,7 @@ type harness struct {
 	t     *testing.T
 	h     *Handler
 	md    *meta.Metadata
+	store store.Store
 	mux   *http.ServeMux
 	admin *meta.User
 }
@@ -34,7 +37,9 @@ func newHarness(t *testing.T) *harness {
 	}
 	t.Cleanup(func() { _ = md.Close() })
 
-	h, err := New(md, auth.NewGuard(md), []byte("test-cookie-key"), nil)
+	objs := store.NewMem()
+	mz := repo.New(md, objs, t.TempDir())
+	h, err := New(md, mz, auth.NewGuard(md), []byte("test-cookie-key"), nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -45,7 +50,7 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatalf("CreateAdmin: %v", err)
 	}
-	return &harness{t: t, h: h, md: md, mux: mux, admin: admin}
+	return &harness{t: t, h: h, md: md, store: objs, mux: mux, admin: admin}
 }
 
 // mintTokenFor mints a token for an existing user and returns the raw string.

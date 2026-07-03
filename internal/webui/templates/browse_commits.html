@@ -1,0 +1,20 @@
+{{define "browse_commits.html"}}{{template "top" .}}
+{{template "browse_head" .}}
+<h1>History{{if .Path}} · {{.Path}}{{end}}</h1>
+<table>
+  <thead><tr><th>Commit</th><th>Subject</th><th>Author</th><th>When</th></tr></thead>
+  <tbody>
+  {{range .Commits}}
+    <tr>
+      <td><a href="/browse/{{$.Repo}}/-/commit/{{.SHA}}?ref={{$.Ref}}"><code>{{slice .SHA 0 10}}</code></a></td>
+      <td>{{.Subject}}</td>
+      <td>{{.Author}}</td>
+      <td>{{.When.Format "2006-01-02 15:04"}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="4">no commits</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{if .More}}<p>Showing the most recent commits — more history exists beyond this page.</p>{{end}}
+{{template "bottom" .}}{{end}}

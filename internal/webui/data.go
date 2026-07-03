@@ -1,6 +1,9 @@
 package webui
 
-import "github.com/atmin/gitmote/internal/meta"
+import (
+	"github.com/atmin/gitmote/internal/meta"
+	"github.com/atmin/gitmote/internal/repo"
+)
 
 // base is embedded in every authenticated page's data; its fields are promoted
 // so templates reference them as .Me / .Flash / .Err regardless of page.
@@ -38,4 +41,60 @@ type aclsData struct {
 	Repos    []meta.Repo // for the repo picker
 	Selected string      // currently viewed repo name
 	ACLs     []meta.ACL  // the selected repo's grants
+}
+
+// --- browse ---
+
+// refChoice is one entry in the ref switcher: a display name (short, e.g.
+// "main") and the value to pass as ?ref=.
+type refChoice struct {
+	Name string
+	Ref  string
+}
+
+// crumb is one segment of a path breadcrumb, linking to the tree at that depth.
+type crumb struct {
+	Name string
+	Path string
+}
+
+// browseBase is embedded in every browse page: repo identity, the selected ref,
+// and the switcher's options, on top of the shared nav/flash base.
+type browseBase struct {
+	base
+	Repo string      // full repo name (may contain slashes)
+	Ref  string      // selected ref (query value), defaults to the repo's default branch
+	Refs []refChoice // branches and tags for the switcher
+}
+
+type treeData struct {
+	browseBase
+	Path    string
+	Crumbs  []crumb
+	Entries []repo.TreeEntry
+}
+
+type blobData struct {
+	browseBase
+	Path   string
+	Crumbs []crumb
+	Text   string // decoded text content (text branch); empty for binary
+	Binary bool
+	Size   int64
+}
+
+type commitsData struct {
+	browseBase
+	Path    string  // path scope, if any
+	Crumbs  []crumb // breadcrumb for the scoped path (nil when unscoped)
+	Commits []repo.Commit
+	More    bool // history was capped; more commits exist beyond the shown page
+}
+
+type commitData struct {
+	browseBase
+	Path   string  // always empty; present so the shared browse_head renders
+	Crumbs []crumb // always nil; present so the shared browse_head renders
+	Commit repo.Commit
+	Diff   string
 }

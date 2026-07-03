@@ -228,8 +228,9 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 
 	guard := auth.NewGuard(md)
 	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
+	materializer := repo.New(md, objs, cacheRoot)
 	handler, err := githttp.New(githttp.Config{
-		Materializer: repo.New(md, objs, cacheRoot),
+		Materializer: materializer,
 		Authorizer:   guard,
 		Writer:       writer,
 		IsWritable:   md.IsLeader,
@@ -240,7 +241,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		return nil, nil, noop, err
 	}
 
-	ui, err := buildUI(md, guard, logger)
+	ui, err := buildUI(md, materializer, guard, logger)
 	if err != nil {
 		_ = cleanup()
 		return nil, nil, noop, err
@@ -251,13 +252,13 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 // buildUI constructs the management UI when GITMOTE_COOKIE_KEY is set; otherwise
 // it returns nil (UI disabled) so a misconfigured key never yields an insecurely
 // signed session.
-func buildUI(md *meta.Metadata, guard *auth.Guard, logger *slog.Logger) (*webui.Handler, error) {
+func buildUI(md *meta.Metadata, mz *repo.Materializer, guard *auth.Guard, logger *slog.Logger) (*webui.Handler, error) {
 	key := os.Getenv("GITMOTE_COOKIE_KEY")
 	if key == "" {
 		logger.Warn("GITMOTE_COOKIE_KEY unset; management UI disabled")
 		return nil, nil
 	}
-	return webui.New(md, guard, []byte(key), logger)
+	return webui.New(md, mz, guard, []byte(key), logger)
 }
 
 // hookBinaryPath resolves the pre-receive hook executable: GITMOTE_HOOK if set,

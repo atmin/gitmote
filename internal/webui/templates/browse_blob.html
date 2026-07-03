@@ -1,0 +1,9 @@
+{{define "browse_blob.html"}}{{template "top" .}}
+{{template "browse_head" .}}
+<p>{{.Size}} bytes · <a href="/browse/{{.Repo}}/-/raw/{{.Path}}?ref={{.Ref}}">raw</a></p>
+{{if .Binary}}
+<p>Binary file — <a href="/browse/{{.Repo}}/-/raw/{{.Path}}?ref={{.Ref}}">download</a>.</p>
+{{else}}
+<pre>{{.Text}}</pre>
+{{end}}
+{{template "bottom" .}}{{end}}

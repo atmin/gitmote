@@ -1,0 +1,26 @@
+{{define "browse_tree.html"}}{{template "top" .}}
+{{template "browse_head" .}}
+<table>
+  <thead><tr><th>Name</th><th>Mode</th><th>Size</th></tr></thead>
+  <tbody>
+  {{if .Path}}
+    <tr><td colspan="3"><a href="/browse/{{.Repo}}/-/tree/{{parentPath .Path}}?ref={{.Ref}}">..</a></td></tr>
+  {{end}}
+  {{range .Entries}}
+    <tr>
+      {{if eq .Type "tree"}}
+        <td>📁 <a href="/browse/{{$.Repo}}/-/tree/{{.Path}}?ref={{$.Ref}}">{{.Name}}/</a></td>
+        <td>{{.Mode}}</td><td></td>
+      {{else if eq .Type "blob"}}
+        <td>📄 <a href="/browse/{{$.Repo}}/-/blob/{{.Path}}?ref={{$.Ref}}">{{.Name}}</a></td>
+        <td>{{.Mode}}</td><td>{{.Size}}</td>
+      {{else}}
+        <td>🔗 {{.Name}}</td><td>{{.Mode}}</td><td></td>
+      {{end}}
+    </tr>
+  {{else}}
+    <tr><td colspan="3">empty tree</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{template "bottom" .}}{{end}}
