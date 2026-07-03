@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/atmin/gitmote/internal/meta"
@@ -33,12 +34,19 @@ type Runs interface {
 	CreateRun(ctx context.Context, repoID int64, ref, sha string) (*meta.Run, error)
 	SetRunStatus(ctx context.Context, runID int64, status meta.RunStatus) error
 	CreateJob(ctx context.Context, runID int64, name string) (*meta.Job, error)
+	SetJobStatus(ctx context.Context, jobID int64, status meta.RunStatus) error
 }
 
 // Materializer turns a repo name into an on-disk bare repo the browse reader can
 // query. *repo.Materializer satisfies it.
 type Materializer interface {
 	Materialize(ctx context.Context, name string) (string, error)
+}
+
+// Trigger starts one CI job's runner with the given env. *scaleway.JobsClient
+// satisfies it; it no-ops when unconfigured (local dev / tests).
+type Trigger interface {
+	Trigger(ctx context.Context, env map[string]string) error
 }
 
 // Event is one updated ref from a completed push.
@@ -50,21 +58,44 @@ type Event struct {
 	NewSHA   string
 }
 
-// Dispatcher enqueues CI runs for ref advances. Only the leader constructs and
-// calls it (it is the only instance that processes receive-pack).
-type Dispatcher struct {
-	runs   Runs
-	mz     Materializer
-	logger *slog.Logger
+// Config wires the dispatcher's collaborators. BaseURL and WorkerSecret are
+// injected into each triggered runner's env (the runner clones from BaseURL and
+// authenticates its report-back with WorkerSecret — stage 4).
+type Config struct {
+	Runs         Runs
+	Materializer Materializer
+	Trigger      Trigger
+	BaseURL      string // GITMOTE_URL
+	WorkerSecret string // WORKER_SECRET
+	Logger       *slog.Logger
 }
 
-// NewDispatcher returns a Dispatcher writing runs through runs and reading
-// workflow config via mz.
-func NewDispatcher(runs Runs, mz Materializer, logger *slog.Logger) *Dispatcher {
+// Dispatcher enqueues CI runs for ref advances and triggers a runner per job.
+// Only the leader constructs and calls it (it is the only instance that
+// processes receive-pack).
+type Dispatcher struct {
+	runs    Runs
+	mz      Materializer
+	trigger Trigger
+	baseURL string
+	secret  string
+	logger  *slog.Logger
+}
+
+// NewDispatcher returns a Dispatcher from cfg.
+func NewDispatcher(cfg Config) *Dispatcher {
+	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	return &Dispatcher{runs: runs, mz: mz, logger: logger}
+	return &Dispatcher{
+		runs:    cfg.Runs,
+		mz:      cfg.Materializer,
+		trigger: cfg.Trigger,
+		baseURL: cfg.BaseURL,
+		secret:  cfg.WorkerSecret,
+		logger:  logger,
+	}
 }
 
 // Dispatch reads the pushed commit's workflows and records a run for a branch
@@ -114,10 +145,12 @@ func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) {
 	d.recordRun(ctx, ev, dir, files)
 }
 
-// recordRun creates a queued run and one job per workflow file. A file that
-// fails to parse as YAML downgrades the run to failed (the first parse error is
-// logged), but the parsable files still get job rows, so the failure is visible
-// in the UI.
+// recordRun creates a queued run and one job per workflow file, then triggers a
+// runner per job. A file that fails to parse as YAML downgrades the run to failed
+// (the first parse error is logged), but the parsable files still get job rows,
+// so the failure is visible in the UI. A trigger error marks that job error and,
+// if every job failed to trigger, the run error — one job's failure never aborts
+// the others, and nothing here fails the push.
 func (d *Dispatcher) recordRun(ctx context.Context, ev Event, dir string, files []repo.TreeEntry) {
 	run, err := d.runs.CreateRun(ctx, ev.RepoID, ev.Ref, ev.NewSHA)
 	if err != nil {
@@ -125,7 +158,11 @@ func (d *Dispatcher) recordRun(ctx context.Context, ev Event, dir string, files 
 			"repo", ev.RepoName, "ref", ev.Ref, "sha", ev.NewSHA, "error", err)
 		return
 	}
-	var parseErr error
+	var (
+		parseErr      error
+		jobs          int
+		triggerErrors int
+	)
 	for _, f := range files {
 		if err := d.validate(ctx, dir, ev.NewSHA, f.Path); err != nil {
 			if parseErr == nil {
@@ -133,16 +170,51 @@ func (d *Dispatcher) recordRun(ctx context.Context, ev Event, dir string, files 
 			}
 			continue // a malformed file gets no job row
 		}
-		if _, err := d.runs.CreateJob(ctx, run.ID, f.Name); err != nil {
+		job, err := d.runs.CreateJob(ctx, run.ID, f.Name)
+		if err != nil {
 			d.logger.Error("ci: create job failed", "run", run.ID, "job", f.Name, "error", err)
+			continue
+		}
+		jobs++
+		if err := d.trigger.Trigger(ctx, d.jobEnv(ev, run.ID, job.ID)); err != nil {
+			d.logger.Error("ci: trigger failed",
+				"run", run.ID, "job", job.ID, "name", f.Name, "error", err)
+			if err := d.runs.SetJobStatus(ctx, job.ID, meta.RunError); err != nil {
+				d.logger.Error("ci: set job error failed", "job", job.ID, "error", err)
+			}
+			triggerErrors++
 		}
 	}
-	if parseErr != nil {
+	switch {
+	case parseErr != nil:
 		d.logger.Error("ci: malformed workflow",
 			"repo", ev.RepoName, "ref", ev.Ref, "error", parseErr)
-		if err := d.runs.SetRunStatus(ctx, run.ID, meta.RunFailed); err != nil {
-			d.logger.Error("ci: set run failed", "run", run.ID, "error", err)
-		}
+		d.setRunStatus(ctx, run.ID, meta.RunFailed)
+	case jobs > 0 && triggerErrors == jobs:
+		// Every job failed to trigger — the run produced nothing.
+		d.setRunStatus(ctx, run.ID, meta.RunError)
+	}
+}
+
+// jobEnv is the per-job environment injected into the triggered runner. The
+// clone token is a placeholder until scoped tokens land (task 20).
+func (d *Dispatcher) jobEnv(ev Event, runID, jobID int64) map[string]string {
+	return map[string]string{
+		"GITMOTE_CI_RUN_ID":      strconv.FormatInt(runID, 10),
+		"GITMOTE_CI_JOB_ID":      strconv.FormatInt(jobID, 10),
+		"GITMOTE_URL":            d.baseURL,
+		"WORKER_SECRET":          d.secret,
+		"GITMOTE_REPO":           ev.RepoName,
+		"GITMOTE_SHA":            ev.NewSHA,
+		"GITMOTE_REF":            ev.Ref,
+		"GITMOTE_CI_CLONE_TOKEN": "", // placeholder until task 20
+	}
+}
+
+// setRunStatus transitions a run, logging (not returning) any error.
+func (d *Dispatcher) setRunStatus(ctx context.Context, runID int64, status meta.RunStatus) {
+	if err := d.runs.SetRunStatus(ctx, runID, status); err != nil {
+		d.logger.Error("ci: set run status failed", "run", runID, "status", status, "error", err)
 	}
 }
 

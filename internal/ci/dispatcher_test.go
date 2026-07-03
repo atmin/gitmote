@@ -3,9 +3,11 @@ package ci
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -106,6 +108,27 @@ func branchEvent(r *meta.Repo, sha string) Event {
 	return Event{RepoID: r.ID, RepoName: r.Name, Ref: "refs/heads/main", OldSHA: meta.ZeroSHA, NewSHA: sha}
 }
 
+// stubTrigger records the env of each trigger and can be made to fail.
+type stubTrigger struct {
+	calls []map[string]string
+	err   error
+}
+
+func (s *stubTrigger) Trigger(_ context.Context, env map[string]string) error {
+	s.calls = append(s.calls, env)
+	return s.err
+}
+
+func newDispatcher(md *meta.Metadata, mz *repo.Materializer, tr Trigger) *Dispatcher {
+	return NewDispatcher(Config{
+		Runs:         md,
+		Materializer: mz,
+		Trigger:      tr,
+		BaseURL:      "https://gitmote.test",
+		WorkerSecret: "worker-secret",
+	})
+}
+
 func TestDispatchOneWorkflowCreatesRunAndJob(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
@@ -113,7 +136,8 @@ func TestDispatchOneWorkflowCreatesRunAndJob(t *testing.T) {
 		".github/workflows/ci.yml": "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
 	})
 
-	NewDispatcher(md, mz, nil).Dispatch(ctx, branchEvent(r, head))
+	tr := &stubTrigger{}
+	newDispatcher(md, mz, tr).Dispatch(ctx, branchEvent(r, head))
 
 	runs, _ := md.ListRuns(ctx, r.ID, 0)
 	if len(runs) != 1 {
@@ -126,6 +150,24 @@ func TestDispatchOneWorkflowCreatesRunAndJob(t *testing.T) {
 	if len(jobs) != 1 || jobs[0].Name != "ci.yml" || jobs[0].Status != meta.RunQueued {
 		t.Errorf("jobs = %+v, want one queued job named ci.yml", jobs)
 	}
+
+	// The job was triggered exactly once, with the runner env for that run/job.
+	if len(tr.calls) != 1 {
+		t.Fatalf("trigger calls = %d, want 1", len(tr.calls))
+	}
+	env := tr.calls[0]
+	if env["GITMOTE_CI_RUN_ID"] != strconv.FormatInt(runs[0].ID, 10) ||
+		env["GITMOTE_CI_JOB_ID"] != strconv.FormatInt(jobs[0].ID, 10) {
+		t.Errorf("env run/job ids = %q/%q, want %d/%d",
+			env["GITMOTE_CI_RUN_ID"], env["GITMOTE_CI_JOB_ID"], runs[0].ID, jobs[0].ID)
+	}
+	if env["GITMOTE_REPO"] != "atmin/app" || env["GITMOTE_SHA"] != head ||
+		env["GITMOTE_REF"] != "refs/heads/main" {
+		t.Errorf("env checkout coords = %+v, want repo/sha/ref set", env)
+	}
+	if env["GITMOTE_URL"] != "https://gitmote.test" || env["WORKER_SECRET"] != "worker-secret" {
+		t.Errorf("env url/secret = %q/%q, want configured values", env["GITMOTE_URL"], env["WORKER_SECRET"])
+	}
 }
 
 func TestDispatchTwoWorkflowsCreateTwoJobs(t *testing.T) {
@@ -136,7 +178,7 @@ func TestDispatchTwoWorkflowsCreateTwoJobs(t *testing.T) {
 		".github/workflows/deploy.yaml": "name: Deploy\non: push\n",
 	})
 
-	NewDispatcher(md, mz, nil).Dispatch(ctx, branchEvent(r, head))
+	newDispatcher(md, mz, &stubTrigger{}).Dispatch(ctx, branchEvent(r, head))
 
 	runs, _ := md.ListRuns(ctx, r.ID, 0)
 	if len(runs) != 1 {
@@ -157,7 +199,7 @@ func TestDispatchNoWorkflowsNoRun(t *testing.T) {
 	md, s, mz := newFixture(t)
 	r, head := seedRepo(t, md, s, "atmin/app", nil) // no .github/workflows
 
-	NewDispatcher(md, mz, nil).Dispatch(ctx, branchEvent(r, head))
+	newDispatcher(md, mz, &stubTrigger{}).Dispatch(ctx, branchEvent(r, head))
 
 	if runs, _ := md.ListRuns(ctx, r.ID, 0); len(runs) != 0 {
 		t.Errorf("runs = %d, want 0 (no workflows)", len(runs))
@@ -173,7 +215,7 @@ func TestDispatchMalformedWorkflowFailsRun(t *testing.T) {
 	})
 
 	// Must not panic; the push (simulated by the event) is unaffected.
-	NewDispatcher(md, mz, nil).Dispatch(ctx, branchEvent(r, head))
+	newDispatcher(md, mz, &stubTrigger{}).Dispatch(ctx, branchEvent(r, head))
 
 	runs, _ := md.ListRuns(ctx, r.ID, 0)
 	if len(runs) != 1 {
@@ -195,7 +237,7 @@ func TestDispatchIgnoresTagsAndDeletes(t *testing.T) {
 	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
 		".github/workflows/ci.yml": "name: CI\non: push\n",
 	})
-	d := NewDispatcher(md, mz, nil)
+	d := newDispatcher(md, mz, &stubTrigger{})
 
 	cases := []Event{
 		{RepoID: r.ID, RepoName: r.Name, Ref: "refs/tags/v1", OldSHA: meta.ZeroSHA, NewSHA: head},
@@ -209,4 +251,76 @@ func TestDispatchIgnoresTagsAndDeletes(t *testing.T) {
 	if runs, _ := md.ListRuns(ctx, r.ID, 0); len(runs) != 0 {
 		t.Errorf("runs = %d, want 0 (tags/deletes/non-branch create none)", len(runs))
 	}
+}
+
+func TestDispatchAllTriggersFailMarksRunError(t *testing.T) {
+	ctx := context.Background()
+	md, s, mz := newFixture(t)
+	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+		".github/workflows/ci.yml": "name: CI\non: push\n",
+	})
+
+	tr := &stubTrigger{err: errors.New("scaleway down")}
+	newDispatcher(md, mz, tr).Dispatch(ctx, branchEvent(r, head))
+
+	runs, _ := md.ListRuns(ctx, r.ID, 0)
+	if len(runs) != 1 || runs[0].Status != meta.RunError {
+		t.Fatalf("run = %+v, want one run in error", runs)
+	}
+	jobs, _ := md.ListJobs(ctx, runs[0].ID)
+	if len(jobs) != 1 || jobs[0].Status != meta.RunError {
+		t.Errorf("jobs = %+v, want the job marked error", jobs)
+	}
+}
+
+func TestDispatchOneTriggerFailsOthersProceed(t *testing.T) {
+	ctx := context.Background()
+	md, s, mz := newFixture(t)
+	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+		".github/workflows/a.yml": "name: A\non: push\n",
+		".github/workflows/b.yml": "name: B\non: push\n",
+	})
+
+	// Fail the first trigger, succeed the rest — one failure must not abort others.
+	tr := &failNthTrigger{failOn: 1}
+	newDispatcher(md, mz, tr).Dispatch(ctx, branchEvent(r, head))
+
+	runs, _ := md.ListRuns(ctx, r.ID, 0)
+	if len(runs) != 1 {
+		t.Fatalf("runs = %d, want 1", len(runs))
+	}
+	// Not every job failed, so the run is not marked error; it stays queued.
+	if runs[0].Status != meta.RunQueued {
+		t.Errorf("run status = %q, want queued (not all jobs failed)", runs[0].Status)
+	}
+	jobs, _ := md.ListJobs(ctx, runs[0].ID)
+	if len(jobs) != 2 {
+		t.Fatalf("jobs = %d, want 2 (both created despite one trigger failure)", len(jobs))
+	}
+	var errored, queued int
+	for _, j := range jobs {
+		switch j.Status {
+		case meta.RunError:
+			errored++
+		case meta.RunQueued:
+			queued++
+		}
+	}
+	if errored != 1 || queued != 1 {
+		t.Errorf("job statuses = %+v, want one error + one queued", jobs)
+	}
+}
+
+// failNthTrigger fails the Nth (1-based) trigger call and succeeds the others.
+type failNthTrigger struct {
+	failOn int
+	n      int
+}
+
+func (f *failNthTrigger) Trigger(_ context.Context, _ map[string]string) error {
+	f.n++
+	if f.n == f.failOn {
+		return errors.New("trigger failed")
+	}
+	return nil
 }

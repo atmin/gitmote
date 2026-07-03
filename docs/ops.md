@@ -86,8 +86,18 @@ Setting these on the container does nothing for CI, and vice versa.
 | `GITMOTE_CACHE` | `/tmp/gitmote/cache` — ephemeral; materialized repos rebuild from S3 |
 | `GITMOTE_SOCK` | `/tmp/gitmote/gitmote.sock` — pre-receive hook RPC socket |
 | `GITMOTE_COOKIE_KEY` | secret — signs management-UI session cookies (enables `/ui`) |
+| `GITMOTE_URL` | public base URL (`https://gitmote.atmin.net`) — injected into the CI runner's env so it clones and reports back here |
+| `SCW_CI_JOB_DEFINITION_ID` | the Scaleway Serverless Job definition for the CI runner; **unset disables the trigger** (runs/jobs still record). One-time `scw jobs definition create` lands with the runner (stage 4) |
+| `SCW_SECRET_KEY` | secret — Scaleway API secret key (the UUID) used to start the CI job; also the registry/deploy key |
+| `SCW_REGION` | Scaleway region for the CI job start (falls back to `AWS_REGION`) |
+| `WORKER_SECRET` | secret — shared runner-auth secret; injected into the runner env and compared on its report-back (stage 4) |
 | `AWS_REGION` | `fr-par` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | secret — Scaleway API key pair; covers both the object store and the litestream replica |
+
+> `SCW_CI_JOB_DEFINITION_ID` gates CI execution: unset (local dev, tests, e2e) the
+> dispatcher records runs/jobs but the Scaleway trigger no-ops. When it **is** set,
+> `WORKER_SECRET` and `GITMOTE_URL` are required — the server refuses to start
+> otherwise, so a half-configured CI can't silently trigger unreachable runners.
 
 `GITMOTE_DB` and `GITMOTE_CACHE` are ephemeral on purpose: the object store +
 litestream replica are the durable state, and the local disk is a cache. On a

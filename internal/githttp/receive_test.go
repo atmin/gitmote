@@ -225,12 +225,23 @@ func TestPushChunkedLargePack(t *testing.T) {
 	}
 }
 
+// noopTrigger is a ci.Trigger that does nothing — the write-path tests only care
+// that runs/jobs are recorded, not that a runner starts.
+type noopTrigger struct{}
+
+func (noopTrigger) Trigger(context.Context, map[string]string) error { return nil }
+
 // wireDispatcher points the writer's after-commit hook at a real ci.Dispatcher
 // reading workflow config through a materializer over store s, mirroring the
 // main.go wiring.
 func wireDispatcher(t *testing.T, w *Writer, m *meta.Metadata, s store.Store) {
 	t.Helper()
-	d := ci.NewDispatcher(m, repo.New(m, s, t.TempDir()), slog.New(slog.DiscardHandler))
+	d := ci.NewDispatcher(ci.Config{
+		Runs:         m,
+		Materializer: repo.New(m, s, t.TempDir()),
+		Trigger:      noopTrigger{},
+		Logger:       slog.New(slog.DiscardHandler),
+	})
 	w.AfterCommit = func(ctx context.Context, commits []CommitInfo) {
 		for _, c := range commits {
 			d.Dispatch(ctx, ci.Event{

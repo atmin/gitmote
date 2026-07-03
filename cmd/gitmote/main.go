@@ -21,6 +21,7 @@ import (
 	"github.com/atmin/gitmote/internal/githttp"
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
+	"github.com/atmin/gitmote/internal/scaleway"
 	"github.com/atmin/gitmote/internal/store"
 	"github.com/atmin/gitmote/internal/webui"
 	"github.com/atmin/s3lite"
@@ -215,9 +216,30 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	}
 	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
 	materializer := repo.New(md, objs, cacheRoot)
-	// A successful, branch-advancing push discovers its workflows and enqueues a
-	// CI run — fire-and-forget, so dispatch never fails the push (tasks/16-ci.md).
-	dispatcher := ci.NewDispatcher(md, materializer, logger)
+	// The Scaleway Jobs client triggers a runner per CI job. It no-ops when
+	// SCW_CI_JOB_DEFINITION_ID is unset (local dev / tests / e2e), so the write
+	// path runs fully except for the external call. SCW_REGION falls back to the
+	// AWS_REGION already set for the object store.
+	jobDefID := os.Getenv("SCW_CI_JOB_DEFINITION_ID")
+	workerSecret := os.Getenv("WORKER_SECRET")
+	gitmoteURL := os.Getenv("GITMOTE_URL")
+	if jobDefID != "" && (workerSecret == "" || gitmoteURL == "") {
+		_ = writer.Close()
+		_ = md.Close()
+		return nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but WORKER_SECRET or GITMOTE_URL is missing")
+	}
+	jobs := scaleway.NewJobsClient(os.Getenv("SCW_SECRET_KEY"), envOr("SCW_REGION", os.Getenv("AWS_REGION")), jobDefID)
+	// A successful, branch-advancing push discovers its workflows, records a run,
+	// and triggers a runner per job — fire-and-forget, so dispatch never fails the
+	// push (tasks/16-ci.md).
+	dispatcher := ci.NewDispatcher(ci.Config{
+		Runs:         md,
+		Materializer: materializer,
+		Trigger:      jobs,
+		BaseURL:      gitmoteURL,
+		WorkerSecret: workerSecret,
+		Logger:       logger,
+	})
 	writer.AfterCommit = func(ctx context.Context, commits []githttp.CommitInfo) {
 		for _, c := range commits {
 			dispatcher.Dispatch(ctx, ci.Event{
