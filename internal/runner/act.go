@@ -73,8 +73,8 @@ func actArgs(workflowDir string, environ []string) (args, extraEnv []string) {
 	args = []string{"--workflows", workflowDir}
 	for _, kv := range environ {
 		name, val, _ := strings.Cut(kv, "=")
-		switch {
-		case name == actPlatformsEnv:
+		switch name {
+		case actPlatformsEnv:
 			for _, p := range strings.Split(val, ",") {
 				if p = strings.TrimSpace(p); p != "" {
 					args = append(args, "-P", p)
