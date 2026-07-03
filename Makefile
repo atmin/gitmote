@@ -6,7 +6,7 @@ GOIMPORTS     := go run golang.org/x/tools/cmd/goimports@v0.47.0
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: all fmt lint test build e2e-local e2e-restore
+.PHONY: all fmt lint test build dev dev-reset e2e-local e2e-restore
 
 all: lint test build
 
@@ -22,6 +22,19 @@ test:
 
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/gitmote ./cmd/gitmote
+	go build -o bin/gitmote-hook ./cmd/gitmote-hook
+
+# Local dev: MinIO in a container (S3 :9100) + gitmote run natively on :8080,
+# with a bootstrapped admin/token/repo persisted under data/ across restarts.
+# First run prints the token and clone URL; Ctrl-C stops the server. See
+# scripts/dev.sh. Requires docker + docker compose.
+dev: build
+	./scripts/dev.sh
+
+# Wipe all local dev state: the MinIO volume and the persisted DB/cache/token.
+dev-reset:
+	docker compose -p gitmote-dev -f docker-compose.dev.yml down -v 2>/dev/null || true
+	rm -rf data
 
 # End-to-end: gitmote hosts itself against MinIO in Docker (CONTRIBUTING.md —
 # integration tests drive real git). Requires docker + docker compose.

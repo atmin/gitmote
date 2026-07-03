@@ -20,6 +20,22 @@ production on Scaleway Object Storage at
 [gitmote.atmin.net](https://gitmote.atmin.net). The design lives in
 [docs/architecture/](docs/architecture/).
 
+## Develop locally
+
+`make dev` gives you a running instance in one command: it builds the binaries,
+starts MinIO in a container (S3 on :9100), runs gitmote **natively** on :8080,
+and bootstraps an admin/token/repo on the first run. State (the metadata DB,
+object cache, and the minted token) persists under `data/`, so the printed token
+keeps working across restarts:
+
+```sh
+make dev        # first run prints the token, clone URL, and UI URL
+make dev-reset  # wipe MinIO + data/ for a clean slate
+```
+
+Sign in to the UI at <http://localhost:8080/ui> by pasting the token, or
+clone/push straight away with the printed URL. Requires Docker + Docker Compose.
+
 ## Run it locally
 
 `make e2e-local` brings up a gitmote container plus MinIO with

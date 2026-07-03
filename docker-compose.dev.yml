@@ -1,0 +1,35 @@
+# Local dev stack: MinIO only, reachable from a natively-run `bin/gitmote`.
+# Driven by `make dev` (scripts/dev.sh). Unlike docker-compose.yml (the e2e
+# topology, where gitmote also runs in a container), here gitmote runs on the
+# host, so MinIO must publish its ports. They're 9100/9101 (not the usual
+# 9000/9001) to avoid colliding with any other local MinIO.
+name: gitmote-dev
+
+services:
+  minio:
+    image: minio/minio
+    command: server /data --console-address :9101
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9100:9000"   # S3 API  → GITMOTE_S3_ENDPOINT=http://localhost:9100
+      - "9101:9101"   # console → http://localhost:9101 (minioadmin/minioadmin)
+    volumes:
+      - minio-data:/data
+
+  # One-shot bucket creation; not started by `up` (setup profile), invoked with
+  # `docker compose run --rm mc`. MC_HOST_local configures the alias via env, so
+  # no interactive `mc alias set` is needed; it retries until MinIO is reachable.
+  mc:
+    image: minio/mc
+    profiles: ["setup"]
+    depends_on: [minio]
+    environment:
+      MC_HOST_local: http://minioadmin:minioadmin@minio:9000
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "until mc ls local >/dev/null 2>&1; do echo 'waiting for minio'; sleep 1; done; mc mb --ignore-existing local/gitmote"
+
+volumes:
+  minio-data:
