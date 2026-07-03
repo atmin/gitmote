@@ -110,4 +110,31 @@ type commitData struct {
 	Crumbs []crumb // always nil; present so the shared browse_head renders
 	Commit repo.Commit
 	Diff   string
+	Run    *meta.Run // the latest CI run for this commit's SHA, if any (badge)
+}
+
+// --- ci status ---
+
+type ciRunsData struct {
+	base
+	Repo string
+	Runs []meta.Run
+	More bool // the list was capped; older runs exist
+}
+
+type ciRunData struct {
+	base
+	Repo string
+	Run  meta.Run
+	Jobs []meta.Job
+}
+
+type ciLogData struct {
+	base
+	Repo  string
+	Run   meta.Run
+	Job   meta.Job
+	Log   template.HTML // ANSI-rendered log (safe HTML)
+	Plain string        // plain-text fallback for an over-cap log
+	Note  string        // an explanation when there is no rendered log
 }

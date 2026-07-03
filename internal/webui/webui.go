@@ -27,6 +27,7 @@ import (
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/render"
 	"github.com/atmin/gitmote/internal/repo"
+	"github.com/atmin/gitmote/internal/store"
 )
 
 //go:embed templates/*.html
@@ -61,6 +62,7 @@ var nameSegment = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 type Handler struct {
 	md      *meta.Metadata
 	mz      *repo.Materializer
+	store   store.Store
 	auth    Authenticator
 	secrets SecretsAdmin
 	sess    *sessions
@@ -71,8 +73,9 @@ type Handler struct {
 
 // New builds the UI handler. cookieKey signs session cookies and must be
 // non-empty; the auth verifier backs the login form; mz materializes repos for
-// the read-only browse pages; secrets (may be nil) backs the CI secrets panel.
-func New(md *meta.Metadata, mz *repo.Materializer, a Authenticator, secrets SecretsAdmin, cookieKey []byte, logger *slog.Logger) (*Handler, error) {
+// the read-only browse pages; objs reads CI log blobs for the run views; secrets
+// (may be nil) backs the CI secrets panel.
+func New(md *meta.Metadata, mz *repo.Materializer, objs store.Store, a Authenticator, secrets SecretsAdmin, cookieKey []byte, logger *slog.Logger) (*Handler, error) {
 	if len(cookieKey) == 0 {
 		return nil, errors.New("webui: empty cookie key")
 	}
@@ -89,6 +92,26 @@ func New(md *meta.Metadata, mz *repo.Materializer, a Authenticator, secrets Secr
 		// highlightCSS is chroma's class stylesheet, included once in the head so
 		// highlighted blobs and README code blocks share one theme.
 		"highlightCSS": render.HighlightCSS,
+		// short abbreviates a commit SHA for display.
+		"short": func(s string) string {
+			if len(s) > 8 {
+				return s[:8]
+			}
+			return s
+		},
+		// statusColor maps a CI run/job status to a CSS color for its badge.
+		"statusColor": func(s meta.RunStatus) string {
+			switch s {
+			case meta.RunPassed:
+				return "#27ae60"
+			case meta.RunFailed, meta.RunError:
+				return "#c0392b"
+			case meta.RunRunning:
+				return "#b7950b"
+			default: // queued, superseded
+				return "#7f8c8d"
+			}
+		},
 	}).ParseFS(templatesFS, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -99,6 +122,7 @@ func New(md *meta.Metadata, mz *repo.Materializer, a Authenticator, secrets Secr
 	return &Handler{
 		md:      md,
 		mz:      mz,
+		store:   objs,
 		auth:    a,
 		secrets: secrets,
 		sess:    &sessions{key: cookieKey},

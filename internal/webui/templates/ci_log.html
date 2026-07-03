@@ -1,0 +1,15 @@
+{{define "ci_log.html"}}{{template "top" .}}
+<h1>{{.Job.Name}} — run #{{.Run.ID}}</h1>
+<p>
+  <span style="color:{{statusColor .Job.Status}}">{{.Job.Status}}</span>
+  · <a href="/browse/{{.Repo}}/-/run/{{.Run.ID}}">run</a>
+  · {{.Repo}}
+</p>
+
+{{if .Note}}<div class="flash err">{{.Note}}</div>{{end}}
+{{if .Plain}}
+<pre>{{.Plain}}</pre>
+{{else if .Log}}
+<pre>{{.Log}}</pre>
+{{end}}
+{{template "bottom" .}}{{end}}

@@ -1,0 +1,24 @@
+{{define "ci_runs.html"}}{{template "top" .}}
+<h1>CI runs — {{.Repo}}</h1>
+<p><a href="/browse/{{.Repo}}/-/tree/">files</a> · <a href="/browse/{{.Repo}}/-/commits">history</a></p>
+
+{{if .Runs}}
+<table>
+  <thead><tr><th>Run</th><th>Status</th><th>Ref</th><th>Commit</th><th>Updated</th></tr></thead>
+  <tbody>
+  {{range .Runs}}
+    <tr>
+      <td><a href="/browse/{{$.Repo}}/-/run/{{.ID}}">#{{.ID}}</a></td>
+      <td><span style="color:{{statusColor .Status}}">{{.Status}}</span></td>
+      <td>{{.Ref}}</td>
+      <td><code>{{short .SHA}}</code></td>
+      <td>{{.UpdatedAt.Format "2006-01-02 15:04"}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{if .More}}<p>Showing the most recent {{len .Runs}} runs; older runs exist.</p>{{end}}
+{{else}}
+<p>No CI runs yet for {{.Repo}}. Push a commit with <code>.github/workflows</code>.</p>
+{{end}}
+{{template "bottom" .}}{{end}}

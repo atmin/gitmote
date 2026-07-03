@@ -1,0 +1,26 @@
+{{define "ci_run.html"}}{{template "top" .}}
+<h1>Run #{{.Run.ID}} — {{.Repo}}</h1>
+<p>
+  <span style="color:{{statusColor .Run.Status}}">{{.Run.Status}}</span>
+  · {{.Run.Ref}} · <code>{{short .Run.SHA}}</code>
+  · <a href="/browse/{{.Repo}}/-/commit/{{.Run.SHA}}">commit</a>
+  · <a href="/browse/{{.Repo}}/-/runs">all runs</a>
+</p>
+
+{{if .Jobs}}
+<table>
+  <thead><tr><th>Job</th><th>Status</th><th>Log</th></tr></thead>
+  <tbody>
+  {{range .Jobs}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td><span style="color:{{statusColor .Status}}">{{.Status}}</span></td>
+      <td><a href="/browse/{{$.Repo}}/-/run/{{$.Run.ID}}/job/{{.ID}}/log">log</a></td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>This run has no jobs.</p>
+{{end}}
+{{template "bottom" .}}{{end}}

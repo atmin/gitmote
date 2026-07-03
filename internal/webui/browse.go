@@ -41,6 +41,10 @@ func (h *Handler) browse(w http.ResponseWriter, r *http.Request) {
 		h.browseCommits(w, r, repoName)
 	case "commit":
 		h.browseCommit(w, r, repoName, arg)
+	case "runs":
+		h.ciRuns(w, r, repoName)
+	case "run":
+		h.ciRun(w, r, repoName, arg)
 	default:
 		http.NotFound(w, r)
 	}
@@ -259,10 +263,19 @@ func (h *Handler) browseCommit(w http.ResponseWriter, r *http.Request, repoName,
 		h.serverError(w, "show commit", err)
 		return
 	}
+	// Best-effort CI badge: the latest run for this exact commit, if any. A
+	// lookup failure is non-fatal — the commit still renders, just without a badge.
+	var run *meta.Run
+	if got, err := h.md.LatestRunForSHA(r.Context(), c.repo.ID, commit.SHA); err == nil {
+		run = got
+	} else if !errors.Is(err, meta.ErrNotFound) {
+		h.log.Error("latest run for sha", "repo", repoName, "sha", commit.SHA, "error", err)
+	}
 	h.render(w, "browse_commit.html", commitData{
 		browseBase: h.browseHeader(r, c),
 		Commit:     commit,
 		Diff:       diff,
+		Run:        run,
 	})
 }
 

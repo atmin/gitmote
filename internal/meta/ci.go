@@ -134,6 +134,31 @@ func (m *Metadata) ListRuns(ctx context.Context, repoID int64, limit int) ([]Run
 	return runs, rows.Err()
 }
 
+// LatestRunForSHA returns the most recent run for a repo at an exact commit SHA,
+// or ErrNotFound. It backs the commit-status badge in the browse view.
+func (m *Metadata) LatestRunForSHA(ctx context.Context, repoID int64, sha string) (*Run, error) {
+	var (
+		r      Run
+		status string
+		cts    string
+		uts    string
+	)
+	err := m.db.QueryRowContext(ctx,
+		`SELECT id, repo_id, ref, sha, status, created_at, updated_at
+		 FROM ci_runs WHERE repo_id = ? AND sha = ? ORDER BY id DESC LIMIT 1`, repoID, sha).
+		Scan(&r.ID, &r.RepoID, &r.Ref, &r.SHA, &status, &cts, &uts)
+	if isNoRows(err) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.Status = RunStatus(status)
+	r.CreatedAt = parseTime(cts)
+	r.UpdatedAt = parseTime(uts)
+	return &r, nil
+}
+
 // Job is one unit of a run: a single workflow file. Name is the workflow file's
 // base name (stage 2); LogKey is the ci/ object key, set on completion (stage 4).
 type Job struct {

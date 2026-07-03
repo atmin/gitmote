@@ -7,7 +7,7 @@
   <tbody>
   {{range .Repos}}
     <tr>
-      <td><a href="/browse/{{.Name}}/-/tree/">{{.Name}}</a></td>
+      <td><a href="/browse/{{.Name}}/-/tree/">{{.Name}}</a> · <a href="/browse/{{.Name}}/-/runs">CI</a></td>
       <td>{{.DefaultBranch}}</td>
       <td>
         <form class="inline" method="post" action="/ui/repos/default-branch">

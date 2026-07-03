@@ -347,7 +347,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		return nil, nil, nil, noop, err
 	}
 
-	ui, err := buildUI(md, materializer, guard, secretsSvc, logger)
+	ui, err := buildUI(md, materializer, objs, guard, secretsSvc, logger)
 	if err != nil {
 		_ = cleanup()
 		return nil, nil, nil, noop, err
@@ -358,13 +358,13 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 // buildUI constructs the management UI when GITMOTE_COOKIE_KEY is set; otherwise
 // it returns nil (UI disabled) so a misconfigured key never yields an insecurely
 // signed session.
-func buildUI(md *meta.Metadata, mz *repo.Materializer, guard *auth.Guard, secretsSvc *secrets.Service, logger *slog.Logger) (*webui.Handler, error) {
+func buildUI(md *meta.Metadata, mz *repo.Materializer, objs store.Store, guard *auth.Guard, secretsSvc *secrets.Service, logger *slog.Logger) (*webui.Handler, error) {
 	key := os.Getenv("GITMOTE_COOKIE_KEY")
 	if key == "" {
 		logger.Warn("GITMOTE_COOKIE_KEY unset; management UI disabled")
 		return nil, nil
 	}
-	return webui.New(md, mz, guard, secretsSvc, []byte(key), logger)
+	return webui.New(md, mz, objs, guard, secretsSvc, []byte(key), logger)
 }
 
 // hookBinaryPath resolves the pre-receive hook executable: GITMOTE_HOOK if set,
