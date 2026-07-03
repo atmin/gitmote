@@ -212,9 +212,13 @@ func (a *ReportAPI) rollupRun(ctx context.Context, runID int64) {
 }
 
 // ReconcileStuck marks running jobs older than maxAge as error and rolls up their
-// runs. The leader calls it periodically so a runner that dies without reporting
-// doesn't leave a job running forever.
+// runs, so a runner that dies without reporting doesn't leave a job running
+// forever. It is leader-gated: only the writer may touch s3lite, so a follower
+// no-ops (the leader's sweep covers the shared state).
 func (a *ReportAPI) ReconcileStuck(ctx context.Context, maxAge time.Duration, now time.Time) error {
+	if !a.isLeader() {
+		return nil
+	}
 	stuck, err := a.meta.SweepStuckJobs(ctx, now.Add(-maxAge))
 	if err != nil {
 		return err

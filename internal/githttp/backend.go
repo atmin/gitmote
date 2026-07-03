@@ -111,13 +111,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.authz.Authorize(r, repoName, perm); err != nil {
+	user, err := h.authz.Authorize(r, repoName, perm)
+	if err != nil {
 		h.writeAuthError(w, r, repoName, err)
 		return
 	}
 
 	if isPush {
-		h.serveReceivePack(w, r, repoName)
+		h.serveReceivePack(w, r, repoName, user.ID)
 		return
 	}
 
@@ -145,7 +146,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // from the sources of truth, mint a nonce, and hand off to receive-pack with the
 // pre-receive hook wired to call back on the socket. The hook's callback does
 // the object PUT + ref CAS (see Writer.handle).
-func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, repoName string) {
+func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, repoName string, pusherID int64) {
 	push, err := h.writer.Begin(r.Context(), repoName)
 	if err != nil {
 		if errors.Is(err, meta.ErrNotFound) {
@@ -178,7 +179,7 @@ func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, repoN
 	// after-commit hook now, so a CI dispatch reads a warm, consistent repo — never
 	// racing receive-pack's ref finalization. Fire-and-forget: it never fails the
 	// already-committed push.
-	h.writer.FireAfterCommit(push.Committed())
+	h.writer.FireAfterCommit(pusherID, push.Committed())
 }
 
 // materialize builds the on-disk repo, writing the HTTP error itself on failure

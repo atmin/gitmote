@@ -23,6 +23,7 @@ test:
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/gitmote ./cmd/gitmote
 	go build -o bin/gitmote-hook ./cmd/gitmote-hook
+	go build -o bin/gitmote-runner ./cmd/gitmote-runner
 
 # Local dev: MinIO in a container (S3 :9100) + gitmote run natively on :8080,
 # with a bootstrapped admin/token/repo persisted under data/ across restarts.

@@ -51,9 +51,10 @@ type Writer struct {
 	// HTTP handler after receive-pack has fully finished (see FireAfterCommit), so
 	// the on-disk repo already reflects the new refs. It is fire-and-forget: the
 	// push has already committed, so any panic or slowness must not fail the push
-	// (content-before-pointer applied to CI — safety.md §3). It receives one
-	// CommitInfo per updated ref.
-	AfterCommit func(context.Context, []CommitInfo)
+	// (content-before-pointer applied to CI — safety.md §3). It receives the
+	// authenticated pusher's user id (the CI clone token is minted under it, since
+	// the pusher necessarily holds repo read) and one CommitInfo per updated ref.
+	AfterCommit func(ctx context.Context, pusherID int64, commits []CommitInfo)
 }
 
 // CommitInfo describes one ref an accepted push advanced. It carries the repo
@@ -295,7 +296,8 @@ func (w *Writer) handle(req hookrpc.Request) hookrpc.Response {
 // already reflects the new refs and a dispatch's Materialize is a warm no-op
 // rather than a ref update that races receive-pack's own. It is fire-and-forget:
 // the push has already committed, so any panic or error must not fail the push.
-func (w *Writer) FireAfterCommit(commits []CommitInfo) {
+// pusherID is the authenticated user that pushed (the CI clone token owner).
+func (w *Writer) FireAfterCommit(pusherID int64, commits []CommitInfo) {
 	if w.AfterCommit == nil || len(commits) == 0 {
 		return
 	}
@@ -306,7 +308,7 @@ func (w *Writer) FireAfterCommit(commits []CommitInfo) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), afterCommitTimeout)
 	defer cancel()
-	w.AfterCommit(ctx, commits)
+	w.AfterCommit(ctx, pusherID, commits)
 }
 
 // putObjects mirrors the quarantine's git objects into the store under the

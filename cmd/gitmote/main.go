@@ -32,6 +32,15 @@ var version = "dev"
 
 const shutdownTimeout = 10 * time.Second
 
+const (
+	// reconcileInterval is how often the leader sweeps abandoned CI jobs.
+	reconcileInterval = 5 * time.Minute
+	// reconcileMaxAge bounds a running job: past this, a runner is presumed dead
+	// and its job is failed. It matches the clone-token TTL — a job that outlives
+	// its credential can't finish anyway.
+	reconcileMaxAge = time.Hour
+)
+
 func main() {
 	// Subcommands run without the server (single-writer admin, per
 	// docs/notes/bootstrap.md); the default (no subcommand) is the server.
@@ -121,6 +130,10 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 		Handler: newHandler(gitHandler, ui, reportAPI),
 	}
 
+	if reportAPI != nil {
+		go reconcileLoop(ctx, reportAPI, logger)
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("listening", "addr", addr, "version", version)
@@ -143,6 +156,24 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 		return err
 	}
 	return nil
+}
+
+// reconcileLoop periodically sweeps abandoned CI jobs (a runner that died mid-run
+// leaves a job stuck in running). ReconcileStuck is leader-gated internally, so a
+// follower's ticks are no-ops. It stops when ctx is cancelled (shutdown).
+func reconcileLoop(ctx context.Context, reportAPI *ci.ReportAPI, logger *slog.Logger) {
+	t := time.NewTicker(reconcileInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := reportAPI.ReconcileStuck(ctx, reconcileMaxAge, time.Now()); err != nil {
+				logger.Error("ci: reconcile sweep failed", "error", err)
+			}
+		}
+	}
 }
 
 // newHandler returns the server's HTTP routes. ui, when non-nil, registers the
@@ -219,26 +250,44 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	}
 	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
 	materializer := repo.New(md, objs, cacheRoot)
-	// The Scaleway Jobs client triggers a runner per CI job. It no-ops when
-	// SCW_CI_JOB_DEFINITION_ID is unset (local dev / tests / e2e), so the write
-	// path runs fully except for the external call. SCW_REGION falls back to the
-	// AWS_REGION already set for the object store.
+	guard := auth.NewGuard(md)
+
+	// Select the CI trigger. Cloud and local run the *same* runner code and env
+	// contract; only the substrate differs — Scaleway Serverless Jobs in
+	// production, a local process for dev (tasks/16-ci.md, tasks/21-ci-runner.md).
+	// Both need a reachable GITMOTE_URL (the runner clones + reports back over it)
+	// and a WORKER_SECRET (authenticates the report API). With neither configured,
+	// runs still record but nothing executes.
 	jobDefID := os.Getenv("SCW_CI_JOB_DEFINITION_ID")
 	workerSecret := os.Getenv("WORKER_SECRET")
 	gitmoteURL := os.Getenv("GITMOTE_URL")
-	if jobDefID != "" && (workerSecret == "" || gitmoteURL == "") {
-		_ = writer.Close()
-		_ = md.Close()
-		return nil, nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but WORKER_SECRET or GITMOTE_URL is missing")
+	var trigger ci.Trigger = ci.NoopTrigger{}
+	switch {
+	case jobDefID != "":
+		if workerSecret == "" || gitmoteURL == "" {
+			_ = writer.Close()
+			_ = md.Close()
+			return nil, nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but WORKER_SECRET or GITMOTE_URL is missing")
+		}
+		// SCW_REGION falls back to the AWS_REGION already set for the object store.
+		trigger = scaleway.NewJobsClient(os.Getenv("SCW_SECRET_KEY"), envOr("SCW_REGION", os.Getenv("AWS_REGION")), jobDefID)
+		logger.Info("CI trigger: Scaleway Serverless Jobs", "job_definition_id", jobDefID)
+	case workerSecret != "" && gitmoteURL != "":
+		trigger = ci.NewLocalTrigger(runnerBinaryPath(), logger)
+		logger.Info("CI trigger: local runner", "runner", runnerBinaryPath(), "url", gitmoteURL)
+	default:
+		logger.Warn("CI trigger disabled; runs record but do not execute " +
+			"(set GITMOTE_URL + WORKER_SECRET for local, or SCW_CI_JOB_DEFINITION_ID for cloud)")
 	}
-	jobs := scaleway.NewJobsClient(os.Getenv("SCW_SECRET_KEY"), envOr("SCW_REGION", os.Getenv("AWS_REGION")), jobDefID)
+
 	// A successful, branch-advancing push discovers its workflows, records a run,
 	// and triggers a runner per job — fire-and-forget, so dispatch never fails the
 	// push (tasks/16-ci.md).
 	dispatcher := ci.NewDispatcher(ci.Config{
 		Runs:         md,
 		Materializer: materializer,
-		Trigger:      jobs,
+		Trigger:      trigger,
+		Minter:       guard,
 		BaseURL:      gitmoteURL,
 		WorkerSecret: workerSecret,
 		Logger:       logger,
@@ -247,7 +296,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	// completions (a follower returns a retryable 503), and it authenticates with
 	// the same WORKER_SECRET injected into the runner env.
 	reportAPI := ci.NewReportAPI(md, objs, md.IsLeader, workerSecret, logger)
-	writer.AfterCommit = func(ctx context.Context, commits []githttp.CommitInfo) {
+	writer.AfterCommit = func(ctx context.Context, pusherID int64, commits []githttp.CommitInfo) {
 		for _, c := range commits {
 			dispatcher.Dispatch(ctx, ci.Event{
 				RepoID:   c.RepoID,
@@ -255,6 +304,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 				Ref:      c.Ref,
 				OldSHA:   c.Old,
 				NewSHA:   c.New,
+				PusherID: pusherID,
 			})
 		}
 	}
@@ -272,7 +322,6 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		return err
 	}
 
-	guard := auth.NewGuard(md)
 	handler, err := githttp.New(githttp.Config{
 		Materializer: materializer,
 		Authorizer:   guard,
@@ -315,6 +364,18 @@ func hookBinaryPath() string {
 		return filepath.Join(filepath.Dir(exe), "gitmote-hook")
 	}
 	return "gitmote-hook"
+}
+
+// runnerBinaryPath resolves the CI runner executable the local trigger spawns:
+// GITMOTE_RUNNER if set, otherwise gitmote-runner next to this binary.
+func runnerBinaryPath() string {
+	if p := os.Getenv("GITMOTE_RUNNER"); p != "" {
+		return p
+	}
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Join(filepath.Dir(exe), "gitmote-runner")
+	}
+	return "gitmote-runner"
 }
 
 // metaConfigFromEnv builds the metadata database config from the environment.

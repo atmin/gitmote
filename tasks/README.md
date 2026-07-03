@@ -17,8 +17,10 @@ index [16-ci.md](16-ci.md) (the *why* is in
 [../docs/evolution/ci-runner.md](../docs/evolution/ci-runner.md)). Split into
 dependency-ordered stages, each implementable from fresh context:
 
-- [21-ci-runner.md](21-ci-runner.md) — **4b:** runner image + engine execution
-  (4a, the internal claim/complete API, has landed; has an infra spike first).
+- [21-ci-runner.md](21-ci-runner.md) — **4b(cloud):** Scaleway runner image only.
+  The runner, local trigger, scoped clone token, and reconcile ticker have landed
+  (CI runs locally via `make dev` + `act`); what remains is packaging the runner
+  for Scaleway (Dockerfile.runner + `scw jobs definition`), gated on a DinD spike.
 - [22-ci-secrets.md](22-ci-secrets.md) — encrypted per-repo secrets store
   (AES-256-GCM + HKDF + versioned keys), injected at trigger.
 - [23-ci-status-ui.md](23-ci-status-ui.md) — runs list, run detail, log viewer,

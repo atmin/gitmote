@@ -23,7 +23,17 @@ export GITMOTE_DB="$ROOT/data/meta.sqlite3"
 export GITMOTE_CACHE="$ROOT/data/cache"
 export GITMOTE_SOCK="$ROOT/data/gitmote.sock"
 export GITMOTE_HOOK="$ROOT/bin/gitmote-hook"
+export GITMOTE_RUNNER="$ROOT/bin/gitmote-runner"
 export GITMOTE_COOKIE_KEY="dev-cookie-key-not-for-production"
+
+# Enable local CI: on a push, gitmote records a run and spawns the runner
+# (bin/gitmote-runner) as a local process — the same runner code the cloud path
+# uses, driven by the local trigger instead of a Scaleway job. GITMOTE_URL is
+# where the runner clones + reports back; WORKER_SECRET authenticates the report
+# API. The runner executes .github/workflows with `act` (install: brew install
+# act), which needs the Docker/podman daemon MinIO already relies on.
+export GITMOTE_URL="http://localhost:8080"
+export WORKER_SECRET="dev-worker-secret-not-for-production"
 
 mkdir -p "$ROOT/data"
 
@@ -69,6 +79,9 @@ cat <<EOF
 
   MinIO console: http://localhost:9101  (minioadmin / minioadmin)
   Ctrl-C stops the server; MinIO keeps running. 'make dev-reset' wipes all state.
+
+  CI: push a repo with .github/workflows and gitmote runs it locally via act
+      ($(command -v act >/dev/null 2>&1 && echo 'act detected' || echo 'act NOT installed — run: brew install act')).
 
 EOF
 

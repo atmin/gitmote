@@ -242,7 +242,7 @@ func wireDispatcher(t *testing.T, w *Writer, m *meta.Metadata, s store.Store) {
 		Trigger:      noopTrigger{},
 		Logger:       slog.New(slog.DiscardHandler),
 	})
-	w.AfterCommit = func(ctx context.Context, commits []CommitInfo) {
+	w.AfterCommit = func(ctx context.Context, pusherID int64, commits []CommitInfo) {
 		for _, c := range commits {
 			d.Dispatch(ctx, ci.Event{
 				RepoID:   c.RepoID,
@@ -250,6 +250,7 @@ func wireDispatcher(t *testing.T, w *Writer, m *meta.Metadata, s store.Store) {
 				Ref:      c.Ref,
 				OldSHA:   c.Old,
 				NewSHA:   c.New,
+				PusherID: pusherID,
 			})
 		}
 	}
@@ -378,7 +379,7 @@ func TestRejectedPushEnqueuesNoRun(t *testing.T) {
 func TestAfterCommitPanicLeavesPushGreen(t *testing.T) {
 	ctx := context.Background()
 	srv, m, _, writer := newWriteServer(t)
-	writer.AfterCommit = func(context.Context, []CommitInfo) {
+	writer.AfterCommit = func(context.Context, int64, []CommitInfo) {
 		panic("dispatch blew up")
 	}
 

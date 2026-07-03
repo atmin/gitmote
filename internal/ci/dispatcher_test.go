@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
@@ -308,6 +309,87 @@ func TestDispatchOneTriggerFailsOthersProceed(t *testing.T) {
 	}
 	if errored != 1 || queued != 1 {
 		t.Errorf("job statuses = %+v, want one error + one queued", jobs)
+	}
+}
+
+// stubMinter records the MintScoped call and returns a fixed token.
+type stubMinter struct {
+	token     string
+	err       error
+	userID    int64
+	repoScope *int64
+	readOnly  bool
+	expiresAt time.Time
+}
+
+func (m *stubMinter) MintScoped(_ context.Context, userID int64, _ string, repoScope *int64, readOnly bool, expiresAt time.Time) (string, error) {
+	m.userID = userID
+	m.repoScope = repoScope
+	m.readOnly = readOnly
+	m.expiresAt = expiresAt
+	return m.token, m.err
+}
+
+func TestDispatchMintsScopedCloneToken(t *testing.T) {
+	ctx := context.Background()
+	md, s, mz := newFixture(t)
+	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+		".github/workflows/ci.yml": "name: CI\non: push\n",
+	})
+
+	tr := &stubTrigger{}
+	mint := &stubMinter{token: "gmt_scoped.tok"}
+	NewDispatcher(Config{
+		Runs: md, Materializer: mz, Trigger: tr, Minter: mint,
+		BaseURL: "https://gitmote.test", WorkerSecret: "worker-secret",
+	}).Dispatch(ctx, Event{
+		RepoID: r.ID, RepoName: r.Name, Ref: "refs/heads/main",
+		OldSHA: meta.ZeroSHA, NewSHA: head, PusherID: 42,
+	})
+
+	if len(tr.calls) != 1 {
+		t.Fatalf("trigger calls = %d, want 1", len(tr.calls))
+	}
+	if got := tr.calls[0]["GITMOTE_CI_CLONE_TOKEN"]; got != "gmt_scoped.tok" {
+		t.Errorf("GITMOTE_CI_CLONE_TOKEN = %q, want the minted token", got)
+	}
+	// Minted under the pusher, read-only, scoped to just this repo, and expiring.
+	if mint.userID != 42 {
+		t.Errorf("mint userID = %d, want the pusher (42)", mint.userID)
+	}
+	if mint.repoScope == nil || *mint.repoScope != r.ID {
+		t.Errorf("mint repoScope = %v, want &%d", mint.repoScope, r.ID)
+	}
+	if !mint.readOnly {
+		t.Error("mint readOnly = false, want true — the clone token must be read-only")
+	}
+	if mint.expiresAt.IsZero() {
+		t.Error("mint expiresAt is zero, want a bounded TTL")
+	}
+}
+
+func TestDispatchMintFailureLeavesRunUsable(t *testing.T) {
+	ctx := context.Background()
+	md, s, mz := newFixture(t)
+	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+		".github/workflows/ci.yml": "name: CI\non: push\n",
+	})
+
+	// A mint failure is non-fatal: the run and job still record and trigger, with
+	// an empty clone token (the runner's clone fails visibly, not the push).
+	tr := &stubTrigger{}
+	mint := &stubMinter{err: errors.New("mint down")}
+	NewDispatcher(Config{
+		Runs: md, Materializer: mz, Trigger: tr, Minter: mint,
+		BaseURL: "https://gitmote.test", WorkerSecret: "worker-secret",
+	}).Dispatch(ctx, branchEvent(r, head))
+
+	runs, _ := md.ListRuns(ctx, r.ID, 0)
+	if len(runs) != 1 {
+		t.Fatalf("runs = %d, want 1 despite mint failure", len(runs))
+	}
+	if len(tr.calls) != 1 || tr.calls[0]["GITMOTE_CI_CLONE_TOKEN"] != "" {
+		t.Errorf("want one trigger with an empty clone token, got %+v", tr.calls)
 	}
 }
 

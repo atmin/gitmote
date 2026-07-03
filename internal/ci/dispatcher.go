@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
@@ -26,6 +27,10 @@ const (
 	branchPrefix = "refs/heads/"
 	// workflowDir is the fixed, traversal-safe location engine (act) reads.
 	workflowDir = ".github/workflows"
+	// cloneTokenTTL bounds the per-run clone credential: a run's max duration
+	// plus margin. The token is read-only and repo-scoped, so it grants no more
+	// than a fetch of the one repo, and expires long before it could be reused.
+	cloneTokenTTL = time.Hour
 )
 
 // Runs is the slice of meta the dispatcher writes through. *meta.Metadata
@@ -44,9 +49,17 @@ type Materializer interface {
 }
 
 // Trigger starts one CI job's runner with the given env. *scaleway.JobsClient
-// satisfies it; it no-ops when unconfigured (local dev / tests).
+// (cloud) and *LocalTrigger (local dev) both satisfy it; the Scaleway client
+// no-ops when unconfigured.
 type Trigger interface {
 	Trigger(ctx context.Context, env map[string]string) error
+}
+
+// Minter mints the per-run clone credential: a read-only, repo-scoped, expiring
+// token the runner uses to fetch the repo over the normal git-HTTP path.
+// *auth.Guard satisfies it. Nil disables minting (the clone token is left empty).
+type Minter interface {
+	MintScoped(ctx context.Context, userID int64, label string, repoScope *int64, readOnly bool, expiresAt time.Time) (string, error)
 }
 
 // Event is one updated ref from a completed push.
@@ -56,6 +69,10 @@ type Event struct {
 	Ref      string
 	OldSHA   string
 	NewSHA   string
+	// PusherID is the authenticated user that pushed. The clone token is minted
+	// under it (scoped read-only to this repo), since the pusher necessarily holds
+	// repo read — no separate CI service identity or ACL grant is needed.
+	PusherID int64
 }
 
 // Config wires the dispatcher's collaborators. BaseURL and WorkerSecret are
@@ -65,6 +82,7 @@ type Config struct {
 	Runs         Runs
 	Materializer Materializer
 	Trigger      Trigger
+	Minter       Minter // mints the per-run clone token; nil leaves it empty
 	BaseURL      string // GITMOTE_URL
 	WorkerSecret string // WORKER_SECRET
 	Logger       *slog.Logger
@@ -77,9 +95,11 @@ type Dispatcher struct {
 	runs    Runs
 	mz      Materializer
 	trigger Trigger
+	minter  Minter
 	baseURL string
 	secret  string
 	logger  *slog.Logger
+	now     func() time.Time // injectable clock for the clone-token expiry
 }
 
 // NewDispatcher returns a Dispatcher from cfg.
@@ -92,9 +112,11 @@ func NewDispatcher(cfg Config) *Dispatcher {
 		runs:    cfg.Runs,
 		mz:      cfg.Materializer,
 		trigger: cfg.Trigger,
+		minter:  cfg.Minter,
 		baseURL: cfg.BaseURL,
 		secret:  cfg.WorkerSecret,
 		logger:  logger,
+		now:     time.Now,
 	}
 }
 
@@ -158,6 +180,10 @@ func (d *Dispatcher) recordRun(ctx context.Context, ev Event, dir string, files 
 			"repo", ev.RepoName, "ref", ev.Ref, "sha", ev.NewSHA, "error", err)
 		return
 	}
+	// Mint one read-only, repo-scoped, expiring clone token for the whole run;
+	// every job of a run clones the same repo at the same SHA. A mint failure is
+	// non-fatal — the run still records, and the runner's clone will fail visibly.
+	cloneToken := d.mintCloneToken(ctx, ev, run.ID)
 	var (
 		parseErr      error
 		jobs          int
@@ -176,7 +202,7 @@ func (d *Dispatcher) recordRun(ctx context.Context, ev Event, dir string, files 
 			continue
 		}
 		jobs++
-		if err := d.trigger.Trigger(ctx, d.jobEnv(ev, run.ID, job.ID)); err != nil {
+		if err := d.trigger.Trigger(ctx, d.jobEnv(ev, run.ID, job.ID, cloneToken)); err != nil {
 			d.logger.Error("ci: trigger failed",
 				"run", run.ID, "job", job.ID, "name", f.Name, "error", err)
 			if err := d.runs.SetJobStatus(ctx, job.ID, meta.RunError); err != nil {
@@ -196,9 +222,9 @@ func (d *Dispatcher) recordRun(ctx context.Context, ev Event, dir string, files 
 	}
 }
 
-// jobEnv is the per-job environment injected into the triggered runner. The
-// clone token is a placeholder until scoped tokens land (task 20).
-func (d *Dispatcher) jobEnv(ev Event, runID, jobID int64) map[string]string {
+// jobEnv is the per-job environment injected into the triggered runner: the
+// coordinates it claims and reports against, plus the scoped clone token.
+func (d *Dispatcher) jobEnv(ev Event, runID, jobID int64, cloneToken string) map[string]string {
 	return map[string]string{
 		"GITMOTE_CI_RUN_ID":      strconv.FormatInt(runID, 10),
 		"GITMOTE_CI_JOB_ID":      strconv.FormatInt(jobID, 10),
@@ -207,8 +233,27 @@ func (d *Dispatcher) jobEnv(ev Event, runID, jobID int64) map[string]string {
 		"GITMOTE_REPO":           ev.RepoName,
 		"GITMOTE_SHA":            ev.NewSHA,
 		"GITMOTE_REF":            ev.Ref,
-		"GITMOTE_CI_CLONE_TOKEN": "", // placeholder until task 20
+		"GITMOTE_CI_CLONE_TOKEN": cloneToken,
 	}
+}
+
+// mintCloneToken mints the per-run read-only, repo-scoped, expiring clone token
+// under the pusher's identity. It returns "" (and logs) when no minter is
+// configured or the mint fails — a missing token is non-fatal here; the runner's
+// clone simply fails and the job is reported errored, never a failed push.
+func (d *Dispatcher) mintCloneToken(ctx context.Context, ev Event, runID int64) string {
+	if d.minter == nil {
+		return ""
+	}
+	repoID := ev.RepoID
+	label := "ci-clone run " + strconv.FormatInt(runID, 10)
+	tok, err := d.minter.MintScoped(ctx, ev.PusherID, label, &repoID, true, d.now().Add(cloneTokenTTL))
+	if err != nil {
+		d.logger.Error("ci: mint clone token failed",
+			"repo", ev.RepoName, "run", runID, "error", err)
+		return ""
+	}
+	return tok
 }
 
 // setRunStatus transitions a run, logging (not returning) any error.
