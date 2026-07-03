@@ -12,8 +12,58 @@ import (
 	"time"
 )
 
+func TestAdminQuit(t *testing.T) {
+	const key = "s3cr3t-deploy-key"
+
+	// Unauthorized: wrong/absent bearer → 401, quit never fires.
+	for _, auth := range []string{"", "Bearer wrong", "Basic " + key} {
+		called := false
+		h := adminQuitHandler(key, func() { called = true })
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/admin/quit", nil)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		h(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("auth %q: status = %d, want 401", auth, rec.Code)
+		}
+		if called {
+			t.Errorf("auth %q: quit fired on unauthorized request", auth)
+		}
+	}
+
+	// Authorized: 200, acknowledges, and triggers quit.
+	done := make(chan struct{})
+	h := adminQuitHandler(key, func() { close(done) })
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/admin/quit", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	h(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authorized status = %d, want 200", rec.Code)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("quit was not triggered on authorized request")
+	}
+
+	// The route only exists when a deploy key is configured.
+	srv := httptest.NewServer(newHandler(nil, nil, ""))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/admin/quit", "", nil)
+	if err != nil {
+		t.Fatalf("POST /admin/quit: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("quit with no deploy key = %d, want 404 (route absent)", resp.StatusCode)
+	}
+}
+
 func TestHealthz(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil, nil))
+	srv := httptest.NewServer(newHandler(nil, nil, ""))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/healthz")
@@ -28,7 +78,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil, nil))
+	srv := httptest.NewServer(newHandler(nil, nil, ""))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/version")
@@ -43,7 +93,7 @@ func TestVersion(t *testing.T) {
 }
 
 func TestUnknownRouteNotFound(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil, nil))
+	srv := httptest.NewServer(newHandler(nil, nil, ""))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/nope")
@@ -63,7 +113,7 @@ func TestGitHandlerMountedAtRoot(t *testing.T) {
 	gitHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	srv := httptest.NewServer(newHandler(gitHandler, nil))
+	srv := httptest.NewServer(newHandler(gitHandler, nil, ""))
 	defer srv.Close()
 
 	health, err := http.Get(srv.URL + "/healthz")

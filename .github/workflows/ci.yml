@@ -67,6 +67,21 @@ jobs:
           sudo curl -fsSL "$SCW_URL" -o /usr/local/bin/scw
           sudo chmod +x /usr/local/bin/scw
 
+      # Stop-first: drain the running writer to zero BEFORE swapping the image, so
+      # the rolling deploy doesn't briefly run two litestream writers (safety.md
+      # §1). POST /admin/quit self-SIGTERMs the instance → graceful flush + exit.
+      # We then wait (NOT poll — a request would re-wake it) for it to exit; the
+      # image swap below then starts a fresh instance with no old one to overlap.
+      # Residual: a request racing this ~20s window can re-wake the old image;
+      # negligible for an operator-triggered deploy (docs/ops.md).
+      - name: Drain the running writer
+        env:
+          DEPLOY_KEY: ${{ secrets.GITMOTE_DEPLOY_KEY }}
+        run: |
+          curl -fsS -m 15 -X POST -H "Authorization: Bearer $DEPLOY_KEY" \
+            https://gitmote.atmin.net/admin/quit || true
+          sleep 20
+
       # A unique (SHA-tagged) image reference makes this a clean replacement, and
       # max-scale=1 (the single-writer invariant) is re-asserted every deploy.
       # min-scale=0 idles to zero between uses. --wait blocks until the new

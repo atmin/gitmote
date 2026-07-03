@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -119,7 +121,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: newHandler(gitHandler, ui),
+		Handler: newHandler(gitHandler, ui, os.Getenv("GITMOTE_DEPLOY_KEY")),
 	}
 
 	errCh := make(chan error, 1)
@@ -149,8 +151,9 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 // newHandler returns the server's HTTP routes. ui, when non-nil, registers the
 // management UI under /ui/ and /login (more specific patterns that win over the
 // git catch-all). gitHandler, when non-nil, serves the git smart-HTTP endpoints
-// at "/"; the exact health/version routes stay more specific.
-func newHandler(gitHandler http.Handler, ui *webui.Handler) http.Handler {
+// at "/"; the exact health/version routes stay more specific. deployKey, when
+// non-empty, enables POST /admin/quit — the deploy-time self-drain.
+func newHandler(gitHandler http.Handler, ui *webui.Handler, deployKey string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -158,6 +161,16 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler) http.Handler {
 	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, version)
 	})
+	if deployKey != "" {
+		// Deploy-time stop-first: the pipeline drains the running writer before
+		// swapping the image, so the rolling deploy never runs two litestream
+		// writers (docs/ops.md, safety.md §1). Self-SIGTERM drops into the same
+		// graceful-shutdown path that flushes replication.
+		mux.HandleFunc("POST /admin/quit", adminQuitHandler(deployKey, func() {
+			time.Sleep(200 * time.Millisecond) // let the response flush first
+			_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+		}))
+	}
 	if ui != nil {
 		ui.Register(mux)
 	}
@@ -165,6 +178,24 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler) http.Handler {
 		mux.Handle("/", gitHandler)
 	}
 	return mux
+}
+
+// adminQuitHandler authenticates a deploy-key bearer token in constant time and,
+// on success, acknowledges and triggers quit (graceful shutdown). quit is a seam
+// so tests exercise auth without killing the test process.
+func adminQuitHandler(deployKey string, quit func()) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(deployKey)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = io.WriteString(w, "draining\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		go quit()
+	}
 }
 
 // buildGitHandler wires the git read + write paths when an object store is
