@@ -1,8 +1,12 @@
 # CI runner (speculative)
 
-> **Status: evolution note — speculative, not a commitment.** Where gitmote could
-> go, captured so the reasoning survives a fresh session. Nothing here is planned
-> or specced; don't cite it as a spec.
+> **Status: largely realized — see [architecture/ci.md](../architecture/ci.md).**
+> CI (run `.github/workflows` on push, `act` self-hosted on Scaleway Jobs, logs,
+> status UI, encrypted secrets) has landed. The one part **dropped**: the
+> self-deploy loop below — the Serverless Job sandbox can't build container
+> images (no user namespaces / privileged mode), so gitmote does not rebuild its
+> own image; deployment stays on GitHub Actions. This note is kept for the
+> original reasoning; don't cite it as a spec.
 
 ## The idea
 

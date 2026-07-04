@@ -1,25 +1,19 @@
 # Tasks — the frontier
 
-Active and upcoming work toward the milestone: **gitmote can host itself.**
-One file per unit of work, `Spec → Current → Change → Verify`, **deleted once it
-lands** (commits are the record — this list never becomes a changelog).
+Active and upcoming work. One file per unit of work, `Spec → Current → Change →
+Verify`, **deleted once it lands** (commits are the record — this list never
+becomes a changelog).
 
-Ordered by dependency; each task lands in a non-breaking, tested state.
+**The frontier is currently clear.** The **gitmote can host itself** milestone is
+reached: it runs on Scaleway at `gitmote.atmin.net`, deploys on every green master
+push (GitHub Actions), survives cold starts (litestream restore), and enforces the
+single writer by a lease (s3lite `RoleAuto`), so rolling deploys are safe by
+construction.
 
-The **gitmote can host itself** milestone is reached: it runs on Scaleway at
-`gitmote.atmin.net`, deploys itself on every green master push, survives cold
-starts (litestream restore), and enforces the single writer by a lease (s3lite
-`RoleAuto`), so rolling deploys are safe by construction. Speculative directions
-live in [../docs/evolution/](../docs/evolution/).
+**CI has landed** — run `.github/workflows` on push, `act` self-hosted on Scaleway
+Jobs, logs, status UI, encrypted per-repo secrets. The design and rationale now
+live in [../docs/architecture/ci.md](../docs/architecture/ci.md). Known limitation:
+the Serverless Job sandbox can't build container images, so gitmote does not
+rebuild its own image — deployment stays on GitHub Actions.
 
-**CI — run workflows on push.** Design + locked Stage 0 decisions in the epic
-index [16-ci.md](16-ci.md) (the *why* is in
-[../docs/evolution/ci-runner.md](../docs/evolution/ci-runner.md)). Split into
-dependency-ordered stages, each implementable from fresh context:
-
-- [21-ci-runner.md](21-ci-runner.md) — **4b(cloud):** Scaleway runner image only.
-  The runner, local trigger, scoped clone token, and reconcile ticker have landed
-  (CI runs locally via `make dev` + `act`); what remains is packaging the runner
-  for Scaleway (Dockerfile.runner + `scw jobs definition`), gated on a DinD spike.
-- [24-ci-self-deploy.md](24-ci-self-deploy.md) — green master run redeploys
-  gitmote; latest-wins guard; GitHub mirror as break-glass.
+Speculative future directions live in [../docs/evolution/](../docs/evolution/).
