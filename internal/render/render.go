@@ -26,6 +26,7 @@ import (
 	"github.com/yuin/goldmark/extension"
 
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
+	mermaid "go.abhg.dev/goldmark/mermaid"
 )
 
 // MaxSize caps the input render will highlight or markdown-render. Above it the
@@ -90,6 +91,13 @@ var markdown = goldmark.New(
 		highlighting.NewHighlighting(
 			highlighting.WithFormatOptions(chromahtml.WithClasses(true)),
 		),
+		// A ```mermaid fence becomes <pre class="mermaid">…escaped source…</pre>
+		// for client-side rendering (bluemonday passes the class we already allow on
+		// <pre>). RenderModeClient is explicit so a stray `mmdc` on PATH can't flip
+		// us to server-side; NoScript because we include our own embedded, trusted
+		// mermaid.js from the layout — the extension's CDN <script> would be stripped
+		// by the sanitizer anyway.
+		&mermaid.Extender{RenderMode: mermaid.RenderModeClient, NoScript: true},
 	),
 )
 
@@ -111,6 +119,14 @@ func Markdown(src []byte) template.HTML {
 		return ""
 	}
 	return template.HTML(sanitizer.SanitizeBytes(buf.Bytes())) //nolint:gosec // sanitized above
+}
+
+// HasMermaid reports whether rendered markdown contains a mermaid diagram block
+// (emitted as <pre class="mermaid">), so a page pulls in the mermaid script only
+// when it actually has a diagram. Repo text that literally reads class="mermaid"
+// is HTML-escaped by the renderer, so it can't trip this.
+func HasMermaid(h template.HTML) bool {
+	return strings.Contains(string(h), `class="mermaid"`)
 }
 
 // IsMarkdown reports whether filename names a markdown file (.md/.markdown,

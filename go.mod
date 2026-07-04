@@ -12,6 +12,7 @@ require (
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/yuin/goldmark v1.8.2
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
+	go.abhg.dev/goldmark/mermaid v0.6.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

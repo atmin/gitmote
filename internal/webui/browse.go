@@ -143,13 +143,16 @@ func (h *Handler) browseTree(w http.ResponseWriter, r *http.Request, repoName, t
 		h.serverError(w, "list tree", err)
 		return
 	}
-	h.render(w, "browse_tree.html", treeData{
+	readme := h.readme(r, c, entries)
+	data := treeData{
 		browseBase: h.browseHeader(r, c),
 		Path:       treePath,
 		Crumbs:     crumbs(treePath),
 		Entries:    entries,
-		Readme:     h.readme(r, c, entries),
-	})
+		Readme:     readme,
+	}
+	data.Mermaid = render.HasMermaid(readme)
+	h.render(w, "browse_tree.html", data)
 }
 
 func (h *Handler) browseBlob(w http.ResponseWriter, r *http.Request, repoName, blobPath string) {
@@ -182,6 +185,7 @@ func (h *Handler) browseBlob(w http.ResponseWriter, r *http.Request, repoName, b
 		data.Text = string(content)
 	case render.IsMarkdown(blobPath):
 		data.Rendered = render.Markdown(content)
+		data.Mermaid = render.HasMermaid(data.Rendered)
 	default:
 		if hl, err := render.Highlight(content, blobPath); err == nil {
 			data.Highlighted = hl

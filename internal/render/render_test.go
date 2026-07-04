@@ -76,6 +76,34 @@ func TestMarkdownSanitizesXSS(t *testing.T) {
 	}
 }
 
+func TestMarkdownMermaid(t *testing.T) {
+	src := []byte("# Diagram\n\n```mermaid\ngraph TD\n  A --> B\n```\n")
+	out := string(Markdown(src))
+	// The fence becomes a mermaid container (client-side render), not chroma output.
+	if !strings.Contains(out, `class="mermaid"`) {
+		t.Fatalf("mermaid block not emitted as a mermaid container:\n%s", out)
+	}
+	// The diagram source survives inside it (HTML-escaped: --> becomes --&gt;).
+	if !strings.Contains(out, "graph TD") || !strings.Contains(out, "--&gt;") {
+		t.Fatalf("diagram source missing/unescaped:\n%s", out)
+	}
+	// No script is emitted here — the layout includes our own embedded one, and the
+	// sanitizer would strip any injected <script> regardless.
+	if strings.Contains(out, "<script") {
+		t.Fatalf("mermaid render leaked a <script>:\n%s", out)
+	}
+	if !HasMermaid(Markdown(src)) {
+		t.Fatal("HasMermaid = false for markdown with a mermaid block")
+	}
+	// A literal class="mermaid" in prose is escaped, so HasMermaid stays false.
+	if HasMermaid(Markdown([]byte("a `class=\"mermaid\"` mention\n"))) {
+		t.Fatal("HasMermaid = true for an escaped literal, not a real diagram")
+	}
+	if HasMermaid(Markdown([]byte("# just text\n"))) {
+		t.Fatal("HasMermaid = true for markdown with no diagram")
+	}
+}
+
 func TestIsMarkdownAndReadme(t *testing.T) {
 	for _, name := range []string{"a.md", "A.MARKDOWN", "docs/x.Md"} {
 		if !IsMarkdown(name) {

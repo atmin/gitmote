@@ -52,6 +52,10 @@
 {{end}}
 
 {{define "bottom"}}
+{{if .Mermaid}}
+<script src="/ui/static/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' }); mermaid.run();</script>
+{{end}}
 </body>
 </html>
 {{end}}

@@ -33,6 +33,12 @@ import (
 //go:embed templates/*.html
 var templatesFS embed.FS
 
+// mermaidJS is the vendored, version-pinned mermaid library, embedded and served
+// same-origin so diagram rendering needs no external fetch (see static/README.md).
+//
+//go:embed static/mermaid.min.js
+var mermaidJS []byte
+
 // Authenticator verifies a raw personal access token, resolving it to its owner.
 // *auth.Guard satisfies it; the login form is the only caller.
 type Authenticator interface {
@@ -165,6 +171,20 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// split manually on "/-/" (see browse), so one subtree handler covers all
 	// of tree/blob/raw/commits/commit.
 	mux.HandleFunc("GET /browse/{rest...}", h.requireAdmin(h.browse))
+
+	// The vendored mermaid library for diagram rendering, served same-origin.
+	// Public and non-sensitive (a pinned copy of an open-source library), so it
+	// needs no admin session; hard-cached, since the file itself is the version pin.
+	mux.HandleFunc("GET /ui/static/mermaid.min.js", h.serveMermaidJS)
+}
+
+// serveMermaidJS serves the embedded mermaid library for the browse UI's diagram
+// rendering. Trusted, fixed asset — immutable-cached so a browser fetches it once.
+func (h *Handler) serveMermaidJS(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "max-age=31536000, immutable")
+	_, _ = w.Write(mermaidJS)
 }
 
 // ctxUser carries the authenticated admin from the middleware to the handler.

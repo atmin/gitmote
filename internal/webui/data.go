@@ -10,9 +10,10 @@ import (
 // base is embedded in every authenticated page's data; its fields are promoted
 // so templates reference them as .Me / .Flash / .Err regardless of page.
 type base struct {
-	Me    string // handle of the logged-in admin, for the nav
-	Flash string // success message after an action
-	Err   string // error message after a failed action
+	Me      string // handle of the logged-in admin, for the nav
+	Flash   string // success message after an action
+	Err     string // error message after a failed action
+	Mermaid bool   // page has a rendered mermaid diagram → include the script
 }
 
 // loginData backs the (unauthenticated) login page.

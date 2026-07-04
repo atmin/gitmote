@@ -41,6 +41,7 @@ func (x *harness) seedBrowseRepo(name, branch string) (head, first string) {
 	gitTest(x.t, src, "init", "-b", branch, ".")
 	write(x.t, src, "hello.go", "package main\n\nfunc main() {}\n")
 	write(x.t, src, "README.md", "# App\n\nHello **world**.\n\n```go\nfunc main() {}\n```\n")
+	write(x.t, src, "diagram.md", "# Diagram\n\n```mermaid\ngraph TD\n  A --> B\n```\n")
 	write(x.t, src, "sub/note.txt", "nested\n")
 	write(x.t, src, "bin.dat", "a\x00b\x00c")
 	write(x.t, src, "big.go", "package main\n"+strings.Repeat("// filler line\n", 40000))
@@ -231,6 +232,48 @@ func TestBrowseHighlightAndMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "markdown-body") || !strings.Contains(rec.Body.String(), "<h1") {
 		t.Fatalf("tree missing rendered README:\n%s", rec.Body)
+	}
+}
+
+func TestBrowseMermaid(t *testing.T) {
+	x := newHarness(t)
+	x.seedBrowseRepo("alice/app", "main")
+	session := x.login(x.mintTokenFor(x.admin.ID))
+
+	const script = "/ui/static/mermaid.min.js"
+
+	// A markdown blob with a mermaid fence renders the diagram container AND pulls
+	// in the mermaid script.
+	rec := x.do(http.MethodGet, "/browse/alice/app/-/blob/diagram.md?ref=main", nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("diagram blob = %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `class="mermaid"`) {
+		t.Fatalf("mermaid container missing:\n%s", rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), script) {
+		t.Fatalf("mermaid script not included on a page with a diagram:\n%s", rec.Body)
+	}
+
+	// A markdown blob without a diagram must NOT pull in the script (conditional).
+	rec = x.do(http.MethodGet, "/browse/alice/app/-/blob/README.md?ref=main", nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("readme blob = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), script) {
+		t.Fatalf("mermaid script included on a page with no diagram:\n%s", rec.Body)
+	}
+
+	// The vendored script is served, as javascript, non-empty.
+	rec = x.do(http.MethodGet, script, nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mermaid.min.js = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Fatalf("mermaid.min.js content-type = %q, want javascript", ct)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("mermaid.min.js served empty")
 	}
 }
 
