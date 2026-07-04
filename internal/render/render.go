@@ -36,7 +36,12 @@ const MaxSize = 512 * 1024
 
 // highlightStyle is the chroma theme shared by blob view and README code
 // blocks, so the two match. Class-based output pairs it with HighlightCSS.
-var highlightStyle = styles.Get("github")
+// darkStyle is its dark-mode counterpart, emitted under a prefers-color-scheme
+// media query — same class names, so it overrides when the viewer's OS is dark.
+var (
+	highlightStyle = styles.Get("github")
+	darkStyle      = styles.Get("github-dark")
+)
 
 // classFormatter emits class-based (not inline-style) highlight markup, so a
 // single stylesheet from HighlightCSS covers every page.
@@ -77,6 +82,11 @@ func HighlightCSS() template.CSS {
 	highlightCSS.Do(func() {
 		var buf bytes.Buffer
 		_ = classFormatter.WriteCSS(&buf, highlightStyle)
+		// The dark theme reuses the same classes, wrapped in a media query so it
+		// only takes effect when the viewer's OS is in dark mode.
+		buf.WriteString("@media (prefers-color-scheme: dark) {\n")
+		_ = classFormatter.WriteCSS(&buf, darkStyle)
+		buf.WriteString("}\n")
 		highlightCSS.css = template.CSS(buf.String())
 	})
 	return highlightCSS.css

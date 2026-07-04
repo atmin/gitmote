@@ -45,6 +45,10 @@ func TestHighlightCSS(t *testing.T) {
 	if css == "" || !strings.Contains(css, ".chroma") {
 		t.Fatalf("HighlightCSS looks wrong:\n%s", css)
 	}
+	// A dark-mode override ships alongside the light theme.
+	if !strings.Contains(css, "prefers-color-scheme: dark") {
+		t.Fatalf("HighlightCSS missing dark-mode variant:\n%s", css)
+	}
 }
 
 func TestMarkdownGFM(t *testing.T) {
