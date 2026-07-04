@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -116,7 +117,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	gitHandler, ui, reportAPI, closeMeta, err := buildGitHandler(ctx, logger)
+	gitHandler, ui, reportAPI, isLeader, closeMeta, err := buildGitHandler(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -128,7 +129,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: newHandler(gitHandler, ui, reportAPI),
+		Handler: newHandler(gitHandler, ui, reportAPI, isLeader),
 	}
 
 	if reportAPI != nil {
@@ -181,7 +182,11 @@ func reconcileLoop(ctx context.Context, reportAPI *ci.ReportAPI, logger *slog.Lo
 // management UI under /ui/ and /login (more specific patterns that win over the
 // git catch-all). gitHandler, when non-nil, serves the git smart-HTTP endpoints
 // at "/"; the exact health/version routes stay more specific.
-func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.ReportAPI) http.Handler {
+//
+// isLeader gates every metadata-derived response on the writer lease (see
+// leaderGate): a follower — the brief post-deploy window before it promotes —
+// serves a frozen, stale snapshot, so it must not answer with stale refs.
+func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.ReportAPI, isLeader func() bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -198,7 +203,35 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.Report
 	if gitHandler != nil {
 		mux.Handle("/", gitHandler)
 	}
-	return mux
+	return leaderGate(mux, isLeader)
+}
+
+// leaderGate serves stale-free: only the writer (leader) answers requests that
+// read or write the metadata DB. A follower restored a snapshot at startup and
+// does not catch up until it promotes (s3lite RoleAuto), so its refs can lag the
+// true tip — a browse would show a just-pushed file as missing, a fetch would
+// miss commits. Rather than serve that, a follower returns 503 + Retry-After.
+//
+// Exceptions that must stay up on a follower: the liveness probes (Scaleway's
+// health check — gating them would deadlock a rolling deploy, since the new
+// instance can't promote until the old one drains) and static assets (no
+// metadata). A nil isLeader (unreplicated dev, RoleOff) means always-leader.
+func leaderGate(next http.Handler, isLeader func() bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if alwaysServable(r.URL.Path) || isLeader == nil || isLeader() {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Retry-After", "2")
+		http.Error(w, "gitmote is warming up (not the writer yet) — retry shortly",
+			http.StatusServiceUnavailable)
+	})
+}
+
+// alwaysServable reports whether a path is answerable by a follower: the liveness
+// probes and static assets, which carry no metadata.
+func alwaysServable(p string) bool {
+	return p == "/healthz" || p == "/version" || strings.HasPrefix(p, "/ui/static/")
 }
 
 // buildGitHandler wires the git read + write paths when an object store is
@@ -214,17 +247,17 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.Report
 // repos cache under GITMOTE_CACHE (default a temp dir). The push path listens on
 // GITMOTE_SOCK (default a temp path) and installs the pre-receive hook binary
 // at GITMOTE_HOOK (default gitmote-hook alongside this binary).
-func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *webui.Handler, *ci.ReportAPI, func() error, error) {
+func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *webui.Handler, *ci.ReportAPI, func() bool, func() error, error) {
 	noop := func() error { return nil }
 
 	if os.Getenv("GITMOTE_S3_BUCKET") == "" {
 		logger.Warn("GITMOTE_S3_BUCKET unset; git endpoints disabled (health/version only)")
-		return nil, nil, nil, noop, nil
+		return nil, nil, nil, nil, noop, nil
 	}
 
 	objs, err := store.NewS3FromEnv(ctx)
 	if err != nil {
-		return nil, nil, nil, noop, fmt.Errorf("object store: %w", err)
+		return nil, nil, nil, nil, noop, fmt.Errorf("object store: %w", err)
 	}
 
 	// RoleAuto: this instance becomes the writer when it can acquire the lease,
@@ -234,7 +267,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	// unchanged.
 	md, err := meta.Open(ctx, metaConfigFromEnv(logger, s3lite.RoleAuto))
 	if err != nil {
-		return nil, nil, nil, noop, fmt.Errorf("metadata: %w", err)
+		return nil, nil, nil, nil, noop, fmt.Errorf("metadata: %w", err)
 	}
 	md.OnPromote(func() {
 		logger.Info("became writer: acquired the lease", "generation", md.Generation())
@@ -247,7 +280,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	writer, err := githttp.NewWriter(md, objs, hookBinaryPath(), sockPath, logger)
 	if err != nil {
 		_ = md.Close()
-		return nil, nil, nil, noop, fmt.Errorf("write path: %w", err)
+		return nil, nil, nil, nil, noop, fmt.Errorf("write path: %w", err)
 	}
 	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
 	materializer := repo.New(md, objs, cacheRoot)
@@ -260,7 +293,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	if err != nil {
 		_ = writer.Close()
 		_ = md.Close()
-		return nil, nil, nil, noop, fmt.Errorf("ci secrets: %w", err)
+		return nil, nil, nil, nil, noop, fmt.Errorf("ci secrets: %w", err)
 	}
 	secretsSvc := secrets.NewService(keyring, md)
 
@@ -279,7 +312,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		if workerSecret == "" || gitmoteURL == "" {
 			_ = writer.Close()
 			_ = md.Close()
-			return nil, nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but WORKER_SECRET or GITMOTE_URL is missing")
+			return nil, nil, nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but WORKER_SECRET or GITMOTE_URL is missing")
 		}
 		// SCW_REGION falls back to the AWS_REGION already set for the object store.
 		trigger = scaleway.NewJobsClient(os.Getenv("SCW_SECRET_KEY"), envOr("SCW_REGION", os.Getenv("AWS_REGION")), jobDefID)
@@ -344,15 +377,15 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	})
 	if err != nil {
 		_ = cleanup()
-		return nil, nil, nil, noop, err
+		return nil, nil, nil, nil, noop, err
 	}
 
 	ui, err := buildUI(md, materializer, objs, guard, secretsSvc, logger)
 	if err != nil {
 		_ = cleanup()
-		return nil, nil, nil, noop, err
+		return nil, nil, nil, nil, noop, err
 	}
-	return handler, ui, reportAPI, cleanup, nil
+	return handler, ui, reportAPI, md.IsLeader, cleanup, nil
 }
 
 // buildUI constructs the management UI when GITMOTE_COOKIE_KEY is set; otherwise

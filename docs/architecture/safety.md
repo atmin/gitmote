@@ -11,8 +11,14 @@
    is now enforced by a **lease**, not by procedure. The server opens s3lite in
    `RoleAuto`: it writes only while it holds the lease (litestream's `s3.Leaser`,
    a conditional-write CAS on `lock.json` in the replica bucket) and otherwise runs
-   as a read-only follower. gitmote gates receive-pack on `IsLeader()` — a follower
-   refuses pushes with a retryable `503` and still serves reads. A rolling deploy's
+   as a read-only follower. gitmote gates **all metadata-derived requests** on
+   `IsLeader()` — a follower refuses them with a retryable `503`; only the liveness
+   probes and static assets stay up (gating those would deadlock a rolling deploy,
+   since the new instance can't promote until the old drains). Writes are gated for
+   *safety*, reads for *freshness*: a follower serves only the snapshot it restored
+   at startup and doesn't catch up until it promotes, so serving a read would return
+   a stale ref — a just-pushed file appearing missing, a `fetch` missing commits.
+   A rolling deploy's
    brief old+new overlap is therefore one writer + one follower: the new instance
    boots as a follower, the old releases the lease on its graceful SIGTERM `Close`,
    and the new promotes on its next lease poll. **Overlap is safe by construction**,

@@ -13,7 +13,7 @@ import (
 )
 
 func TestHealthz(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil, nil, nil))
+	srv := httptest.NewServer(newHandler(nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/healthz")
@@ -28,7 +28,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil, nil, nil))
+	srv := httptest.NewServer(newHandler(nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/version")
@@ -43,7 +43,7 @@ func TestVersion(t *testing.T) {
 }
 
 func TestUnknownRouteNotFound(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil, nil, nil))
+	srv := httptest.NewServer(newHandler(nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/nope")
@@ -63,7 +63,7 @@ func TestGitHandlerMountedAtRoot(t *testing.T) {
 	gitHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	srv := httptest.NewServer(newHandler(gitHandler, nil, nil))
+	srv := httptest.NewServer(newHandler(gitHandler, nil, nil, nil))
 	defer srv.Close()
 
 	health, err := http.Get(srv.URL + "/healthz")
@@ -82,6 +82,44 @@ func TestGitHandlerMountedAtRoot(t *testing.T) {
 	gitResp.Body.Close()
 	if gitResp.StatusCode != http.StatusTeapot {
 		t.Errorf("git route status = %d, want %d (routed to git handler)", gitResp.StatusCode, http.StatusTeapot)
+	}
+}
+
+func TestLeaderGate(t *testing.T) {
+	// A follower must not answer metadata-derived requests with a stale snapshot;
+	// the git/read catch-all is 503'd. Health/version stay up so a rolling deploy
+	// can still promote (gating them would deadlock it).
+	gitHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	leader := false
+	srv := httptest.NewServer(newHandler(gitHandler, nil, nil, func() bool { return leader }))
+	defer srv.Close()
+
+	get := func(path string) int {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// As a follower: probes stay up, the git read path is refused.
+	if code := get("/healthz"); code != http.StatusOK {
+		t.Errorf("follower /healthz = %d, want 200 (must stay up for the deploy)", code)
+	}
+	if code := get("/version"); code != http.StatusOK {
+		t.Errorf("follower /version = %d, want 200", code)
+	}
+	if code := get("/some/repo/info/refs"); code != http.StatusServiceUnavailable {
+		t.Errorf("follower git read = %d, want 503", code)
+	}
+
+	// After promotion, the same route is served.
+	leader = true
+	if code := get("/some/repo/info/refs"); code != http.StatusTeapot {
+		t.Errorf("leader git read = %d, want %d (served)", code, http.StatusTeapot)
 	}
 }
 
