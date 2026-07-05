@@ -12,7 +12,7 @@ gitmote runs on the same account and host as atmin.net (see that repo's
 |-----------|----------|---------|
 | Compute | Scaleway | Serverless Containers (`fr-par`, custom domain via CNAME, auto TLS) |
 | Object storage | Scaleway | Object Storage (S3-compatible), bucket `gitmote` |
-| Registry | Scaleway | Container Registry (`rg.fr-par.scw.cloud/atmin`, shared with atmin.net) |
+| Registry | GitHub | GHCR — **public** `ghcr.io/atmin/gitmote` (server) + `ghcr.io/atmin/gitmote-runner` (CI). Scaleway pulls both anonymously |
 
 Reachable at **`gitmote.atmin.net`** (CNAME → the container endpoint). EU-resident
 infrastructure, consistent with atmin.net's stance.
@@ -86,7 +86,7 @@ Setting these on the container does nothing for CI, and vice versa.
 | `GITMOTE_COOKIE_KEY` | secret — signs management-UI session cookies (enables `/ui`) |
 | `GITMOTE_URL` | public base URL (`https://gitmote.atmin.net`) — injected into the CI runner's env so it clones and reports back here |
 | `SCW_CI_JOB_DEFINITION_ID` | the Scaleway Serverless Job definition for the CI runner. **Set → cloud trigger** (Scaleway job per CI job) |
-| `SCW_SECRET_KEY` | secret — Scaleway API secret key (the UUID) used to start the CI job; also the registry/deploy key |
+| `SCW_SECRET_KEY` | secret — Scaleway API secret key (the UUID) used to start the CI job (same key also deploys the container from CI) |
 | `SCW_REGION` | Scaleway region for the CI job start (falls back to `AWS_REGION`) |
 | `WORKER_SECRET` | secret — shared runner-auth secret; injected into the runner env and compared on its report-back |
 | `GITMOTE_CI_SECRET_KEY_V1` | secret — base64 of 32 bytes; master key for per-repo CI secrets. Add `_V2`, … to rotate (highest is current; old envelopes still decrypt). Unset → the secrets UI is disabled and none are injected |
@@ -132,19 +132,19 @@ Separate from the container env above: these are the Scaleway API credentials th
 deploy pipeline uses, set in the **GitHub repo** → Settings → Secrets and variables
 → **Actions** → **Repository secrets**. A missing one doesn't error at reference
 time — GitHub substitutes an empty string, so a wrong name surfaces later as e.g.
-`docker login` → *"Password required"*.
+`scw … api_key not_found`.
 
-A Scaleway API key has two halves — don't swap them: the **access key** is
+The image push itself needs **no secret**: publishing to GHCR uses the built-in
+`GITHUB_TOKEN` with the workflow's `packages: write` permission. The Scaleway
+secrets below are only for the `scw container update` deploy (and starting CI
+jobs). A Scaleway API key has two halves — don't swap them: the **access key** is
 `SCWXXXXXXXXXXXXXXXXX` (starts with `SCW`), the **secret key** is a UUID
-(`xxxxxxxx-xxxx-…`). The registry password is the **secret key**. Both must come
-from the same Organization/Project as the `atmin` registry namespace, or registry
-login fails with `api_key … not_found`.
+(`xxxxxxxx-xxxx-…`); both must come from the gitmote Organization/Project.
 
 | Secret | Value |
 |--------|-------|
-| `SCW_SECRET_KEY` | Scaleway API **secret key** — the UUID, not the `SCW…` access key (registry login + deploy) |
+| `SCW_SECRET_KEY` | Scaleway API **secret key** — the UUID, not the `SCW…` access key (deploy + start CI job) |
 | `SCW_ACCESS_KEY` | Scaleway **access key** (`SCW…`) |
-| `SCW_REGISTRY_ENDPOINT` | `rg.fr-par.scw.cloud/atmin` |
 | `SCW_ORGANIZATION_ID` | Scaleway organization ID |
 | `SCW_PROJECT_ID` | Scaleway project ID |
 | `SCW_CONTAINER_ID` | the gitmote Serverless Container ID |
@@ -160,11 +160,17 @@ Environment secrets); the name matches exactly (case-sensitive); and, if kept as
 # 1. Object Storage bucket (console or CLI), fr-par, name "gitmote".
 #    Generate an API key pair for it.
 
-# 2. Push the initial image (registry namespace "atmin" is shared with atmin.net;
-#    Scaleway requires amd64 — build with --platform on ARM Macs).
-docker login rg.fr-par.scw.cloud/atmin -u nologin -p <SCW_SECRET_KEY>
-docker build --platform=linux/amd64 -t rg.fr-par.scw.cloud/atmin/gitmote:master .
-docker push rg.fr-par.scw.cloud/atmin/gitmote:master
+# 2. Publish the initial images to GHCR, then flip both packages to PUBLIC once by
+#    hand (GitHub → your profile/org → Packages → gitmote / gitmote-runner →
+#    Package settings → Change visibility → Public). New GHCR packages default to
+#    private; until public, Scaleway's anonymous pull fails with an error the code
+#    can't diagnose. CI republishes on every push (server) and on runner changes,
+#    so this manual build is only the very first seed. Scaleway requires amd64.
+echo "<GITHUB_PAT with write:packages>" | docker login ghcr.io -u atmin --password-stdin
+docker build  --platform=linux/amd64 -t ghcr.io/atmin/gitmote:master .
+docker push   ghcr.io/atmin/gitmote:master
+docker build  --platform=linux/amd64 -f Dockerfile.runner -t ghcr.io/atmin/gitmote-runner:master .
+docker push   ghcr.io/atmin/gitmote-runner:master
 
 # 3. Create the container (single writer: min-scale=0 idle-to-zero, max-scale=1).
 #    Arg names per the current CLI: image= (not registry-image), cpu-limit (mVCPU),
@@ -175,7 +181,7 @@ docker push rg.fr-par.scw.cloud/atmin/gitmote:master
 scw container container create \
   namespace-id=<NAMESPACE_ID> \
   name=gitmote \
-  image=rg.fr-par.scw.cloud/atmin/gitmote:master \
+  image=ghcr.io/atmin/gitmote:master \
   min-scale=0 max-scale=1 \
   cpu-limit=250 \
   memory-limit-bytes=512MB \
@@ -199,7 +205,17 @@ scw container domain list   container-id=<CONTAINER_ID>   # status pending → r
 #    Note: gitmote has no route at "/", so http(s)://gitmote.atmin.net/ returns 404
 #    by design; check /healthz for liveness. Git lives under /<owner>/<repo>/….
 
-# 5. Set the GitHub Actions repository secrets for the deploy pipeline — these are
+# 5. CI runner Serverless Job — point its definition at the public GHCR runner
+#    image (one image serves all repos; per-job env is injected at trigger). Set
+#    the resulting definition ID as the container's SCW_CI_JOB_DEFINITION_ID to
+#    turn on the cloud CI trigger. Update the image the same way after a runner
+#    change (CI republishes the tag; the Job pulls it on next start):
+scw jobs definition create name=gitmote-runner \
+  image-uri=ghcr.io/atmin/gitmote-runner:master \
+  cpu-limit=1000 memory-limit=2048
+scw jobs definition update <JOB_DEFINITION_ID> image-uri=ghcr.io/atmin/gitmote-runner:master
+
+# 6. Set the GitHub Actions repository secrets for the deploy pipeline — these are
 #    the CI credentials, NOT container env vars. See "CI secrets (GitHub Actions)".
 ```
 
@@ -247,10 +263,15 @@ token's hash is ever stored — the raw token is never recoverable, hence `-reis
 
 Automatic on every green push to `master` (`.github/workflows/ci.yml`, `deploy`
 job): `ci` (lint/test/build) → `e2e` (local push/clone + litestream restore) →
-build+push the amd64 image → `scw container container update … min-scale=0
-max-scale=1 --wait`. No drain step: the writer lease makes the rolling deploy
-safe by construction (new boots as a follower, old releases on SIGTERM, new
-promotes — see the single-writer section).
+build+push the public amd64 image to `ghcr.io/atmin/gitmote:{master,<sha>}` →
+`scw container container update image=ghcr.io/atmin/gitmote:<sha> … min-scale=0
+max-scale=1 --wait` (Scaleway pulls the public image). No drain step: the writer
+lease makes the rolling deploy safe by construction (new boots as a follower, old
+releases on SIGTERM, new promotes — see the single-writer section).
+
+The **runner** image publishes separately on runner/Dockerfile.runner changes (or
+a release) via `.github/workflows/publish-runner.yml` →
+`ghcr.io/atmin/gitmote-runner`; the CI Job definition pulls it on next start.
 
 ```bash
 git push origin master
@@ -274,8 +295,13 @@ same path is exercised locally by `make e2e-restore`.
 ```bash
 scw container container get <CONTAINER_ID>      # status, error messages, instance count
 scw container container redeploy <CONTAINER_ID> # re-pull the current image tag
-scw registry image list                          # images in the registry
+# Images live in GHCR now — inspect/pull them there:
+docker manifest inspect ghcr.io/atmin/gitmote:master        # server image
+docker manifest inspect ghcr.io/atmin/gitmote-runner:master # CI runner image
 ```
+
+If a deploy fails on an image pull, the most likely cause is a **private** GHCR
+package: flip `gitmote` / `gitmote-runner` to public (see one-time setup step 2).
 
 Logs flow to Scaleway Cockpit (console → Observability → Cockpit → Grafana →
 Explore → Loki). gitmote logs JSON to stderr.

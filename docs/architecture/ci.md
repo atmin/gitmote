@@ -118,7 +118,11 @@ branch (`checkout -B`) so `github.ref` resolves.
   rebuilding gitmote's own image in-Job) was evaluated and **dropped** — it runs
   straight into the limitation above. Deployment stays on **GitHub Actions**
   ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)): build+push the
-  image, `scw container update`; the leased writer keeps the swap safe (see
-  [ops.md](../ops.md)). The GitHub mirror is deployer and break-glass both.
-- **The runner image is pushed by hand** (`gitmote-runner:master`); nothing in CI
-  rebuilds it.
+  public image to GHCR (`ghcr.io/atmin/gitmote`), then `scw container update` to
+  pull it; the leased writer keeps the swap safe (see [ops.md](../ops.md)). The
+  GitHub mirror is deployer and break-glass both.
+- **The runner image is built by CI**, not by hand: a change to
+  [`Dockerfile.runner`](../../Dockerfile.runner) or the runner source on `master`
+  (or a release) publishes `ghcr.io/atmin/gitmote-runner` publicly via
+  [`.github/workflows/publish-runner.yml`](../../.github/workflows/publish-runner.yml).
+  The Scaleway Job definition references that GHCR image and pulls it anonymously.

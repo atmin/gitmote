@@ -1,0 +1,49 @@
+name: publish-runner
+
+# The CI runner image (Dockerfile.runner) published publicly to GHCR, replacing
+# the by-hand push (docs/architecture/ci.md, docs/ops.md). Rebuilds when the
+# runner binary or its Dockerfile changes on master, on a release, or on demand.
+# New GHCR packages default to private — flip gitmote-runner to public once by
+# hand so Scaleway Serverless Jobs can pull it anonymously (the Job definition
+# references ghcr.io/atmin/gitmote-runner).
+on:
+  push:
+    branches: [master]
+    paths:
+      - Dockerfile.runner
+      - cmd/gitmote-runner/**
+      - internal/runner/**
+      - go.mod
+      - go.sum
+      - .github/workflows/publish-runner.yml
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  runner:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push runner (amd64 — Scaleway Serverless Jobs require it)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.runner
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/atmin/gitmote-runner:master
+            ghcr.io/atmin/gitmote-runner:${{ github.sha }}

@@ -16,11 +16,8 @@ has landed. What remains is the image chain plus a docs cap — order within the
 chain matters:
 
 **Chain B — the image**
-- [public-registry.md](public-registry.md) — publish `ghcr.io/atmin/gitmote` +
-  `…/gitmote-runner` publicly; deploy from GHCR; kill the by-hand runner push.
 - [dogfood-make.md](dogfood-make.md) — `make image` / `make prod` / `make publish`;
-  `make prod` runs the real image against dev MinIO. *(needs -registry for the
-  tags.)*
+  `make prod` runs the real image against dev MinIO.
 
 **Cap**
 - [operate-docs.md](operate-docs.md) — `docker run` quickstart (incl. "grab the

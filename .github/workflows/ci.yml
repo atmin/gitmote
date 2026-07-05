@@ -39,18 +39,24 @@ jobs:
     if: github.ref == 'refs/heads/master'
     needs: [ci, e2e]
     runs-on: ubuntu-latest
+    # packages: write publishes the public image to GHCR via the built-in
+    # GITHUB_TOKEN; Scaleway then pulls it anonymously (docs/ops.md). New GHCR
+    # packages default to private — flip gitmote to public once by hand.
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
 
-      - name: Login to Scaleway Container Registry
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ secrets.SCW_REGISTRY_ENDPOINT }}
-          username: nologin
-          password: ${{ secrets.SCW_SECRET_KEY }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push (amd64 — Scaleway requires it)
+      - name: Build & push public image (amd64 — Scaleway requires it)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -59,8 +65,8 @@ jobs:
           build-args: |
             VERSION=${{ github.sha }}
           tags: |
-            ${{ secrets.SCW_REGISTRY_ENDPOINT }}/gitmote:master
-            ${{ secrets.SCW_REGISTRY_ENDPOINT }}/gitmote:${{ github.sha }}
+            ghcr.io/atmin/gitmote:master
+            ghcr.io/atmin/gitmote:${{ github.sha }}
 
       - name: Install Scaleway CLI
         run: |
@@ -87,5 +93,5 @@ jobs:
           SCW_DEFAULT_REGION: fr-par
         run: |
           scw container container update ${{ secrets.SCW_CONTAINER_ID }} \
-            image=${{ secrets.SCW_REGISTRY_ENDPOINT }}/gitmote:${{ github.sha }} \
+            image=ghcr.io/atmin/gitmote:${{ github.sha }} \
             min-scale=0 max-scale=1 --wait
