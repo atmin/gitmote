@@ -58,8 +58,8 @@ echo "--- starting MinIO (S3 :9100, console :9101) ---"
 # server also auto-bootstraps on a truly empty bucket — this just makes the token
 # and the dev repo available up front). 'make dev-reset' wipes the DB to start over.
 echo "--- ensuring admin + dev repo (idempotent) ---"
-bin/gitmote bootstrap -handle atmin -repo gitmote -default-branch master >/dev/null
-TOKEN="$(bin/gitmote bootstrap -reissue -handle atmin | grep -oE 'gmt_[0-9a-f]+\.[0-9a-f]+' | head -1)"
+bin/gitmote bootstrap -handle admin -repo gitmote -default-branch master >/dev/null
+TOKEN="$(bin/gitmote bootstrap -reissue -handle admin | grep -oE 'gmt_[0-9a-f]+\.[0-9a-f]+' | head -1)"
 [ -n "$TOKEN" ] || { echo "ERROR: no token from 'bootstrap -reissue'" >&2; exit 1; }
 
 cat <<EOF
@@ -68,8 +68,8 @@ cat <<EOF
 
     UI:     http://localhost:8080/       (sign in at /login by pasting the token)
     token:  $TOKEN
-    clone:  git clone http://atmin:$TOKEN@localhost:8080/gitmote
-    push:   git push http://atmin:$TOKEN@localhost:8080/gitmote HEAD:refs/heads/master
+    clone:  git clone http://admin:$TOKEN@localhost:8080/gitmote
+    push:   git push http://admin:$TOKEN@localhost:8080/gitmote HEAD:refs/heads/master
 
   MinIO console: http://localhost:9101  (minioadmin / minioadmin)
   Ctrl-C stops the server; MinIO keeps running. 'make dev-reset' wipes all state.

@@ -237,8 +237,8 @@ scw container container create \
 #        own cert and browsers report "not secure"):
 scw container domain create container-id=<CONTAINER_ID> hostname=gitmote.atmin.net
 scw container domain list   container-id=<CONTAINER_ID>   # status pending → ready (minutes)
-#    Note: gitmote has no route at "/", so http(s)://gitmote.atmin.net/ returns 404
-#    by design; check /healthz for liveness. Git lives under /<repo>/….
+#    Note: "/" is the web dashboard (200); for a plain liveness probe use
+#    /healthz. Git lives under /<repo>/….
 
 # 5. CI runner Serverless Job — point its definition at the public GHCR runner
 #    image (one image serves all repos; per-job env is injected at trigger). Set
@@ -283,11 +283,11 @@ export GITMOTE_S3_BUCKET=gitmote \
        AWS_REGION=fr-par AWS_ACCESS_KEY_ID=<KEY> AWS_SECRET_ACCESS_KEY=<SECRET>
 
 # Bootstrap by hand (optional -repo). Idempotent — refuses to clobber an admin:
-gitmote bootstrap -handle atmin
+gitmote bootstrap -handle admin
 
 # Lost the token? Mint a fresh one for the existing admin (safe: whoever can run
 # this against the bucket already has total infra control):
-gitmote bootstrap -reissue -handle atmin
+gitmote bootstrap -reissue -handle admin
 ```
 
 Each prints the access token once (save it) and durably flushes the new state to
@@ -316,8 +316,8 @@ git push origin master
 
 ```bash
 # Push the gitmote repo over HTTPS to the deployed instance:
-git push https://atmin:<token>@gitmote.atmin.net/gitmote HEAD:refs/heads/master
-git clone https://atmin:<token>@gitmote.atmin.net/gitmote /tmp/gitmote-clone
+git push https://admin:<token>@gitmote.atmin.net/gitmote HEAD:refs/heads/master
+git clone https://admin:<token>@gitmote.atmin.net/gitmote /tmp/gitmote-clone
 git -C /tmp/gitmote-clone fsck --full   # clean
 ```
 

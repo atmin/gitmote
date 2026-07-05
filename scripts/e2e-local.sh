@@ -68,11 +68,11 @@ $DC up -d minio
 $DC run --rm mc
 
 echo "--- bootstrap (one-shot, writes admin/token/repo to the metadata volume) ---"
-BOOT="$($DC run --rm -T gitmote bootstrap -handle atmin -repo gitmote -default-branch "$BRANCH")"
+BOOT="$($DC run --rm -T gitmote bootstrap -handle admin -repo gitmote -default-branch "$BRANCH")"
 TOKEN="$(printf '%s\n' "$BOOT" | grep -oE 'gmt_[0-9a-f]+\.[0-9a-f]+' | head -1)"
 [ -n "$TOKEN" ] || { printf '%s\n' "$BOOT"; fail "no token in bootstrap output"; }
 
-REPO_URL="http://atmin:${TOKEN}@localhost:8080/gitmote"
+REPO_URL="http://admin:${TOKEN}@localhost:8080/gitmote"
 
 echo "--- starting gitmote server ---"
 $DC up -d gitmote
