@@ -80,6 +80,71 @@ func TestMarkdownSanitizesXSS(t *testing.T) {
 	}
 }
 
+func TestMarkdownLinks(t *testing.T) {
+	// A stat callback: doc.md and CONTRIBUTING.md are files, "sub" and "docs" are
+	// directories, everything else is absent.
+	lc := &LinkContext{
+		Repo: "app",
+		Ref:  "main",
+		Dir:  "docs",
+		Stat: func(p string) (string, bool) {
+			switch p {
+			case "docs/doc.md", "CONTRIBUTING.md":
+				return "blob", true
+			case "docs/sub", "sub":
+				return "tree", true
+			default:
+				return "", false
+			}
+		},
+	}
+
+	src := []byte(strings.Join([]string{
+		"[sib](./doc.md)",          // sibling file → blob
+		"[dir](sub/)",              // subdir → tree
+		"[up](../CONTRIBUTING.md)", // ../ up-link → blob at repo root
+		"![img](diagram.png)",      // image → raw (no stat)
+		"[ext](https://x.example)", // external → unchanged
+		"[mail](mailto:a@b.co)",    // mailto → unchanged
+		"[anchor](#section)",       // in-page anchor → unchanged
+		"[abs](/other/thing)",      // site-absolute → unchanged
+		"[gone](./missing.md)",     // missing target → unchanged
+	}, "\n\n"))
+	out := string(MarkdownLinks(src, lc))
+
+	wantContains := []string{
+		`href="/app/blob/main/docs/doc.md"`,
+		`href="/app/tree/main/docs/sub"`,
+		`href="/app/blob/main/CONTRIBUTING.md"`,
+		`src="/app/raw/main/docs/diagram.png"`,
+		`href="https://x.example"`,
+		`href="mailto:a@b.co"`,
+		`href="#section"`,
+		`href="/other/thing"`,
+		`href="./missing.md"`, // dangling, left as-is
+	}
+	for _, w := range wantContains {
+		if !strings.Contains(out, w) {
+			t.Errorf("output missing %q:\n%s", w, out)
+		}
+	}
+	// A missing nav target must never be fabricated into a blob/tree URL.
+	if strings.Contains(out, "missing.md\"") && strings.Contains(out, "/app/blob/main/docs/missing.md") {
+		t.Errorf("missing target was rewritten into a false blob URL:\n%s", out)
+	}
+}
+
+func TestMarkdownLinksNilContextIsInert(t *testing.T) {
+	src := []byte("[x](./doc.md)\n\n![y](img.png)\n")
+	if a, b := MarkdownLinks(src, nil), Markdown(src); string(a) != string(b) {
+		t.Fatalf("nil LinkContext changed output:\n%s\nvs\n%s", a, b)
+	}
+	// Relative destinations pass through untouched with no context.
+	if out := string(Markdown(src)); !strings.Contains(out, `href="./doc.md"`) || !strings.Contains(out, `src="img.png"`) {
+		t.Fatalf("relative links altered without a context:\n%s", out)
+	}
+}
+
 func TestMarkdownMermaid(t *testing.T) {
 	src := []byte("# Diagram\n\n```mermaid\ngraph TD\n  A --> B\n```\n")
 	out := string(Markdown(src))

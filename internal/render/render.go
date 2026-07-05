@@ -14,6 +14,7 @@ package render
 import (
 	"bytes"
 	"html/template"
+	"net/url"
 	"path"
 	"strings"
 	"sync"
@@ -23,7 +24,11 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
 	mermaid "go.abhg.dev/goldmark/mermaid"
@@ -109,7 +114,92 @@ var markdown = goldmark.New(
 		// by the sanitizer anyway.
 		&mermaid.Extender{RenderMode: mermaid.RenderModeClient, NoScript: true},
 	),
+	// Rewrite a rendered file's relative links/embeds into repo URLs. The
+	// transformer is a no-op unless the Convert call supplies a *LinkContext
+	// (MarkdownLinks does; plain Markdown does not).
+	goldmark.WithParserOptions(
+		parser.WithASTTransformers(util.Prioritized(linkTransformer{}, 100)),
+	),
 )
+
+// linkCtxKey carries the per-render *LinkContext through the parser context to
+// the link transformer.
+var linkCtxKey = parser.NewContextKey()
+
+// LinkContext supplies what the markdown link rewriter needs to turn a rendered
+// file's relative links and embeds into repo URLs: the repo name, the resolved
+// ref, the directory the rendered file lives in (relative paths resolve against
+// it), and a Stat callback reporting whether a repo-relative path is a "blob", a
+// "tree", or absent (ok=false).
+type LinkContext struct {
+	Repo string
+	Ref  string
+	Dir  string
+	Stat func(path string) (kind string, ok bool)
+}
+
+// rewrite maps one link/image destination to a repo URL, or returns it
+// unchanged. External (scheme/host), site-absolute, and pure-anchor targets are
+// left alone; a relative path is resolved against Dir and mapped to raw (images)
+// or blob/tree (nav, by the Stat lookup). A relative path that climbs out of the
+// repo, or a nav target that doesn't exist, is left as-is (visibly dangling)
+// rather than rewritten into a wrong URL.
+func (lc *LinkContext) rewrite(dest string, isImage bool) string {
+	u, err := url.Parse(dest)
+	if err != nil {
+		return dest
+	}
+	if u.Scheme != "" || u.Host != "" || u.Path == "" || path.IsAbs(u.Path) {
+		return dest
+	}
+	target := path.Join(lc.Dir, u.Path)
+	if target == ".." || strings.HasPrefix(target, "../") {
+		return dest
+	}
+	verb := "raw"
+	if !isImage {
+		kind, ok := lc.Stat(target)
+		if !ok {
+			return dest
+		}
+		if kind == "tree" {
+			verb = "tree"
+		} else {
+			verb = "blob"
+		}
+	}
+	out := "/" + lc.Repo + "/" + verb + "/" + lc.Ref + "/" + target
+	if u.RawQuery != "" {
+		out += "?" + u.RawQuery
+	}
+	if u.Fragment != "" {
+		out += "#" + u.Fragment
+	}
+	return out
+}
+
+// linkTransformer rewrites relative link and image destinations in the parsed
+// markdown when the Convert call supplies a *LinkContext.
+type linkTransformer struct{}
+
+func (linkTransformer) Transform(doc *ast.Document, _ text.Reader, pc parser.Context) {
+	lc, ok := pc.Get(linkCtxKey).(*LinkContext)
+	if !ok || lc == nil {
+		return
+	}
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch node := n.(type) {
+		case *ast.Link:
+			node.Destination = []byte(lc.rewrite(string(node.Destination), false))
+		case *ast.Image:
+			node.Destination = []byte(lc.rewrite(string(node.Destination), true))
+		}
+		return ast.WalkContinue, nil
+	})
+}
 
 // sanitizer strips dangerous constructs goldmark passes through, while allowing
 // the class attribute chroma needs on the code elements it emits (so README
@@ -124,8 +214,19 @@ var sanitizer = func() *bluemonday.Policy {
 // Markdown renders src to sanitized HTML. It never returns unsafe markup: even
 // if goldmark errored, the (empty) output passes through the sanitizer.
 func Markdown(src []byte) template.HTML {
+	return MarkdownLinks(src, nil)
+}
+
+// MarkdownLinks renders src like Markdown, additionally rewriting the file's
+// relative links and embeds into repo URLs via lc (see LinkContext). A nil lc
+// disables rewriting — it is exactly Markdown.
+func MarkdownLinks(src []byte, lc *LinkContext) template.HTML {
 	var buf bytes.Buffer
-	if err := markdown.Convert(src, &buf); err != nil {
+	pc := parser.NewContext()
+	if lc != nil {
+		pc.Set(linkCtxKey, lc)
+	}
+	if err := markdown.Convert(src, &buf, parser.WithContext(pc)); err != nil {
 		return ""
 	}
 	return template.HTML(sanitizer.SanitizeBytes(buf.Bytes())) //nolint:gosec // sanitized above

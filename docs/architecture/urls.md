@@ -10,8 +10,9 @@ is no per-user namespace to disambiguate, so there is nothing to disambiguate.
 > default-branch force-push) are implemented and reconciled into
 > [storage.md](storage.md) and [auth.md](auth.md); the **`tree`/`blob`/`raw`
 > content routing** (ref-in-path greedy resolution, unified `tree`, self-healing
-> `blob`, the bare `/{repo}` landing) is implemented per the sections below. Still
-> to land from the `tasks/urls-*` chain: rendered-markdown link rewriting, and the
+> `blob`, the bare `/{repo}` landing) and **rendered-markdown link rewriting**
+> (relative nav → `blob`/`tree`, embeds → `raw`, ref preserved) are implemented
+> per the sections below. Still to land from the `tasks/urls-*` chain: the
 > dashboard UI on the new routes.
 
 ## The namespace

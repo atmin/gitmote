@@ -43,6 +43,7 @@ func (x *harness) seedBrowseRepo(name, branch string) (head, first string) {
 	write(x.t, src, "README.md", "# App\n\nHello **world**.\n\n```go\nfunc main() {}\n```\n")
 	write(x.t, src, "diagram.md", "# Diagram\n\n```mermaid\ngraph TD\n  A --> B\n```\n")
 	write(x.t, src, "sub/note.txt", "nested\n")
+	write(x.t, src, "links.md", "# Links\n\n[code](./hello.go)\n\n[dir](sub/)\n\n![img](bin.dat)\n\n[ext](https://example.com)\n\n[gone](./nope.md)\n")
 	write(x.t, src, "bin.dat", "a\x00b\x00c")
 	write(x.t, src, "big.go", "package main\n"+strings.Repeat("// filler line\n", 40000))
 	gitTest(x.t, src, "add", "-A")
@@ -90,6 +91,33 @@ func (x *harness) seedBrowseRepo(name, branch string) (head, first string) {
 		x.t.Fatalf("CASRef tag: %v", err)
 	}
 	return head, first
+}
+
+// TestBrowseMarkdownLinkRewriting: a rendered markdown file's relative links and
+// embeds are rewritten to the content verbs with the ref preserved (blob for a
+// file, tree for a directory, raw for an image), while external and dangling
+// links are left alone. This is the end-to-end fix for the "empty tree" bug.
+func TestBrowseMarkdownLinkRewriting(t *testing.T) {
+	x := newHarness(t)
+	x.seedBrowseRepo("app", "main")
+	session := x.login(x.mintTokenFor(x.admin.ID))
+
+	rec := x.do(http.MethodGet, "/app/blob/main/links.md", nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("links blob = %d (%s)", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`href="/app/blob/main/hello.go"`, // sibling file → blob
+		`href="/app/tree/main/sub"`,      // subdir → tree
+		`src="/app/raw/main/bin.dat"`,    // embed → raw
+		`href="https://example.com"`,     // external → unchanged
+		`href="./nope.md"`,               // missing → left dangling
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered markdown missing %q:\n%s", want, body)
+		}
+	}
 }
 
 // TestBrowseBlobOnDirRedirects: blob on a directory 301s to the tree URL,

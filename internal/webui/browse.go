@@ -358,7 +358,7 @@ func (h *Handler) renderTree(w http.ResponseWriter, r *http.Request, c browseCtx
 		h.serverError(w, "list tree", err)
 		return
 	}
-	readme := h.readme(r, c, entries)
+	readme := h.readme(r, c, treePath, entries)
 	data := treeData{
 		browseBase: h.browseHeader(r, c),
 		Path:       treePath,
@@ -395,7 +395,7 @@ func (h *Handler) renderBlob(w http.ResponseWriter, r *http.Request, c browseCtx
 	case size > render.MaxSize:
 		data.Text = string(content)
 	case render.IsMarkdown(blobPath):
-		data.Rendered = render.Markdown(content)
+		data.Rendered = render.MarkdownLinks(content, h.linkContext(r, c, path.Dir(blobPath)))
 		data.Mermaid = render.HasMermaid(data.Rendered)
 	default:
 		if hl, err := render.Highlight(content, blobPath); err == nil {
@@ -482,9 +482,10 @@ func (h *Handler) renderCommit(w http.ResponseWriter, r *http.Request, c browseC
 }
 
 // readme renders a directory's README.md (if any) to HTML for display below
-// the tree listing. It is best-effort: a missing, binary, oversize, or
-// unreadable README simply yields no rendered block.
-func (h *Handler) readme(r *http.Request, c browseCtx, entries []repo.TreeEntry) template.HTML {
+// the tree listing, with its relative links resolved against dir (the listed
+// directory). It is best-effort: a missing, binary, oversize, or unreadable
+// README simply yields no rendered block.
+func (h *Handler) readme(r *http.Request, c browseCtx, dir string, entries []repo.TreeEntry) template.HTML {
 	for _, e := range entries {
 		if e.Type != "blob" || !render.IsReadme(e.Name) {
 			continue
@@ -493,9 +494,27 @@ func (h *Handler) readme(r *http.Request, c browseCtx, entries []repo.TreeEntry)
 		if err != nil || binary || size > render.MaxSize {
 			return ""
 		}
-		return render.Markdown(content)
+		return render.MarkdownLinks(content, h.linkContext(r, c, dir))
 	}
 	return ""
+}
+
+// linkContext builds the markdown link rewriter's context for a file whose
+// relative links resolve against dir: the repo, the selected ref, and a Stat
+// callback backed by the materialized tree (so a nav link maps to blob vs tree).
+func (h *Handler) linkContext(r *http.Request, c browseCtx, dir string) *render.LinkContext {
+	return &render.LinkContext{
+		Repo: c.repo.Name,
+		Ref:  c.ref,
+		Dir:  dir,
+		Stat: func(p string) (string, bool) {
+			kind, err := repo.EntryType(r.Context(), c.dir, c.sha, p)
+			if err != nil {
+				return "", false
+			}
+			return kind, true
+		},
+	}
 }
 
 // crumbs turns a path into its breadcrumb trail, each segment linking to the

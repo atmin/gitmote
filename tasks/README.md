@@ -18,15 +18,13 @@ namespace** (`host/<repo>`, no `owner/`, no `/-/`), content addressed in-path
 visibility with spectators & collaborators, and rendered-markdown links that
 actually resolve. Greenfield — **reset the bucket + meta**, no migration. Design +
 rationale: [../docs/architecture/urls.md](../docs/architecture/urls.md). Order
-within the chain matters — the **flat namespace + visibility & access** and the
-**content routing** slices have landed (single-segment repos, `visibility`,
-repo-read browse authz, admin-only default-branch force-push; `tree`/`blob`/`raw`
-verbs with ref-in-path greedy resolution and the bare `/<repo>` landing); the
-rest remain:
+within the chain matters — the **flat namespace + visibility & access**, the
+**content routing**, and the **markdown link rewriting** slices have landed
+(single-segment repos, `visibility`, repo-read browse authz, admin-only
+default-branch force-push; `tree`/`blob`/`raw` verbs with ref-in-path greedy
+resolution and the bare `/<repo>` landing; rendered relative links → `blob`/`tree`
+and embeds → `raw`, ref preserved); one remains:
 
-- [urls-markdown-links.md](urls-markdown-links.md) — rewrite rendered-markdown
-  relative links (nav → `blob`/`tree`) and embeds (→ `raw`), ref preserved.
-  *(needs -content-routing.)*
 - [urls-dashboard-ui.md](urls-dashboard-ui.md) — `/` dashboard, top-level globals
   (`/login`, `/users`, …), per-repo `settings`/`access`/`secrets`. *(last —
   reshapes the UI onto the new routes.)*
