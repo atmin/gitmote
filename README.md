@@ -41,7 +41,7 @@ token to the logs behind a `SAVE IT NOW` banner — grab it there (no setup page
 Then sign in at <http://localhost:8080/login> by pasting it, and clone/push:
 
 ```sh
-git clone http://admin:<token>@localhost:8080/<repo>   # create the repo in /ui first
+git clone http://admin:<token>@localhost:8080/<repo>   # create the repo on the dashboard (/) first
 ```
 
 Lost the token? It's never stored (only its hash), so re-mint one — stop the
@@ -68,7 +68,7 @@ make dev        # first run prints the token, clone URL, and UI URL
 make dev-reset  # wipe MinIO + data/ for a clean slate
 ```
 
-Sign in to the UI at <http://localhost:8080/ui> by pasting the token, or
+Sign in to the UI at <http://localhost:8080/> by pasting the token, or
 clone/push straight away with the printed URL. Requires Docker + Docker Compose.
 
 **CI works locally too.** Push a repo with `.github/workflows/*.yml` and gitmote
@@ -103,14 +103,19 @@ You can still bootstrap by hand against the bucket **before** the server is live
 Only the token's hash is ever stored, so a lost token is re-minted, never
 recovered.
 
-## Management UI
+## Web UI
 
-The things you can't do over git — create/list repos, mint/revoke tokens, and
-manage per-repo ACLs — live in a small server-rendered web UI under `/ui`, always
-on. Sign in at `/login` by pasting an **admin** token (the same PAT format git
-uses); the server issues a signed, stateless session cookie signed with a key it
-auto-generates and persists (override with `GITMOTE_COOKIE_KEY`). Access is
-limited to global admins.
+The bare root `/` is a **dashboard**: a viewer-scoped repo list (public repos to
+anyone, private to those with access, all to an admin) with browse pages for each
+repo. Sign in at `/login` by pasting a token (the same PAT format git uses) — any
+user may sign in to see the repos they can access; the server issues a signed,
+stateless session cookie keyed by an auto-generated, persisted secret (override
+with `GITMOTE_COOKIE_KEY`).
+
+The things you can't do over git are **admin-only**: create repos and mint/revoke
+tokens from the top-level `/users` and `/tokens` pages, and manage a repo from its
+`/<repo>/settings` (visibility, default branch), `/<repo>/access` (invite
+spectators/collaborators), and `/<repo>/secrets` pages.
 
 ---
 

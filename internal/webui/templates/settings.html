@@ -1,0 +1,26 @@
+{{define "settings.html"}}{{template "top" .}}
+<h1>Settings — <a href="/{{.Repo.Name}}">{{.Repo.Name}}</a></h1>
+
+<fieldset>
+  <legend>Visibility</legend>
+  <p>A <strong>public</strong> repo is readable by anyone with no token (clone, fetch, browse). Writes always require access.</p>
+  <form class="inline" method="post" action="/{{.Repo.Name}}/settings">
+    <label>Visibility
+      <select name="visibility">
+        <option value="private"{{if eq .Repo.Visibility "private"}} selected{{end}}>private</option>
+        <option value="public"{{if eq .Repo.Visibility "public"}} selected{{end}}>public</option>
+      </select>
+    </label>
+    <button type="submit">Save</button>
+  </form>
+</fieldset>
+
+<fieldset>
+  <legend>Default branch</legend>
+  <p>The branch HEAD points at, and the one the force-push guard protects (a non-fast-forward here needs admin).</p>
+  <form class="inline" method="post" action="/{{.Repo.Name}}/settings">
+    <label>Default branch <input type="text" name="default_branch" value="{{.Repo.DefaultBranch}}" size="16" required></label>
+    <button type="submit">Update</button>
+  </form>
+</fieldset>
+{{template "bottom" .}}{{end}}

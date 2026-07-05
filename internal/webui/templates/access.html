@@ -1,0 +1,41 @@
+{{define "access.html"}}{{template "top" .}}
+<h1>Access — <a href="/{{.Repo}}">{{.Repo}}</a></h1>
+<p>A <strong>spectator</strong> (read) may browse and clone; a <strong>collaborator</strong> (write) may also push; <strong>admin</strong> may manage the repo.</p>
+
+{{if .ACLs}}
+<table>
+  <thead><tr><th>User</th><th>Role</th><th></th></tr></thead>
+  <tbody>
+  {{range .ACLs}}
+    <tr>
+      <td>{{.Handle}}</td>
+      <td>{{.Perm}}{{if eq .Perm "read"}} (spectator){{else if eq .Perm "write"}} (collaborator){{end}}</td>
+      <td>
+        <form class="inline" method="post" action="/{{$.Repo}}/access/revoke">
+          <input type="hidden" name="user_id" value="{{.UserID}}">
+          <button type="submit">Revoke</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>No grants on {{.Repo}}.</p>
+{{end}}
+
+<fieldset>
+  <legend>Invite</legend>
+  <form method="post" action="/{{.Repo}}/access">
+    <label>User <input type="text" name="handle" required></label>
+    <label>Role
+      <select name="perm">
+        <option value="read">spectator (read)</option>
+        <option value="write">collaborator (write)</option>
+        <option value="admin">admin</option>
+      </select>
+    </label>
+    <button type="submit">Grant</button>
+  </form>
+</fieldset>
+{{template "bottom" .}}{{end}}

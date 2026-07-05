@@ -197,6 +197,37 @@ func (m *Metadata) ListRepos(ctx context.Context) ([]Repo, error) {
 	return repos, rows.Err()
 }
 
+// ListReposForViewer returns the repos a viewer may see, ordered by name: every
+// public repo plus any private repo on which the viewer holds an ACL. userID 0
+// is anonymous (public only). The visibility/ACL filter lives here, in SQL, so
+// the dashboard handler cannot drift from the repo-read rule (CanRead). An admin
+// sees everything — the caller uses ListRepos for that.
+func (m *Metadata) ListReposForViewer(ctx context.Context, userID int64) ([]Repo, error) {
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT id, name, default_branch, visibility, created_at FROM repos r
+		  WHERE r.visibility = ?
+		     OR EXISTS (SELECT 1 FROM acls a WHERE a.repo_id = r.id AND a.user_id = ?)
+		  ORDER BY name`, VisibilityPublic, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var repos []Repo
+	for rows.Next() {
+		var (
+			r  Repo
+			ts string
+		)
+		if err := rows.Scan(&r.ID, &r.Name, &r.DefaultBranch, &r.Visibility, &ts); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = parseTime(ts)
+		repos = append(repos, r)
+	}
+	return repos, rows.Err()
+}
+
 // parseTime parses an RFC 3339 timestamp written by now(); a parse failure
 // yields the zero time rather than an error, since the column is always
 // written by this package.

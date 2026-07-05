@@ -243,6 +243,42 @@ func TestCanRead(t *testing.T) {
 	}
 }
 
+func TestListReposForViewer(t *testing.T) {
+	ctx := context.Background()
+	m := open(t)
+	pub := seedRepo(t, m, "pub")
+	if err := m.SetVisibility(ctx, pub.ID, VisibilityPublic); err != nil {
+		t.Fatalf("SetVisibility: %v", err)
+	}
+	seedRepo(t, m, "priv") // admin-only, no ACL
+	mine := seedRepo(t, m, "mine")
+	u, _ := m.CreateUser(ctx, "alice")
+	if err := m.SetACL(ctx, mine.ID, u.ID, PermRead); err != nil {
+		t.Fatalf("SetACL: %v", err)
+	}
+
+	names := func(userID int64) []string {
+		repos, err := m.ListReposForViewer(ctx, userID)
+		if err != nil {
+			t.Fatalf("ListReposForViewer: %v", err)
+		}
+		var out []string
+		for _, r := range repos {
+			out = append(out, r.Name)
+		}
+		return out
+	}
+
+	// Anonymous (userID 0) sees only public repos.
+	if got := names(0); len(got) != 1 || got[0] != "pub" {
+		t.Errorf("anonymous viewer repos = %v, want [pub]", got)
+	}
+	// alice sees public + the one she has an ACL on (ordered by name).
+	if got := names(u.ID); len(got) != 2 || got[0] != "mine" || got[1] != "pub" {
+		t.Errorf("alice viewer repos = %v, want [mine pub]", got)
+	}
+}
+
 func TestTokenStorage(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)

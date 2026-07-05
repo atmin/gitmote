@@ -1,36 +1,39 @@
-{{define "repos.html"}}{{template "top" .}}
+{{define "dashboard.html"}}{{template "top" .}}
 <h1>Repositories</h1>
 
 {{if .Repos}}
 <table>
-  <thead><tr><th>Name</th><th>Default branch</th><th>Set branch</th></tr></thead>
+  <thead><tr><th>Name</th><th>Visibility</th><th>Default branch</th>{{if .IsAdmin}}<th>Manage</th>{{end}}</tr></thead>
   <tbody>
   {{range .Repos}}
     <tr>
       <td><a href="/{{.Name}}">{{.Name}}</a> · <a href="/{{.Name}}/runs">CI</a></td>
+      <td>{{.Visibility}}</td>
       <td>{{.DefaultBranch}}</td>
+      {{if $.IsAdmin}}
       <td>
-        <form class="inline" method="post" action="/ui/repos/default-branch">
-          <input type="hidden" name="repo" value="{{.Name}}">
-          <input type="text" name="default_branch" value="{{.DefaultBranch}}" size="12" required>
-          <button type="submit">Update</button>
-        </form>
+        <a href="/{{.Name}}/settings">settings</a> ·
+        <a href="/{{.Name}}/access">access</a> ·
+        <a href="/{{.Name}}/secrets">secrets</a>
       </td>
+      {{end}}
     </tr>
   {{end}}
   </tbody>
 </table>
 {{else}}
-<p>No repositories yet.</p>
+<p>No repositories to show.{{if not .Me}} <a href="/login">Sign in</a> to see private repositories.{{end}}</p>
 {{end}}
 
+{{if .IsAdmin}}
 <fieldset>
   <legend>Create repository</legend>
-  <form method="post" action="/ui/repos">
+  <form method="post" action="/">
     <label>Owner <input type="text" name="owner" placeholder="atmin" required></label>
     <label>Name <input type="text" name="name" placeholder="gitmote" required></label>
     <label>Default branch <input type="text" name="default_branch" value="main"></label>
     <button type="submit">Create</button>
   </form>
 </fieldset>
+{{end}}
 {{template "bottom" .}}{{end}}

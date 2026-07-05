@@ -363,7 +363,7 @@ func TestBrowseMermaid(t *testing.T) {
 	x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	const script = "/ui/static/mermaid.min.js"
+	const script = "/static/mermaid.min.js"
 
 	// A markdown blob with a mermaid fence renders the diagram container AND pulls
 	// in the mermaid script.

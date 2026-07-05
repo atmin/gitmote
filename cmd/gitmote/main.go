@@ -299,7 +299,7 @@ func leaderGate(next http.Handler, isLeader func() bool) http.Handler {
 // alwaysServable reports whether a path is answerable by a follower: the liveness
 // probes and static assets, which carry no metadata.
 func alwaysServable(p string) bool {
-	return p == "/healthz" || p == "/version" || strings.HasPrefix(p, "/ui/static/")
+	return p == "/healthz" || p == "/version" || strings.HasPrefix(p, "/static/")
 }
 
 // buildGitHandler wires the git read + write paths when an object store is

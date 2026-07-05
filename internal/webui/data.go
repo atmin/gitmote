@@ -7,10 +7,11 @@ import (
 	"github.com/atmin/gitmote/internal/repo"
 )
 
-// base is embedded in every authenticated page's data; its fields are promoted
-// so templates reference them as .Me / .Flash / .Err regardless of page.
+// base is embedded in every page's data; its fields are promoted so templates
+// reference them as .Me / .IsAdmin / .Flash / .Err regardless of page.
 type base struct {
-	Me      string // handle of the logged-in admin, for the nav
+	Me      string // handle of the signed-in viewer (empty = anonymous), for the nav
+	IsAdmin bool   // viewer is a global admin → show management affordances
 	Flash   string // success message after an action
 	Err     string // error message after a failed action
 	Mermaid bool   // page has a rendered mermaid diagram → include the script
@@ -21,9 +22,17 @@ type loginData struct {
 	Err string
 }
 
-type reposData struct {
+// dashboardData backs the "/" dashboard: the viewer-scoped repo list (create
+// form and per-repo management links are gated on .IsAdmin in the template).
+type dashboardData struct {
 	base
 	Repos []meta.Repo
+}
+
+// settingsData backs a repo's /settings page: its visibility and default branch.
+type settingsData struct {
+	base
+	Repo meta.Repo
 }
 
 type usersData struct {
@@ -39,19 +48,20 @@ type tokensData struct {
 	NewToken string       // raw token, shown exactly once right after minting
 }
 
-type aclsData struct {
+// accessData backs a repo's /access page: its grants, worded as
+// spectator (read) / collaborator (write) / admin in the template.
+type accessData struct {
 	base
-	Repos    []meta.Repo // for the repo picker
-	Selected string      // currently viewed repo name
-	ACLs     []meta.ACL  // the selected repo's grants
+	Repo string     // the repo name
+	ACLs []meta.ACL // the repo's grants
 }
 
+// secretsData backs a repo's /secrets page: the (name-only) secrets it holds.
 type secretsData struct {
 	base
-	Repos    []meta.Repo // for the repo picker
-	Selected string      // currently viewed repo name
-	Names    []string    // the selected repo's secret names (never values)
-	Enabled  bool        // whether a master key is configured (gates the set form)
+	Repo    string   // the repo name
+	Names   []string // the repo's secret names (never values)
+	Enabled bool     // whether a master key is configured (gates the set form)
 }
 
 // --- browse ---

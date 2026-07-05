@@ -8,7 +8,7 @@
 </div>
 {{end}}
 
-<form method="get" action="/ui/tokens">
+<form method="get" action="/tokens">
   <label>User
     <select name="user" onchange="this.form.submit()">
       <option value="">— choose —</option>
@@ -29,7 +29,7 @@
       <td>{{.CreatedAt.Format "2006-01-02"}}</td>
       <td>{{if .LastUsed}}{{.LastUsed.Format "2006-01-02"}}{{else}}never{{end}}</td>
       <td>
-        <form class="inline" method="post" action="/ui/tokens/revoke">
+        <form class="inline" method="post" action="/tokens/revoke">
           <input type="hidden" name="user" value="{{$.Selected}}">
           <input type="hidden" name="id" value="{{.ID}}">
           <button type="submit">Revoke</button>
@@ -45,7 +45,7 @@
 
 <fieldset>
   <legend>Mint token for {{.Selected}}</legend>
-  <form method="post" action="/ui/tokens">
+  <form method="post" action="/tokens">
     <input type="hidden" name="user" value="{{.Selected}}">
     <label>Label <input type="text" name="label" placeholder="laptop"></label>
     <button type="submit">Mint</button>

@@ -20,8 +20,8 @@ func TestSecretsGoldenPath(t *testing.T) {
 
 	// Set a secret. The value must never appear in the response.
 	const value = "hunter2-NEEDLE"
-	rec := x.do(http.MethodPost, "/ui/secrets",
-		url.Values{"repo": {"app"}, "name": {"API_TOKEN"}, "value": {value}}, session)
+	rec := x.do(http.MethodPost, "/app/secrets",
+		url.Values{"name": {"API_TOKEN"}, "value": {value}}, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "saved secret API_TOKEN") {
 		t.Fatalf("set secret: %d (%s)", rec.Code, rec.Body)
 	}
@@ -39,7 +39,7 @@ func TestSecretsGoldenPath(t *testing.T) {
 	}
 
 	// The list page shows the name but never the value.
-	rec = x.do(http.MethodGet, "/ui/secrets?repo=app", nil, session)
+	rec = x.do(http.MethodGet, "/app/secrets", nil, session)
 	if !strings.Contains(rec.Body.String(), "API_TOKEN") {
 		t.Errorf("list page missing the secret name (body: %s)", rec.Body)
 	}
@@ -48,8 +48,8 @@ func TestSecretsGoldenPath(t *testing.T) {
 	}
 
 	// Delete it.
-	rec = x.do(http.MethodPost, "/ui/secrets/delete",
-		url.Values{"repo": {"app"}, "name": {"API_TOKEN"}}, session)
+	rec = x.do(http.MethodPost, "/app/secrets/delete",
+		url.Values{"name": {"API_TOKEN"}}, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete secret: %d (%s)", rec.Code, rec.Body)
 	}
@@ -66,8 +66,8 @@ func TestSecretsRejectsReservedName(t *testing.T) {
 		t.Fatalf("CreateRepo: %v", err)
 	}
 
-	rec := x.do(http.MethodPost, "/ui/secrets",
-		url.Values{"repo": {"app"}, "name": {"WORKER_SECRET"}, "value": {"x"}}, session)
+	rec := x.do(http.MethodPost, "/app/secrets",
+		url.Values{"name": {"WORKER_SECRET"}, "value": {"x"}}, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "reserved") {
 		t.Errorf("reserved name: %d (%s), want a rejection message", rec.Code, rec.Body)
 	}
@@ -77,13 +77,13 @@ func TestSecretsRequireAdmin(t *testing.T) {
 	x := newHarness(t)
 
 	// Unauthenticated GET redirects to login; POST is 401 — the panel is gated
-	// like the rest of /ui.
-	if rec := x.do(http.MethodGet, "/ui/secrets", nil, nil); rec.Code != http.StatusSeeOther {
-		t.Errorf("unauth GET /ui/secrets = %d, want 303 redirect", rec.Code)
+	// by requireAdmin, which runs before the repo is even looked up.
+	if rec := x.do(http.MethodGet, "/app/secrets", nil, nil); rec.Code != http.StatusSeeOther {
+		t.Errorf("unauth GET /app/secrets = %d, want 303 redirect", rec.Code)
 	}
-	rec := x.do(http.MethodPost, "/ui/secrets",
-		url.Values{"repo": {"app"}, "name": {"K"}, "value": {"v"}}, nil)
+	rec := x.do(http.MethodPost, "/app/secrets",
+		url.Values{"name": {"K"}, "value": {"v"}}, nil)
 	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("unauth POST /ui/secrets = %d, want 401", rec.Code)
+		t.Errorf("unauth POST /app/secrets = %d, want 401", rec.Code)
 	}
 }

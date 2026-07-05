@@ -5,15 +5,15 @@ people. That single fact sets the whole URL shape — repos live in a **flat,
 single-segment namespace** (`gitmote.example.com/<repo>`), not `user/repo`. There
 is no per-user namespace to disambiguate, so there is nothing to disambiguate.
 
-> **Status:** partially landed. The **flat single-segment namespace** and
-> **access & visibility** (public → anonymous read, repo-read browse, admin-only
-> default-branch force-push) are implemented and reconciled into
-> [storage.md](storage.md) and [auth.md](auth.md); the **`tree`/`blob`/`raw`
-> content routing** (ref-in-path greedy resolution, unified `tree`, self-healing
-> `blob`, the bare `/{repo}` landing) and **rendered-markdown link rewriting**
-> (relative nav → `blob`/`tree`, embeds → `raw`, ref preserved) are implemented
-> per the sections below. Still to land from the `tasks/urls-*` chain: the
-> dashboard UI on the new routes.
+> **Status:** landed. The **flat single-segment namespace**, **access &
+> visibility** (public → anonymous read, repo-read browse, admin-only
+> default-branch force-push), **`tree`/`blob`/`raw` content routing** (ref-in-path
+> greedy resolution, unified `tree`, self-healing `blob`, the bare `/{repo}`
+> landing), **rendered-markdown link rewriting** (relative nav → `blob`/`tree`,
+> embeds → `raw`, ref preserved), and the **dashboard + UI reshape** (viewer-scoped
+> `/`, top-level `/login`·`/users`·`/tokens`·`/static`, per-repo
+> `settings`·`access`·`secrets`) are all implemented and reconciled into
+> [storage.md](storage.md) and [auth.md](auth.md).
 
 ## The namespace
 
@@ -129,17 +129,19 @@ simplification the flat namespace buys.
 
 Two non-obvious constraints the flat scheme creates:
 
-- **The browse routes share the mux with the git smart-HTTP catch-all.** Today the
-  UI is quarantined (browse under `/browse/…`, root as `GET /{$}`); the git handler
-  owns the `/` catch-all ([request-flows.md](request-flows.md)). Moving browse into
-  `/{repo}/…` puts it beside git's `info/refs`, `git-upload-pack`,
-  `git-receive-pack`, `HEAD`, and `objects/`. The rule that keeps clone/push
-  working: **register only enumerated verb routes** (`GET /{repo}`,
-  `GET /{repo}/tree/…`, `/{repo}/blob/…`, …) — **never** a broad
-  `/{repo}/{rest...}`, which would swallow the git endpoints. Go's ServeMux
-  (most-specific-wins) then routes verbs to the UI and everything else on
-  `/{repo}/…` to the git catch-all; the one-segment `GET /{repo}` landing is
-  distinct from `GET /{repo}/info/refs`.
+- **The browse and per-repo management routes share the mux with the git
+  smart-HTTP catch-all.** The UI's `/{repo}/…` routes sit beside git's
+  `info/refs`, `git-upload-pack`, `git-receive-pack`, `HEAD`, and `objects/`; the
+  git handler owns the `/` catch-all ([request-flows.md](request-flows.md)). The
+  rule that keeps clone/push working: **register only enumerated verb routes**
+  (`GET /{repo}`, `GET /{repo}/tree/…`, `/{repo}/blob/…`, `/{repo}/settings`,
+  `/{repo}/access`, `/{repo}/secrets`, …) — **never** a broad `/{repo}/{rest...}`,
+  which would swallow the git endpoints. Go's ServeMux (most-specific-wins) then
+  routes verbs to the UI and everything else on `/{repo}/…` to the git catch-all;
+  the one-segment `GET /{repo}` landing is distinct from `GET /{repo}/info/refs`.
+  The top-level globals (`/`, `/login`, `/users`, `/tokens`, `/static/…`) are
+  literal or exact-root patterns, so they win over `GET /{repo}` without a broad
+  match — the reserved-name set keeps a repo from ever claiming one.
 - **The default-branch force-push guard lives in the pre-receive hook.** It must
   reject *per ref* so the client sees a clean "force-push to `main` requires admin"
   — not a post-hoc failure. That point needs three inputs threaded to it: the

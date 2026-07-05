@@ -34,15 +34,18 @@
 
 {{define "nav"}}
 <nav>
-  <strong>gitmote</strong>
-  <a href="/ui/repos">Repos</a>
-  <a href="/ui/users">Users</a>
-  <a href="/ui/tokens">Tokens</a>
-  <a href="/ui/acls">ACLs</a>
-  <a href="/ui/secrets">Secrets</a>
+  <strong><a href="/">gitmote</a></strong>
+  {{if .IsAdmin}}
+  <a href="/users">Users</a>
+  <a href="/tokens">Tokens</a>
+  {{end}}
   <span class="spacer"></span>
+  {{if .Me}}
   <span>{{.Me}}</span>
   <form class="inline" method="post" action="/logout"><button type="submit">Log out</button></form>
+  {{else}}
+  <a href="/login">Sign in</a>
+  {{end}}
 </nav>
 {{end}}
 
@@ -53,7 +56,7 @@
 
 {{define "bottom"}}
 {{if .Mermaid}}
-<script src="/ui/static/mermaid.min.js"></script>
+<script src="/static/mermaid.min.js"></script>
 <script>
   var dark = matchMedia('(prefers-color-scheme: dark)').matches;
   mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'default' });

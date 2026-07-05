@@ -31,7 +31,7 @@ export GITMOTE_COOKIE_KEY="dev-cookie-key-not-for-production"
 export GITMOTE_URL="http://localhost:8080"
 export WORKER_SECRET="dev-worker-secret-not-for-production"
 
-# Enable per-repo CI secrets locally (Secrets panel in /ui). A fixed dev master
+# Enable per-repo CI secrets locally (per-repo Secrets page). A fixed dev master
 # key — base64 of 32 bytes — obviously not for production. Rotate by adding _V2.
 export GITMOTE_CI_SECRET_KEY_V1="ZGV2LW9ubHktY2ktc2VjcmV0LW1hc3Rlci1rZXktMzI="
 
@@ -66,7 +66,7 @@ cat <<EOF
 
   gitmote dev is ready.
 
-    UI:     http://localhost:8080/ui     (sign in at /login by pasting the token)
+    UI:     http://localhost:8080/       (sign in at /login by pasting the token)
     token:  $TOKEN
     clone:  git clone http://atmin:$TOKEN@localhost:8080/gitmote
     push:   git push http://atmin:$TOKEN@localhost:8080/gitmote HEAD:refs/heads/master

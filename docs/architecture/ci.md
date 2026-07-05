@@ -67,7 +67,7 @@ are append-only blobs under a top-level `ci/` key space
 (`ci/{repoID}/{runID}/{jobID}.log`), PUT before the `ci_jobs` pointer is
 recorded, with a size cap (explicit truncation marker, never silent).
 
-The runner-facing report API lives outside `/ui`
+The runner-facing report API lives under `/internal`, apart from the browser UI
 ([`internal/ci/report.go`](../../internal/ci/report.go)):
 `GET /internal/ci/jobs/{id}` claims a job (`queued→running`),
 `POST …/complete` uploads the log and sets a terminal status (idempotent). Both
