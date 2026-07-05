@@ -33,8 +33,8 @@ Stop conflating "an instance is running" with "an instance is the writer." Let
   writers, by construction.
 
 **How it shipped.** The coordination substrate is a conditional-write CAS on the
-replica bucket (Scaleway now supports `If-Match`/`If-None-Match`) — no second
-provider, no moving the WAL. litestream ships the lease primitive
+replica bucket (`If-Match`/`If-None-Match`, which the S3 provider must support —
+Scaleway and AWS S3 do) — no second provider, no moving the WAL. litestream ships the lease primitive
 (`litestream.Leaser` / `s3.Leaser`: `If-None-Match:*` to acquire, `If-Match` to
 renew, 30 s TTL, monotonic `Generation` fencing token), but does **not** auto-gate
 replication on it. So **s3lite** wraps it (v0.1.0, `RoleAuto`/`RoleWriter`/

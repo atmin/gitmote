@@ -4,21 +4,11 @@ Active and upcoming work. One file per unit of work, `Spec → Current → Chang
 Verify`, **deleted once it lands** (commits are the record — this list never
 becomes a changelog).
 
-## Easy to operate — one portable container, S3 as the single source of truth
-
-The milestone (`gitmote can host itself`) is reached; the next theme is **making
-gitmote trivial to run**: `docker run ghcr.io/atmin/gitmote` with a handful of
-envs, on a laptop or on Scaleway, identically. Kill it — fine; restart it — it
-restores from S3 and continues. Localhost is a first-class deployment.
-
-Chain A (shrink the surface — auto-generated secrets, first-run auto-bootstrap)
-and Chain B (the image — public GHCR, `make image`/`prod`/`publish`) have landed.
-All that remains is the docs cap:
-
-**Cap**
-- [operate-docs.md](operate-docs.md) — `docker run` quickstart (incl. "grab the
-  token from the logs") + CI substrate auto-detection docs. *(last — describes the
-  final surface.)*
+The **"easy to operate"** theme has fully landed: auto-generated secrets +
+first-run auto-bootstrap (shrink the surface), public GHCR images with
+`make image`/`prod`/`publish` (the image), and the `docker run` quickstart + env /
+CI-substrate docs (the cap). `docker run ghcr.io/atmin/gitmote` with a bucket and
+credentials is now a working forge; kill/restart restores from S3.
 
 ## Later
 

@@ -20,13 +20,48 @@ production on Scaleway Object Storage at
 [gitmote.atmin.net](https://gitmote.atmin.net). The design lives in
 [docs/architecture/](docs/architecture/).
 
+## Quickstart — run it anywhere
+
+One container, one bucket. S3 is the single source of truth and the container is
+disposable: kill it and restart — it restores the whole forge from S3 and
+continues. Point it at any S3-compatible bucket with credentials:
+
+```sh
+docker run --rm -p 8080:8080 \
+  -e GITMOTE_S3_BUCKET=my-gitmote-bucket \
+  -e AWS_REGION=us-east-1 \
+  -e AWS_ACCESS_KEY_ID=… -e AWS_SECRET_ACCESS_KEY=… \
+  ghcr.io/atmin/gitmote
+# Non-AWS S3 (Scaleway, MinIO, R2): add -e GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud
+# Keep the local cache across restarts (optional):  -v gitmote-data:/data
+```
+
+On the **first run** gitmote auto-bootstraps an admin and prints a one-time access
+token to the logs behind a `SAVE IT NOW` banner — grab it there (no setup page).
+Then sign in at <http://localhost:8080/login> by pasting it, and clone/push:
+
+```sh
+git clone http://admin:<token>@localhost:8080/<owner>/<repo>   # create the repo in /ui first
+```
+
+Lost the token? It's never stored (only its hash), so re-mint one — stop the
+container, then:
+
+```sh
+docker run --rm -e GITMOTE_S3_BUCKET=… -e AWS_… ghcr.io/atmin/gitmote bootstrap -reissue
+```
+
+Nothing else is required: the session cookie key and CI worker secret are
+generated and persisted on first run. See [docs/ops.md](docs/ops.md) for the full
+env surface, CI, and the Scaleway deployment.
+
 ## Develop locally
 
 `make dev` gives you a running instance in one command: it builds the binaries,
 starts MinIO in a container (S3 on :9100), runs gitmote **natively** on :8080,
-and bootstraps an admin/token/repo on the first run. State (the metadata DB,
-object cache, and the minted token) persists under `data/`, so the printed token
-keeps working across restarts:
+and ensures an admin + a `atmin/gitmote` repo (auto-bootstrap), minting a fresh
+token each run and printing it. State (the metadata DB and object cache) persists
+under `data/`, so repos and history survive restarts:
 
 ```sh
 make dev        # first run prints the token, clone URL, and UI URL
@@ -57,30 +92,25 @@ Containers, single writer, `gitmote.atmin.net` — lives in [docs/ops.md](docs/o
 
 ## Bootstrap
 
-An empty instance has no users, so token auth is a chicken-and-egg. Run the
-one-time `bootstrap` subcommand **inside the single writer** to create the first
-admin, mint a token (printed once), and create the initial repo:
+An empty instance has no users, so token auth would be a chicken-and-egg — so the
+server **auto-bootstraps on first run**: when it is the writer and no admin
+exists, it creates the admin (`GITMOTE_ADMIN_HANDLE`, default `admin`) and prints
+a one-time token to the logs (see the Quickstart). No second command.
 
-```sh
-GITMOTE_DATA=/data gitmote bootstrap -handle atmin -repo atmin/gitmote
-```
-
-It prints an access token exactly once — save it. Re-running is safe: it refuses
-to clobber an existing admin. Then start the server (`GITMOTE_S3_BUCKET` et al.,
-sharing the same `GITMOTE_DATA`) and clone/push with the token:
-
-```sh
-git clone http://atmin:<token>@<host>/atmin/gitmote
-```
+You can still bootstrap by hand against the bucket **before** the server is live
+(`gitmote bootstrap [-handle …] [-repo …]`), and recover a lost token with
+`gitmote bootstrap -reissue` — both refuse to clobber and print the token once.
+Only the token's hash is ever stored, so a lost token is re-minted, never
+recovered.
 
 ## Management UI
 
 The things you can't do over git — create/list repos, mint/revoke tokens, and
-manage per-repo ACLs — live in a small server-rendered web UI under `/ui`. Set
-`GITMOTE_COOKIE_KEY` (the HMAC key that signs session cookies) to enable it; it
-runs alongside the git server. Sign in at `/login` by pasting an **admin** token
-(the same PAT format git uses); the server issues a signed, stateless session
-cookie. Access is limited to global admins.
+manage per-repo ACLs — live in a small server-rendered web UI under `/ui`, always
+on. Sign in at `/login` by pasting an **admin** token (the same PAT format git
+uses); the server issues a signed, stateless session cookie signed with a key it
+auto-generates and persists (override with `GITMOTE_COOKIE_KEY`). Access is
+limited to global admins.
 
 ---
 

@@ -3,8 +3,9 @@
 Canonical infra doc — resources, env, deploy, and the one operational rule. Keep
 it current whenever infra or env changes.
 
-gitmote runs on the same account and host as atmin.net (see that repo's
-`docs/ops.md` for the Scaleway pattern in more depth); this doc is gitmote-specific.
+gitmote is `gitmote.atmin.net` — a subdomain of atmin.net by DNS only. It is
+otherwise independent; it currently happens to run on Scaleway Serverless
+Containers like atmin.net, but that is incidental and may change.
 
 ## Infrastructure
 
@@ -31,17 +32,21 @@ in-process-race concern: it is a data-integrity precondition.
 The invariant is now enforced **by a lease, not by procedure.** The server opens
 its metadata in s3lite `RoleAuto`: it becomes the writer only while it holds a
 lease (litestream's `s3.Leaser` — an `If-None-Match`/`If-Match` conditional-write
-CAS on `lock.json` in the same bucket, now that Scaleway supports conditional
-writes), and runs as a read-only follower otherwise. gitmote gates receive-pack
-on `IsLeader()`, so a follower refuses pushes with a retryable `503` while still
-serving clones/fetches.
+CAS on `lock.json` in the same bucket), and runs as a read-only follower
+otherwise. This makes **atomic conditional writes a hard requirement on the S3
+provider**: the lease — and therefore the single-writer correctness invariant —
+holds only if the backend supports the compare-and-swap primitive (`If-None-Match`
+to acquire, `If-Match` to renew/release). Most do (AWS S3, Scaleway, …); one that
+doesn't cannot safely back gitmote. gitmote gates receive-pack on `IsLeader()`, so
+a follower refuses pushes with a retryable `503` while still serving clones/fetches.
 
-- **Rolling deploys are safe by construction.** Scaleway's rolling deploy briefly
-  runs old + new together (observed: instance count spikes to 2 in Cockpit). The
-  new instance boots as a **follower** (the old still holds the lease); the old
-  releases on its graceful SIGTERM (`Close` flushes, then releases the lease
-  last); the new then **promotes** on its next lease poll. Never two writers — no
-  drain step, no `POST /admin/quit`. Brief handoff window: the new instance is up
+- **Rolling deploys are safe by construction.** A rolling deploy briefly runs a
+  second container alongside the old one — two instances live at once — which does
+  **not** violate the single-writer invariant. The new instance boots as a
+  **follower** (the old still holds the lease); the old releases on its graceful
+  SIGTERM (`Close` flushes, then releases the lease last); the new then
+  **promotes** on its next lease poll. Never two writers — no drain step, no
+  `POST /admin/quit`. Brief handoff window: the new instance is up
   read-only for ≤ ~lease-TTL/3 after the old exits, so a push in that gap gets the
   retryable `503`; reads are unaffected. (After a *hard* kill the successor waits
   out the ≤30 s lease TTL before acquiring — a graceful exit releases at once.)
@@ -56,8 +61,8 @@ serving clones/fetches.
   reclaims), never a ref pointing at a missing object.
 
 The [safety.md §4](architecture/safety.md) escape hatch (refs behind a
-conditional-PUT CAS on object storage) is likewise possible on Scaleway now if
-ever wanted; gitmote's ref CAS remains a SQL transaction in the metadata DB
+conditional-PUT CAS on object storage) would rely on the same conditional-write
+primitive; gitmote's ref CAS remains a SQL transaction in the metadata DB
 (unchanged — it never needed an S3 precondition).
 
 ## Runtime env vars (on the container)
@@ -75,34 +80,44 @@ Setting these on the container does nothing for CI, and vice versa.
 > `update`.** Plain `environment-variables` are a separate map, unaffected. The CI
 > deploy's `update` sets no env vars, so it preserves both maps.
 
+**Required — the whole core.** A bucket plus its credentials is a complete forge.
+
 | Variable | Value / meaning |
 |----------|-----------------|
 | `GITMOTE_S3_BUCKET` | `gitmote` — a bucket alone derives the metadata replica (`s3://gitmote/meta`) and the single-writer lease |
-| `GITMOTE_S3_ENDPOINT` | `https://s3.fr-par.scw.cloud` |
-| `GITMOTE_DATA` | `/tmp/gitmote` — base dir for the db (`meta.sqlite3`), cache, and socket; ephemeral, restored from S3 on cold start |
-| `GITMOTE_DB_REPLICA` | optional override for the derived `s3://{bucket}/meta` replica target |
-| `GITMOTE_HOOK` | pre-receive hook binary (defaults to `gitmote-hook` beside the server) |
-| `GITMOTE_RUNNER` | CI runner binary the local trigger spawns (defaults to `gitmote-runner` beside the server) |
-| `GITMOTE_COOKIE_KEY` | secret — signs management-UI session cookies (enables `/ui`) |
-| `GITMOTE_URL` | public base URL (`https://gitmote.atmin.net`) — injected into the CI runner's env so it clones and reports back here |
-| `SCW_CI_JOB_DEFINITION_ID` | the Scaleway Serverless Job definition for the CI runner. **Set → cloud trigger** (Scaleway job per CI job) |
-| `SCW_SECRET_KEY` | secret — Scaleway API secret key (the UUID) used to start the CI job (same key also deploys the container from CI) |
-| `SCW_REGION` | Scaleway region for the CI job start (falls back to `AWS_REGION`) |
-| `WORKER_SECRET` | secret — shared runner-auth secret; injected into the runner env and compared on its report-back |
-| `GITMOTE_CI_SECRET_KEY_V1` | secret — base64 of 32 bytes; master key for per-repo CI secrets. Add `_V2`, … to rotate (highest is current; old envelopes still decrypt). Unset → the secrets UI is disabled and none are injected |
-| `AWS_REGION` | `fr-par` |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | secret — Scaleway API key pair; covers both the object store and the litestream replica |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | secret — S3 key pair; covers both the object store and the litestream replica (Scaleway API key on prod) |
+| `AWS_REGION` | `fr-par` (any valid region for non-AWS S3) |
+| `GITMOTE_S3_ENDPOINT` | `https://s3.fr-par.scw.cloud` — the S3 endpoint; **omit for real AWS S3** |
 
-> **CI trigger selection.** The dispatcher always records runs/jobs; what executes
-> them depends on the env. With `SCW_CI_JOB_DEFINITION_ID` set, the **Scaleway**
-> trigger starts a Serverless Job per CI job (cloud); it then requires
-> `WORKER_SECRET` and `GITMOTE_URL`, and the server refuses to start without them.
-> With that unset but `GITMOTE_URL` + `WORKER_SECRET` present, the **local** trigger
-> spawns `gitmote-runner` as a local process — the *same runner code and env
-> contract*, a local substrate instead of a cloud job (this is what `make dev`
-> uses). With none of them set, runs record but nothing executes. The runner runs
-> `.github/workflows` with `act`, which needs a reachable Docker daemon. A
-> leader-only ticker sweeps jobs stuck `running` past ~1h back to `error`.
+**Auto-managed — leave unset; generated and persisted in meta on first run (an
+explicit env still wins).** No longer part of the required surface.
+
+| Variable | Value / meaning |
+|----------|-----------------|
+| `GITMOTE_COOKIE_KEY` | signs management-UI session cookies; auto-generated + persisted (stable across restart / scale-to-zero) |
+| `WORKER_SECRET` | runner report-back auth; auto-generated + persisted **when a CI trigger is configured** (below) |
+
+**CI — optional, off by default** (runs are still recorded; nothing executes until
+one of these turns a trigger on — see [CI substrate](#ci-substrate)).
+
+| Variable | Value / meaning |
+|----------|-----------------|
+| `SCW_CI_JOB_DEFINITION_ID` | the Scaleway Serverless Job definition. **Set → cloud trigger** (a Scaleway job per CI job); requires `GITMOTE_URL` |
+| `GITMOTE_URL` | public base URL (`https://gitmote.atmin.net`) the runner clones + reports back to; required for any CI. **Set alone → local `act` trigger** |
+| `SCW_SECRET_KEY` | secret — Scaleway API secret key (UUID) to start the job (the same key also deploys the container from CI) |
+| `SCW_REGION` | region for the job start (falls back to `AWS_REGION`) |
+| `GITMOTE_CI_SECRET_KEY_V<n>` | secret — base64 of 32 bytes; **env-only** master key for per-repo CI secrets, never persisted ([safety.md §5](architecture/safety.md)). Add `_V2`, … to rotate (highest is current; old envelopes still decrypt). Unset → the secrets UI is off and none are injected |
+
+**Advanced overrides — rarely needed** (the defaults are derived).
+
+| Variable | Value / meaning |
+|----------|-----------------|
+| `GITMOTE_DATA` | base dir for the db (`meta.sqlite3`), cache, and socket; **preset to `/data` in the image** — mount a volume there to keep the cache across restarts. Ephemeral by design (restored from S3 on cold start) |
+| `GITMOTE_DB_REPLICA` | override the derived `s3://{bucket}/meta` replica target |
+| `GITMOTE_DB` / `GITMOTE_CACHE` / `GITMOTE_SOCK` | override the individual paths that otherwise derive from `GITMOTE_DATA` |
+| `GITMOTE_S3_PREFIX` | key prefix for git objects inside the bucket (does **not** affect the `meta` replica path) |
+| `GITMOTE_HOOK` / `GITMOTE_RUNNER` | hook / CI-runner binary paths (default beside the server) |
+| `GITMOTE_ADMIN_HANDLE` | first-run auto-bootstrap admin handle (default `admin`) |
 
 `GITMOTE_DATA` is ephemeral on purpose: the object store + litestream replica are
 the durable state, and the local disk is a cache. On a cold start (scale-to-zero →
@@ -125,6 +140,27 @@ scale-down is a graceful SIGTERM, so the shutdown `Close` durably flushes the WA
 instant first-push latency is worth the always-on cost. `max-scale` stays **1**
 regardless (see the single-writer section — follower reads aren't fresh enough to
 scale out yet).
+
+## CI substrate
+
+gitmote always records a run per pushed workflow; **what executes it is chosen
+from the env at startup** (one runner, three substrates — see
+[ci.md](architecture/ci.md)):
+
+1. `SCW_CI_JOB_DEFINITION_ID` set → **Scaleway Serverless Jobs** (cloud): a job per
+   CI job. Also requires `GITMOTE_URL` (the runner clones + reports back there);
+   `WORKER_SECRET` is auto-provisioned. The server refuses to start if the job
+   definition is set without `GITMOTE_URL`.
+2. else `GITMOTE_URL` set → **local `act`**: the server spawns `gitmote-runner` as a
+   local process — the *same* runner code and env contract, a local substrate
+   instead of a cloud job (this is what `make dev` uses).
+3. else → **disabled**: runs and jobs are recorded, but nothing executes.
+
+**Prerequisite for both executing substrates:** the runner runs `.github/workflows`
+with [`act`](https://github.com/nektos/act), which needs a reachable **Docker or
+podman daemon** — in the cloud that's the Serverless Job image; locally it's the
+daemon on the host (the same one MinIO uses under `make dev`). A leader-only ticker
+sweeps jobs stuck `running` past ~1h back to `error`.
 
 ## CI secrets (GitHub Actions)
 
@@ -175,9 +211,10 @@ docker push   ghcr.io/atmin/gitmote-runner:master
 # 3. Create the container (single writer: min-scale=0 idle-to-zero, max-scale=1).
 #    Arg names per the current CLI: image= (not registry-image), cpu-limit (mVCPU),
 #    memory-limit-bytes, and key-based (secret-)environment-variables.KEY=value.
-#    Only credentials and the cookie key are secret; the rest are plain
-#    environment-variables. The ephemeral /tmp scratch tier is coupled to the
-#    memory tier — 512 MB unlocks 2 GB scratch (set in the console).
+#    Only the credentials are secret; the rest are plain environment-variables. The
+#    cookie key and worker secret are NOT set — they auto-generate and persist. The
+#    ephemeral /tmp scratch tier is coupled to the memory tier — 512 MB unlocks 2 GB
+#    scratch (set in the console).
 scw container container create \
   namespace-id=<NAMESPACE_ID> \
   name=gitmote \
@@ -190,10 +227,8 @@ scw container container create \
   environment-variables.GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud \
   environment-variables.GITMOTE_DATA=/tmp/gitmote \
   environment-variables.AWS_REGION=fr-par \
-  secret-environment-variables.GITMOTE_COOKIE_KEY="$(openssl rand -base64 32)" \
   secret-environment-variables.AWS_ACCESS_KEY_ID=<KEY> \
   secret-environment-variables.AWS_SECRET_ACCESS_KEY=<SECRET>
-# GITMOTE_COOKIE_KEY is container-only, so a fresh random inline is fine for it.
 
 # 4. Custom domain — two parts:
 #    (a) DNS: add a CNAME  gitmote.atmin.net → <container-endpoint>.scw.cloud
