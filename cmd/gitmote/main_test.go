@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -176,6 +177,91 @@ func TestRunBootstrap(t *testing.T) {
 	if !strings.Contains(out2.String(), "already bootstrapped") {
 		t.Errorf("second run did not report already-bootstrapped:\n%s", out2.String())
 	}
+}
+
+func TestRunBootstrapDefaultsHandleAndReissues(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.sqlite3")
+	t.Setenv("GITMOTE_DB", dbPath)
+	t.Setenv("GITMOTE_ADMIN_HANDLE", "")
+
+	// No handle, no repo: the admin defaults to "admin" and a token is printed.
+	var out bytes.Buffer
+	if err := runBootstrap(context.Background(), nil, &out); err != nil {
+		t.Fatalf("runBootstrap: %v", err)
+	}
+	if !strings.Contains(out.String(), "admin user:   admin") || !strings.Contains(out.String(), "access token") {
+		t.Errorf("bootstrap output missing default admin/token:\n%s", out.String())
+	}
+	first := extractToken(t, out.String())
+
+	// Only the hash is at rest: the token's secret half never lands in the DB
+	// (runBootstrap's Close checkpointed the WAL into the file above).
+	_, secret, ok := strings.Cut(first, ".")
+	if !ok || secret == "" {
+		t.Fatalf("token %q has no secret half", first)
+	}
+	db, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read db: %v", err)
+	}
+	if bytes.Contains(db, []byte(secret)) {
+		t.Error("the raw token secret is stored in the metadata DB; only its hash should be")
+	}
+
+	// -reissue mints a fresh token for the existing admin.
+	var out2 bytes.Buffer
+	if err := runBootstrap(context.Background(), []string{"-reissue"}, &out2); err != nil {
+		t.Fatalf("reissue runBootstrap: %v", err)
+	}
+	second := extractToken(t, out2.String())
+	if second == first {
+		t.Errorf("reissue returned the same token %q, want a fresh one", second)
+	}
+}
+
+func TestMaybeAutoBootstrapCreatesAdminOnceOnFreshLeader(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("GITMOTE_ADMIN_HANDLE", "")
+	md := openMeta(t) // local-only → RoleOff → always leader
+	logger := slog.New(slog.DiscardHandler)
+
+	// Fresh instance: the default admin is created, no repo.
+	maybeAutoBootstrap(ctx, md, logger)
+	admin, err := md.GetUser(ctx, "admin")
+	if err != nil {
+		t.Fatalf("default admin not created: %v", err)
+	}
+	if !admin.IsAdmin {
+		t.Error("bootstrapped user is not a global admin")
+	}
+	tokens, err := md.ListTokens(ctx, admin.ID)
+	if err != nil {
+		t.Fatalf("ListTokens: %v", err)
+	}
+	if len(tokens) != 1 {
+		t.Fatalf("admin has %d tokens, want 1", len(tokens))
+	}
+
+	// Idempotent: a second boot (admin exists) mints nothing more.
+	maybeAutoBootstrap(ctx, md, logger)
+	tokens2, _ := md.ListTokens(ctx, admin.ID)
+	if len(tokens2) != 1 {
+		t.Errorf("second auto-bootstrap changed token count to %d, want 1 (no-op)", len(tokens2))
+	}
+	users, _ := md.ListUsers(ctx)
+	if len(users) != 1 {
+		t.Errorf("user count = %d, want 1 (no second admin)", len(users))
+	}
+}
+
+// extractToken pulls the gmt_ token out of a bootstrap banner.
+func extractToken(t *testing.T, s string) string {
+	t.Helper()
+	tok := regexp.MustCompile(`gmt_[0-9a-f]+\.[0-9a-f]+`).FindString(s)
+	if tok == "" {
+		t.Fatalf("no token in output:\n%s", s)
+	}
+	return tok
 }
 
 func TestReplicaTarget(t *testing.T) {

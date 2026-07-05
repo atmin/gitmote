@@ -203,26 +203,45 @@ scw container domain list   container-id=<CONTAINER_ID>   # status pending → r
 #    the CI credentials, NOT container env vars. See "CI secrets (GitHub Actions)".
 ```
 
-## Bootstrap (run once, before the server is live)
+## Bootstrap (first run is automatic)
 
-An empty instance has no admin/token. Bootstrap **from your machine against the
-prod bucket** so you are transiently the single writer — do this *before* the
-container serves traffic (or while it is scaled to zero). Bootstrap opens in
-`RoleWriter`: it **acquires the writer lease** and fails loudly if the server
-already holds it, so running it while the server is live can no longer produce
-two writers — it just refuses.
+An empty instance has no admin/token. **On first start the server auto-bootstraps
+itself**: when it is the writer and no admin exists, it creates the admin (handle
+from `GITMOTE_ADMIN_HANDLE`, default `admin`), mints a token, and prints it once
+to the logs behind an unmissable banner. So a fresh `docker run` against an empty
+bucket is usable without a second command — just grab the token from the logs.
+
+The token **transits the logs**, which are operator-visible (same trust boundary
+as the env and bucket). Treat it as a one-time credential: after first sign-in,
+mint your own token in the UI and revoke the bootstrap one (see below).
+
+No initial repo is created — make repos in the UI in two clicks.
+
+### Manual bootstrap / token recovery
+
+Both run **from your machine against the bucket** so you are transiently the
+single writer — do this *before* the container serves traffic (or while it is
+scaled to zero). They open in `RoleWriter`: acquire the writer lease and fail
+loudly if the server already holds it, so they can never race the live writer.
 
 ```bash
-GITMOTE_S3_BUCKET=gitmote \
-GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud \
-GITMOTE_DATA=/tmp/bootstrap \
-AWS_REGION=fr-par AWS_ACCESS_KEY_ID=<KEY> AWS_SECRET_ACCESS_KEY=<SECRET> \
-  gitmote bootstrap -handle atmin -repo atmin/gitmote -default-branch master
+# Common env for both:
+export GITMOTE_S3_BUCKET=gitmote \
+       GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud \
+       GITMOTE_DATA=/tmp/bootstrap \
+       AWS_REGION=fr-par AWS_ACCESS_KEY_ID=<KEY> AWS_SECRET_ACCESS_KEY=<SECRET>
+
+# Bootstrap by hand (optional -repo). Idempotent — refuses to clobber an admin:
+gitmote bootstrap -handle atmin
+
+# Lost the token? Mint a fresh one for the existing admin (safe: whoever can run
+# this against the bucket already has total infra control):
+gitmote bootstrap -reissue -handle atmin
 ```
 
-It prints the access token once (save it) and durably flushes the new state to
-`s3://gitmote/meta` on `Close`; the server restores it on first start. Re-running
-is safe — it refuses to clobber an existing admin.
+Each prints the access token once (save it) and durably flushes the new state to
+`s3://gitmote/meta` on `Close`; the server restores it on next start. Only the
+token's hash is ever stored — the raw token is never recoverable, hence `-reissue`.
 
 ## Deploying
 

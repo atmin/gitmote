@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 # Local dev loop: MinIO in a container + a natively-run gitmote, with a
-# bootstrapped admin/token/repo persisted under data/ across restarts.
-# Invoked by `make dev`; `make dev-reset` wipes the state it creates.
+# bootstrapped admin/repo persisted under data/ across restarts and a fresh token
+# minted on each run. Invoked by `make dev`; `make dev-reset` wipes the state.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 COMPOSE=(docker compose -p gitmote-dev -f docker-compose.dev.yml)
-TOKEN_FILE="$ROOT/data/dev-token"
 
 # All-local configuration — none of these are secret. The db, cache, and socket
-# live under data/ (gitignored, one GITMOTE_DATA dir) so refs survive restarts;
-# the token below is minted against that same DB, so the two stay in sync. The
-# bucket alone now derives the metadata replica + single-writer lease.
+# live under data/ (gitignored, one GITMOTE_DATA dir) so refs survive restarts.
+# The bucket alone now derives the metadata replica + single-writer lease.
 export GITMOTE_S3_BUCKET="gitmote"
 export GITMOTE_S3_ENDPOINT="http://localhost:9100"
 export AWS_REGION="us-east-1"
@@ -53,22 +51,16 @@ echo "--- starting MinIO (S3 :9100, console :9101) ---"
 "${COMPOSE[@]}" up -d minio
 "${COMPOSE[@]}" run --rm mc
 
-# Bootstrap exactly once and persist the one-time token. The token file is the
-# marker for "dev is set up"; it and the DB are wiped together by dev-reset, so
-# they never drift.
-if [ ! -f "$TOKEN_FILE" ]; then
-  echo "--- bootstrapping admin/token/repo (first run) ---"
-  out="$(bin/gitmote bootstrap -handle atmin -repo atmin/gitmote -default-branch master)"
-  if printf '%s' "$out" | grep -q "already bootstrapped"; then
-    echo "ERROR: the metadata DB already has an admin but data/dev-token is missing." >&2
-    echo "The one-time token can't be recovered — run 'make dev-reset' then 'make dev'." >&2
-    exit 1
-  fi
-  token="$(printf '%s\n' "$out" | grep -oE 'gmt_[0-9a-f]+\.[0-9a-f]+' | head -1)"
-  [ -n "$token" ] || { printf '%s\n' "$out"; echo "ERROR: no token in bootstrap output" >&2; exit 1; }
-  printf '%s\n' "$token" >"$TOKEN_FILE"
-fi
-TOKEN="$(cat "$TOKEN_FILE")"
+# Ensure the admin (+ a dev repo to clone) exist, then mint a fresh token to
+# show. Both steps are idempotent and run before the server takes the lease:
+# bootstrap creates on first run and no-ops after; -reissue mints a new token for
+# the existing admin every run, so there is no token file to keep in sync (the
+# server also auto-bootstraps on a truly empty bucket — this just makes the token
+# and the dev repo available up front). 'make dev-reset' wipes the DB to start over.
+echo "--- ensuring admin + dev repo (idempotent) ---"
+bin/gitmote bootstrap -handle atmin -repo atmin/gitmote -default-branch master >/dev/null
+TOKEN="$(bin/gitmote bootstrap -reissue -handle atmin | grep -oE 'gmt_[0-9a-f]+\.[0-9a-f]+' | head -1)"
+[ -n "$TOKEN" ] || { echo "ERROR: no token from 'bootstrap -reissue'" >&2; exit 1; }
 
 cat <<EOF
 

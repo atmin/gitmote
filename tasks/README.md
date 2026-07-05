@@ -11,13 +11,9 @@ gitmote trivial to run**: `docker run ghcr.io/atmin/gitmote` with a handful of
 envs, on a laptop or on Scaleway, identically. Kill it — fine; restart it — it
 restores from S3 and continues. Localhost is a first-class deployment.
 
-Two independent chains plus a docs cap — order within a chain matters, the chains
-run in parallel:
-
-**Chain A — shrink the surface**
-- [onboarding-bootstrap.md](onboarding-bootstrap.md) — first-run **auto-bootstrap**
-  prints the admin token once to the logs with clear instructions (no setup page,
-  no race); `bootstrap --reissue` recovers a lost token.
+Chain A (shrink the surface — auto-generated secrets, first-run auto-bootstrap)
+has landed. What remains is the image chain plus a docs cap — order within the
+chain matters:
 
 **Chain B — the image**
 - [public-registry.md](public-registry.md) — publish `ghcr.io/atmin/gitmote` +

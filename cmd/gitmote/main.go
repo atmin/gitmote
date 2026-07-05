@@ -68,16 +68,18 @@ func main() {
 	}
 }
 
-// runBootstrap creates the first admin, token, and repo from an empty instance.
-// It opens the metadata DB per the environment (the data dir, and the replica
-// derived from the bucket) and prints the one-time token to out on success. The deferred
-// Close durably flushes replication, so this short-lived process reliably pushes
-// the new admin/token/repo to S3 for the server to restore.
+// runBootstrap creates the first admin and token from an empty instance (or, with
+// -reissue, mints a fresh token for the existing admin). It opens the metadata DB
+// per the environment (the data dir, and the replica derived from the bucket) and
+// prints the one-time token to out on success. The deferred Close durably flushes
+// replication, so this short-lived process reliably pushes the new admin/token to
+// S3 for the server to restore.
 func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
-	handle := fs.String("handle", os.Getenv("GITMOTE_ADMIN_HANDLE"), "admin user handle (or GITMOTE_ADMIN_HANDLE)")
-	repoName := fs.String("repo", "", "initial repository, e.g. atmin/gitmote")
+	handle := fs.String("handle", os.Getenv("GITMOTE_ADMIN_HANDLE"), "admin user handle (default admin, or GITMOTE_ADMIN_HANDLE)")
+	repoName := fs.String("repo", "", "optional initial repository, e.g. atmin/gitmote (repos are otherwise made in the UI)")
 	branch := fs.String("default-branch", "main", "default branch for the initial repo")
+	reissue := fs.Bool("reissue", false, "mint a fresh token for the existing admin (recover a lost token)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -91,27 +93,90 @@ func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 	}
 	defer func() { _ = md.Close() }()
 
-	res, err := bootstrap.Run(ctx, md, bootstrap.Options{
-		AdminHandle:   *handle,
-		RepoName:      *repoName,
-		DefaultBranch: *branch,
-	})
+	opts := bootstrap.Options{AdminHandle: *handle, RepoName: *repoName, DefaultBranch: *branch}
+	if *reissue {
+		res, err := bootstrap.Reissue(ctx, md, opts)
+		if err != nil {
+			return err
+		}
+		return writeBootstrapBanner(out, res)
+	}
+
+	res, err := bootstrap.Run(ctx, md, opts)
 	if err != nil {
 		return err
 	}
-
 	if res.AlreadyBootstrapped {
-		_, err := io.WriteString(out, "already bootstrapped: an admin exists; nothing to do\n")
+		_, err := io.WriteString(out, "already bootstrapped: an admin exists; nothing to do "+
+			"(run with -reissue to mint a fresh token)\n")
 		return err
 	}
+	return writeBootstrapBanner(out, res)
+}
 
-	_, err = fmt.Fprintf(out,
-		"admin user:   %s\n"+
-			"initial repo: %s\n\n"+
-			"access token (shown once — save it now):\n\n    %s\n\n"+
-			"clone/push with:  git clone http://%s:<token>@<host>/%s\n",
-		res.Admin.Handle, res.Repo.Name, res.RawToken, res.Admin.Handle, res.Repo.Name)
+// writeBootstrapBanner prints the one-time admin token behind an unmissable,
+// self-explanatory banner: what it is, how to sign in and clone, that it won't be
+// shown again, and how to re-mint if lost. Used by the CLI and the first-run
+// auto-bootstrap (its output is the operator's only chance to capture the token).
+func writeBootstrapBanner(out io.Writer, res *bootstrap.Result) error {
+	const bar = "========================================================================"
+	repoLines := fmt.Sprintf(
+		"  Repos:    create one in the UI, then clone:\n"+
+			"            git clone http://%s:<token>@<host>/<owner>/<repo>\n",
+		res.Admin.Handle)
+	if res.Repo != nil {
+		repoLines = fmt.Sprintf(
+			"  Clone:    git clone http://%s:<token>@<host>/%s\n",
+			res.Admin.Handle, res.Repo.Name)
+	}
+	_, err := fmt.Fprintf(out, "\n%s\n"+
+		"  gitmote access token — SAVE IT NOW (shown only once)\n"+
+		"%s\n\n"+
+		"  admin user:   %s\n\n"+
+		"  access token:\n\n      %s\n\n"+
+		"  Sign in:  open  http://<host>/login  and paste the token\n"+
+		"%s"+
+		"\n  This token is NOT stored and will NOT be shown again.\n"+
+		"  Lost it? Stop the server (scale to zero) and run:  gitmote bootstrap -reissue\n"+
+		"  Then rotate: sign in, mint your own token, and revoke this one.\n"+
+		"%s\n\n",
+		bar, bar, res.Admin.Handle, res.RawToken, repoLines, bar)
 	return err
+}
+
+// maybeAutoBootstrap makes a fresh instance usable without a second command: on
+// the leader with no admin yet, it creates the admin and mints a token, logging
+// it once behind an unmissable banner (its own output is the operator's only
+// chance to capture the token). Later boots (admin exists) and followers are a
+// no-op — a first-ever boot is uncontended, so it is necessarily the leader.
+//
+// It never creates a repo (made in the UI). Non-fatal: a failure is logged, not
+// returned, so the server still serves; the operator can bootstrap by hand and,
+// if an admin was created without a token, recover with `bootstrap -reissue`.
+func maybeAutoBootstrap(ctx context.Context, md *meta.Metadata, logger *slog.Logger) {
+	if !md.IsLeader() {
+		return
+	}
+	exists, err := md.AdminExists(ctx)
+	if err != nil {
+		logger.Error("auto-bootstrap: check for an admin failed", "error", err)
+		return
+	}
+	if exists {
+		return
+	}
+	res, err := bootstrap.Run(ctx, md, bootstrap.Options{AdminHandle: os.Getenv("GITMOTE_ADMIN_HANDLE")})
+	if err != nil {
+		logger.Error("auto-bootstrap failed; bootstrap by hand", "error", err)
+		return
+	}
+	if res.AlreadyBootstrapped {
+		return // raced another writer that bootstrapped first
+	}
+	logger.Info("auto-bootstrapped the first admin; the one-time token is printed below", "admin", res.Admin.Handle)
+	if err := writeBootstrapBanner(os.Stderr, res); err != nil {
+		logger.Error("auto-bootstrap: printing the token banner failed", "error", err)
+	}
 }
 
 // run starts the HTTP server and blocks until ctx is cancelled or a
@@ -277,6 +342,10 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	md.OnDemote(func(err error) {
 		logger.Warn("lost the writer lease; now read-only", "error", err)
 	})
+
+	// First-run auto-bootstrap: a fresh empty-bucket instance is usable without a
+	// second command. Runs before anything serves; non-fatal (logged, not returned).
+	maybeAutoBootstrap(ctx, md, logger)
 
 	writer, err := githttp.NewWriter(md, objs, hookBinaryPath(), sockPath(), logger)
 	if err != nil {
