@@ -47,6 +47,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3   # arm64 runtime stage runs apt-get under emulation
       - uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
@@ -56,11 +57,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push public image (amd64 — Scaleway requires it)
+      - name: Build & push public image (amd64 for Scaleway + arm64 for local dev)
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
             VERSION=${{ github.sha }}

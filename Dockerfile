@@ -3,14 +3,18 @@
 # runtime image needs only git.
 
 # syntax=docker/dockerfile:1
-FROM golang:1.26-alpine AS build
+# The build stage runs on the native BUILDPLATFORM and cross-compiles to
+# TARGET* (Go is pure-Go/CGO_ENABLED=0), so a multi-arch build never emulates
+# the compiler — only the runtime stage's apt-get runs under QEMU.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=docker
-RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /out/gitmote ./cmd/gitmote \
- && CGO_ENABLED=0 go build -o /out/gitmote-hook ./cmd/gitmote-hook
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags "-X main.version=${VERSION}" -o /out/gitmote ./cmd/gitmote \
+ && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/gitmote-hook ./cmd/gitmote-hook
 
 # Debian's git package includes git-http-backend (Alpine's splits it out); the
 # whole design delegates to `git http-backend`, so it must be present.
