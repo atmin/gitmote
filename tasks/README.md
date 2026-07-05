@@ -12,12 +12,8 @@ envs, on a laptop or on Scaleway, identically. Kill it — fine; restart it — 
 restores from S3 and continues. Localhost is a first-class deployment.
 
 Chain A (shrink the surface — auto-generated secrets, first-run auto-bootstrap)
-has landed. What remains is the image chain plus a docs cap — order within the
-chain matters:
-
-**Chain B — the image**
-- [dogfood-make.md](dogfood-make.md) — `make image` / `make prod` / `make publish`;
-  `make prod` runs the real image against dev MinIO.
+and Chain B (the image — public GHCR, `make image`/`prod`/`publish`) have landed.
+All that remains is the docs cap:
 
 **Cap**
 - [operate-docs.md](operate-docs.md) — `docker run` quickstart (incl. "grab the
