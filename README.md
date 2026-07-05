@@ -31,7 +31,8 @@ docker run --rm -p 8080:8080 \
   -e GITMOTE_S3_BUCKET=my-gitmote-bucket \
   -e AWS_REGION=us-east-1 \
   -e AWS_ACCESS_KEY_ID=… -e AWS_SECRET_ACCESS_KEY=… \
-  ghcr.io/atmin/gitmote
+  ghcr.io/atmin/gitmote:master
+# Published tags: :master (latest on master) and :<git-sha>. There is no :latest.
 # Non-AWS S3 (Scaleway, MinIO, R2): add -e GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud
 # Keep the local cache across restarts (optional):  -v gitmote-data:/data
 ```
@@ -48,7 +49,7 @@ Lost the token? It's never stored (only its hash), so re-mint one — stop the
 container, then:
 
 ```sh
-docker run --rm -e GITMOTE_S3_BUCKET=… -e AWS_… ghcr.io/atmin/gitmote bootstrap -reissue
+docker run --rm -e GITMOTE_S3_BUCKET=… -e AWS_… ghcr.io/atmin/gitmote:master bootstrap -reissue
 ```
 
 Nothing else is required: the session cookie key and CI worker secret are
