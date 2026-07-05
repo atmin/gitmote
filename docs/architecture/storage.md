@@ -10,7 +10,7 @@
 │                                                              │
 │   HTTP  ─┬─ smart-HTTP handler ── spawns ── git http-backend │
 │          │                                    (stock git)    │
-│          ├─ web UI (repos, keys, ACLs, doc edits)            │
+│          ├─ web UI (dashboard, repos, tokens, ACLs, CI)      │
 │          └─ embedded s3lite (*sql.DB)                        │
 │                                                              │
 │   ephemeral disk: working bare repos (a CACHE, disposable)   │
@@ -57,57 +57,18 @@ dependency); `rclone` is a zero-code fallback. New objects/packs are PUT after
 
 ### s3lite schema (mutable — the reason s3lite is here)
 
-```sql
-CREATE TABLE repos (
-  id             INTEGER PRIMARY KEY,
-  name           TEXT NOT NULL UNIQUE,          -- single path segment, e.g. "gitmote"
-  default_branch TEXT NOT NULL DEFAULT 'main',
-  visibility     TEXT NOT NULL DEFAULT 'private'  -- 'private' | 'public' (public = read-anonymous)
-                 CHECK (visibility IN ('private','public')),
-  created_at     TEXT NOT NULL
-);
-
--- the mutable pointers — the whole reason this DB exists in the design
-CREATE TABLE refs (
-  repo_id    INTEGER NOT NULL REFERENCES repos(id),
-  name       TEXT NOT NULL,                      -- "refs/heads/main"
-  sha        TEXT NOT NULL,                       -- object id
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (repo_id, name)
-);
-
-CREATE TABLE users (
-  id         INTEGER PRIMARY KEY,
-  handle     TEXT NOT NULL UNIQUE,
-  is_admin   INTEGER NOT NULL DEFAULT 0,       -- global admin: may manage users/repos/ACLs
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE tokens (                             -- HTTP personal access tokens
-  id         INTEGER PRIMARY KEY,
-  user_id    INTEGER NOT NULL REFERENCES users(id),
-  selector   TEXT NOT NULL UNIQUE,                -- public lookup key (not secret)
-  verifier   TEXT NOT NULL,                       -- SHA-256 of the token's secret half, never the raw token
-  label      TEXT,
-  created_at TEXT NOT NULL,
-  last_used  TEXT
-);
-
-CREATE TABLE ssh_keys (                           -- deferred transport, schema ready
-  id         INTEGER PRIMARY KEY,
-  user_id    INTEGER NOT NULL REFERENCES users(id),
-  pubkey     TEXT NOT NULL,                        -- OpenSSH authorized_keys line
-  label      TEXT,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE acls (
-  repo_id    INTEGER NOT NULL REFERENCES repos(id),
-  user_id    INTEGER NOT NULL REFERENCES users(id),
-  perm       TEXT NOT NULL CHECK (perm IN ('read','write','admin')),
-  PRIMARY KEY (repo_id, user_id)
-);
-```
+The schema is defined **once**, in
+[`internal/meta/schema.sql`](../../internal/meta/schema.sql) — the single source
+of truth, applied idempotently (`CREATE ... IF NOT EXISTS`) on every `Open`, with
+a guarded `ALTER` migration in
+[`internal/meta/meta.go`](../../internal/meta/meta.go) for additive columns the
+version-less store can't express in `schema.sql` alone. It is self-documenting
+(every column is commented); this doc keeps only the cross-cutting rules the DDL
+can't state. The tables, grouped: **`repos` / `refs`** (repos and their mutable
+pointers — refs are the whole reason this DB exists); **`users` / `tokens` /
+`ssh_keys` / `acls`** (identity and access); **`ci_runs` / `ci_jobs` /
+`ci_secrets`** (CI); and **`server_secrets`** (auto-provisioned cookie/worker
+keys). The rules that live here, not in the DDL:
 
 `HEAD` is not a row — it derives from `repos.default_branch`. Every `refs` row
 holds a concrete object id; symbolic refs beyond `HEAD` are not stored.
