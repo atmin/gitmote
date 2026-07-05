@@ -476,7 +476,7 @@ func (h *Handler) renderCommit(w http.ResponseWriter, r *http.Request, c browseC
 	h.render(w, "browse_commit.html", commitData{
 		browseBase: h.browseHeader(r, c),
 		Commit:     commit,
-		Diff:       diff,
+		Diff:       render.Diff(diff),
 		Run:        run,
 	})
 }

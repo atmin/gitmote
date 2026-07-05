@@ -127,8 +127,8 @@ type commitData struct {
 	Path   string  // always empty; present so the shared browse_head renders
 	Crumbs []crumb // always nil; present so the shared browse_head renders
 	Commit repo.Commit
-	Diff   string
-	Run    *meta.Run // the latest CI run for this commit's SHA, if any (badge)
+	Diff   template.HTML // the unified diff rendered as a colored diff (render.Diff)
+	Run    *meta.Run     // the latest CI run for this commit's SHA, if any (badge)
 }
 
 // --- ci status ---

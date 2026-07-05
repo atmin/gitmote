@@ -232,6 +232,62 @@ func MarkdownLinks(src []byte, lc *LinkContext) template.HTML {
 	return template.HTML(sanitizer.SanitizeBytes(buf.Bytes())) //nolint:gosec // sanitized above
 }
 
+// Diff renders a unified diff (git's patch text) to HTML: one styled row per
+// line — file/hunk headers, additions, deletions, context — so the browse UI
+// shows a colored diff instead of a plain <pre>. The input is git's own output
+// (trusted origin), but every line is HTML-escaped, so the result is safe to
+// embed. An empty diff yields "" (the caller shows nothing).
+func Diff(unified string) template.HTML {
+	if strings.TrimSpace(unified) == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(`<div class="diff">`)
+	lines := strings.Split(unified, "\n")
+	// A trailing newline splits into a final empty element; drop it so it doesn't
+	// render as a stray blank row.
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	for _, line := range lines {
+		b.WriteString(`<div class="dl `)
+		b.WriteString(diffLineClass(line))
+		b.WriteString(`">`)
+		// An empty line still needs height; a zero-width space keeps the row.
+		if line == "" {
+			b.WriteString("&#8203;")
+		} else {
+			b.WriteString(template.HTMLEscapeString(line))
+		}
+		b.WriteString(`</div>`)
+	}
+	b.WriteString(`</div>`)
+	return template.HTML(b.String()) //nolint:gosec // every line is HTML-escaped above
+}
+
+// diffLineClass maps a unified-diff line to its CSS row class by the leading
+// marker. File-level headers (`diff --git`, `+++`, `---`, mode/rename lines, …)
+// are checked before the bare +/- so they aren't miscolored as add/delete.
+func diffLineClass(line string) string {
+	switch {
+	case strings.HasPrefix(line, "@@"):
+		return "dl-hunk"
+	case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"),
+		strings.HasPrefix(line, "diff "), strings.HasPrefix(line, "index "),
+		strings.HasPrefix(line, "new file"), strings.HasPrefix(line, "deleted file"),
+		strings.HasPrefix(line, "old mode"), strings.HasPrefix(line, "new mode"),
+		strings.HasPrefix(line, "rename "), strings.HasPrefix(line, "similarity "),
+		strings.HasPrefix(line, "copy "), strings.HasPrefix(line, "Binary files"):
+		return "dl-file"
+	case strings.HasPrefix(line, "+"):
+		return "dl-add"
+	case strings.HasPrefix(line, "-"):
+		return "dl-del"
+	default: // context, "\ No newline at end of file", blank
+		return "dl-ctx"
+	}
+}
+
 // HasMermaid reports whether rendered markdown contains a mermaid diagram block
 // (emitted as <pre class="mermaid">), so a page pulls in the mermaid script only
 // when it actually has a diagram. Repo text that literally reads class="mermaid"

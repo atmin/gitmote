@@ -323,8 +323,16 @@ func TestBrowseCommitsAndCommit(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("commit = %d (%s)", rec.Code, rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), head) {
-		t.Fatalf("commit body missing sha:\n%s", rec.Body)
+	body = rec.Body.String()
+	if !strings.Contains(body, head) {
+		t.Fatalf("commit body missing sha:\n%s", body)
+	}
+	// The diff renders as a colored diff (the second commit edits hello.go, so it
+	// has an added and a removed line), not a plain <pre>.
+	for _, want := range []string{`class="diff"`, "dl-add", "dl-del"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("commit diff not rendered as a colored diff (missing %q):\n%s", want, body)
+		}
 	}
 }
 

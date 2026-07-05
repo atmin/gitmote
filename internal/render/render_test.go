@@ -145,6 +145,53 @@ func TestMarkdownLinksNilContextIsInert(t *testing.T) {
 	}
 }
 
+func TestDiff(t *testing.T) {
+	unified := strings.Join([]string{
+		"diff --git a/hello.go b/hello.go",
+		"index 1111111..2222222 100644",
+		"--- a/hello.go",
+		"+++ b/hello.go",
+		"@@ -1,3 +1,3 @@ func main() {",
+		" context stays",
+		"-func main() {}",
+		"+func main() { println(1) }",
+	}, "\n") + "\n"
+	out := string(Diff(unified))
+
+	for _, want := range []string{
+		`class="diff"`,
+		`class="dl dl-file">diff --git a/hello.go b/hello.go</div>`,
+		`class="dl dl-file">--- a/hello.go</div>`, // --- is a file header, not a deletion
+		`class="dl dl-file">+++ b/hello.go</div>`, // +++ is a file header, not an addition
+		`class="dl dl-hunk">@@ -1,3 +1,3 @@`,
+		`class="dl dl-ctx"> context stays</div>`,
+		`class="dl dl-del">-func main() {}</div>`,
+		`class="dl dl-add">+func main() { println(1) }</div>`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("diff HTML missing %q:\n%s", want, out)
+		}
+	}
+	// The trailing newline must not produce a stray empty row.
+	if strings.Contains(out, `<div class="dl dl-ctx">&#8203;</div></div>`) {
+		t.Errorf("trailing newline rendered as a blank row:\n%s", out)
+	}
+}
+
+func TestDiffEscapesAndEmpty(t *testing.T) {
+	if got := Diff("   \n"); got != "" {
+		t.Errorf("blank diff = %q, want empty", got)
+	}
+	// A diff line containing HTML must be escaped, never emitted as live markup.
+	out := string(Diff("+<script>alert(1)</script>\n"))
+	if strings.Contains(out, "<script>") {
+		t.Fatalf("diff did not escape HTML:\n%s", out)
+	}
+	if !strings.Contains(out, `dl-add">+&lt;script&gt;`) {
+		t.Fatalf("expected escaped addition line:\n%s", out)
+	}
+}
+
 func TestMarkdownMermaid(t *testing.T) {
 	src := []byte("# Diagram\n\n```mermaid\ngraph TD\n  A --> B\n```\n")
 	out := string(Markdown(src))

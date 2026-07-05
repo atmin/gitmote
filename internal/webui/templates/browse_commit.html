@@ -7,5 +7,5 @@
   {{if .Run}}· CI <a href="/{{.Repo}}/runs/{{.Run.ID}}" style="color:{{statusColor .Run.Status}}">{{.Run.Status}}</a>{{end}}
 </p>
 {{if .Commit.Body}}<pre>{{.Commit.Body}}</pre>{{end}}
-<pre>{{.Diff}}</pre>
+{{.Diff}}
 {{template "bottom" .}}{{end}}
