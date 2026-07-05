@@ -187,9 +187,10 @@ func TestGoldenPath(t *testing.T) {
 		t.Fatalf("alice not created: %v", err)
 	}
 
-	// Create a repo owned by alice (POST to the dashboard).
+	// Create a repo (POST to the dashboard) — no owner field; the creating admin
+	// gets admin on it.
 	rec := x.do(http.MethodPost, "/",
-		url.Values{"owner": {"alice"}, "name": {"app"}, "default_branch": {"main"}}, session)
+		url.Values{"name": {"app"}, "default_branch": {"main"}}, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "created app") {
 		t.Fatalf("create repo: %d (%s)", rec.Code, rec.Body)
 	}
@@ -249,29 +250,25 @@ func TestGoldenPath(t *testing.T) {
 	}
 }
 
-// TestCreateRepoGrantsOwnerAdmin: creating a repo through the UI grants the owner
-// admin on it, so it is immediately usable (clone/push) without a separate ACL
-// step — the gap that left a freshly created repo 403-ing every push.
-func TestCreateRepoGrantsOwnerAdmin(t *testing.T) {
+// TestCreateRepoGrantsCreatorAdmin: creating a repo through the UI grants the
+// creating admin admin on it, so it is immediately usable (clone/push) without a
+// separate ACL step — the gap that left a freshly created repo 403-ing every push.
+func TestCreateRepoGrantsCreatorAdmin(t *testing.T) {
 	x := newHarness(t)
 	ctx := context.Background()
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	if rec := x.do(http.MethodPost, "/users", url.Values{"handle": {"bob"}}, session); rec.Code != http.StatusOK {
-		t.Fatalf("create user: %d (%s)", rec.Code, rec.Body)
-	}
 	if rec := x.do(http.MethodPost, "/",
-		url.Values{"owner": {"bob"}, "name": {"proj"}, "default_branch": {"main"}}, session); rec.Code != http.StatusOK {
+		url.Values{"name": {"proj"}, "default_branch": {"main"}}, session); rec.Code != http.StatusOK {
 		t.Fatalf("create repo: %d (%s)", rec.Code, rec.Body)
 	}
 
-	bob, _ := x.md.GetUser(ctx, "bob")
 	repo, err := x.md.GetRepo(ctx, "proj")
 	if err != nil {
 		t.Fatalf("repo not created: %v", err)
 	}
-	if perm, err := x.md.GetACL(ctx, repo.ID, bob.ID); err != nil || perm != meta.PermAdmin {
-		t.Errorf("owner ACL after create = %q, %v; want admin", perm, err)
+	if perm, err := x.md.GetACL(ctx, repo.ID, x.admin.ID); err != nil || perm != meta.PermAdmin {
+		t.Errorf("creator ACL after create = %q, %v; want admin", perm, err)
 	}
 }
 
@@ -285,8 +282,7 @@ func TestUnauthenticatedDenied(t *testing.T) {
 	}
 
 	// POST without a session → 401 (not a browser navigation).
-	rec = x.do(http.MethodPost, "/",
-		url.Values{"owner": {"root"}, "name": {"x"}}, nil)
+	rec = x.do(http.MethodPost, "/", url.Values{"name": {"x"}}, nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("POST / (create) unauth = %d, want 401", rec.Code)
 	}
@@ -311,12 +307,12 @@ func TestNonAdminDenied(t *testing.T) {
 	}
 }
 
-func TestCreateRepoRejectsReservedAndUnknownOwner(t *testing.T) {
+func TestCreateRepoRejectsReservedName(t *testing.T) {
 	x := newHarness(t)
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
 	// A reserved repo name (a global route) is refused by meta.CreateRepo.
-	rec := x.do(http.MethodPost, "/", url.Values{"owner": {"root"}, "name": {"login"}}, session)
+	rec := x.do(http.MethodPost, "/", url.Values{"name": {"login"}}, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "reserved") {
 		t.Errorf("reserved name: %d (%s)", rec.Code, rec.Body)
 	}
@@ -324,13 +320,13 @@ func TestCreateRepoRejectsReservedAndUnknownOwner(t *testing.T) {
 		t.Error("repo created despite a reserved name")
 	}
 
-	// Owner must be an existing user.
-	rec = x.do(http.MethodPost, "/", url.Values{"owner": {"ghost"}, "name": {"x"}}, session)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "no such user") {
-		t.Errorf("unknown owner: %d (%s)", rec.Code, rec.Body)
+	// A structurally invalid name is refused before it reaches CreateRepo.
+	rec = x.do(http.MethodPost, "/", url.Values{"name": {".hidden"}}, session)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "alphanumeric") {
+		t.Errorf("invalid name: %d (%s)", rec.Code, rec.Body)
 	}
-	if _, err := x.md.GetRepo(context.Background(), "x"); err == nil {
-		t.Error("repo created despite unknown owner")
+	if _, err := x.md.GetRepo(context.Background(), ".hidden"); err == nil {
+		t.Error("repo created despite an invalid name")
 	}
 }
 

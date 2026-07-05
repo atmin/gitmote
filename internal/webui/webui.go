@@ -312,36 +312,27 @@ func (h *Handler) renderDashboard(w http.ResponseWriter, r *http.Request, flash,
 }
 
 func (h *Handler) postRepo(w http.ResponseWriter, r *http.Request) {
-	owner := strings.TrimSpace(r.FormValue("owner"))
 	name := strings.TrimSpace(r.FormValue("name"))
 	branch := strings.TrimSpace(r.FormValue("default_branch"))
 
-	if !nameSegment.MatchString(owner) || !nameSegment.MatchString(name) {
-		h.renderDashboard(w, r, "", "owner and name must be alphanumeric (._- allowed, not leading)")
+	if !nameSegment.MatchString(name) {
+		h.renderDashboard(w, r, "", "name must be alphanumeric (._- allowed, not leading)")
 		return
 	}
-	// The reserved-name and structural rules live in meta.CreateRepo (one source
-	// for routing + validation); its error is surfaced below.
-	ownerUser, err := h.md.GetUser(r.Context(), owner)
-	if errors.Is(err, meta.ErrNotFound) {
-		h.renderDashboard(w, r, "", "no such user for owner: "+owner)
-		return
-	} else if err != nil {
-		h.serverError(w, "lookup owner", err)
-		return
-	}
-
-	// Flat namespace: the repo is a single path segment (no owner/ prefix).
-	// CreateRepo enforces the reserved-name and structural rules.
+	// Flat namespace: the repo is a single path segment. CreateRepo enforces the
+	// reserved-name and structural rules; its error is surfaced below.
 	repo, err := h.md.CreateRepo(r.Context(), name, branch)
 	if err != nil {
 		h.renderDashboard(w, r, "", "create repo: "+err.Error())
 		return
 	}
-	// Grant the owner admin on their new repo so it is immediately usable
-	// (clone/push) without a separate ACL step, mirroring bootstrap.
-	if err := h.md.SetACL(r.Context(), repo.ID, ownerUser.ID, meta.PermAdmin); err != nil {
-		h.serverError(w, "grant owner acl", err)
+	// Grant the creating admin admin on the new repo so it is immediately usable
+	// (clone/push) without a separate ACL step. There is no separate "owner" — on
+	// a personal instance the admin implicitly owns repos and ACLs grant everyone
+	// else (docs/architecture/urls.md). requireAdmin guarantees a user in context.
+	creator := userFrom(r.Context())
+	if err := h.md.SetACL(r.Context(), repo.ID, creator.ID, meta.PermAdmin); err != nil {
+		h.serverError(w, "grant creator acl", err)
 		return
 	}
 	h.renderDashboard(w, r, "created "+name, "")
