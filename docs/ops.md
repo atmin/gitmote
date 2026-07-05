@@ -77,14 +77,10 @@ Setting these on the container does nothing for CI, and vice versa.
 
 | Variable | Value / meaning |
 |----------|-----------------|
-| `GITMOTE_ADDR` | bind address — `:8080` (Scaleway routes to `port=8080`) |
-| `GITMOTE_S3_BUCKET` | `gitmote` |
+| `GITMOTE_S3_BUCKET` | `gitmote` — a bucket alone derives the metadata replica (`s3://gitmote/meta`) and the single-writer lease |
 | `GITMOTE_S3_ENDPOINT` | `https://s3.fr-par.scw.cloud` |
-| `GITMOTE_S3_PREFIX` | `objects/` — git objects live under this prefix |
-| `GITMOTE_DB_REPLICA` | `s3://gitmote/meta` — litestream restore + backup target |
-| `GITMOTE_DB` | `/tmp/gitmote/meta.sqlite3` — ephemeral; restored from the replica on cold start |
-| `GITMOTE_CACHE` | `/tmp/gitmote/cache` — ephemeral; materialized repos rebuild from S3 |
-| `GITMOTE_SOCK` | `/tmp/gitmote/gitmote.sock` — pre-receive hook RPC socket |
+| `GITMOTE_DATA` | `/tmp/gitmote` — base dir for the db (`meta.sqlite3`), cache, and socket; ephemeral, restored from S3 on cold start |
+| `GITMOTE_DB_REPLICA` | optional override for the derived `s3://{bucket}/meta` replica target |
 | `GITMOTE_HOOK` | pre-receive hook binary (defaults to `gitmote-hook` beside the server) |
 | `GITMOTE_RUNNER` | CI runner binary the local trigger spawns (defaults to `gitmote-runner` beside the server) |
 | `GITMOTE_COOKIE_KEY` | secret — signs management-UI session cookies (enables `/ui`) |
@@ -108,12 +104,11 @@ Setting these on the container does nothing for CI, and vice versa.
 > `.github/workflows` with `act`, which needs a reachable Docker daemon. A
 > leader-only ticker sweeps jobs stuck `running` past ~1h back to `error`.
 
-`GITMOTE_DB` and `GITMOTE_CACHE` are ephemeral on purpose: the object store +
-litestream replica are the durable state, and the local disk is a cache. On a
-cold start (scale-to-zero → wake, or a redeploy) the DB is restored from
-`GITMOTE_DB_REPLICA` and repos re-materialize from `objects/`. This path is
-proven locally by `make e2e-restore` (wipes the DB volume, confirms the repo
-still clones).
+`GITMOTE_DATA` is ephemeral on purpose: the object store + litestream replica are
+the durable state, and the local disk is a cache. On a cold start (scale-to-zero →
+wake, or a redeploy) the DB is restored from the derived replica and repos
+re-materialize from the bucket. This path is proven locally by `make e2e-restore`
+(wipes the data volume, confirms the repo still clones).
 
 Resources: **250 mVCPU / 512 MB / 2 GB ephemeral** (`cpu-limit=250`,
 `memory-limit-bytes=512MB` — the CLI requires a `G`/`GB`/`MB` unit). Observed
@@ -186,12 +181,8 @@ scw container container create \
   memory-limit-bytes=512MB \
   port=8080 \
   environment-variables.GITMOTE_S3_BUCKET=gitmote \
-  environment-variables.GITMOTE_S3_PREFIX=objects/ \
   environment-variables.GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud \
-  environment-variables.GITMOTE_DB_REPLICA=s3://gitmote/meta \
-  environment-variables.GITMOTE_DB=/tmp/gitmote/meta.sqlite3 \
-  environment-variables.GITMOTE_CACHE=/tmp/gitmote/cache \
-  environment-variables.GITMOTE_SOCK=/tmp/gitmote/gitmote.sock \
+  environment-variables.GITMOTE_DATA=/tmp/gitmote \
   environment-variables.AWS_REGION=fr-par \
   secret-environment-variables.GITMOTE_COOKIE_KEY="$(openssl rand -base64 32)" \
   secret-environment-variables.AWS_ACCESS_KEY_ID=<KEY> \
@@ -222,9 +213,9 @@ already holds it, so running it while the server is live can no longer produce
 two writers — it just refuses.
 
 ```bash
-GITMOTE_DB=/tmp/bootstrap.sqlite3 \
-GITMOTE_DB_REPLICA=s3://gitmote/meta \
+GITMOTE_S3_BUCKET=gitmote \
 GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud \
+GITMOTE_DATA=/tmp/bootstrap \
 AWS_REGION=fr-par AWS_ACCESS_KEY_ID=<KEY> AWS_SECRET_ACCESS_KEY=<SECRET> \
   gitmote bootstrap -handle atmin -repo atmin/gitmote -default-branch master
 ```

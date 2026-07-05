@@ -10,18 +10,16 @@ cd "$ROOT"
 COMPOSE=(docker compose -p gitmote-dev -f docker-compose.dev.yml)
 TOKEN_FILE="$ROOT/data/dev-token"
 
-# All-local configuration — none of these are secret. The DB, cache, and socket
-# live under data/ (gitignored) so refs survive restarts; the token below is
-# minted against that same DB, so the two stay in sync.
-export GITMOTE_ADDR=":8080"
+# All-local configuration — none of these are secret. The db, cache, and socket
+# live under data/ (gitignored, one GITMOTE_DATA dir) so refs survive restarts;
+# the token below is minted against that same DB, so the two stay in sync. The
+# bucket alone now derives the metadata replica + single-writer lease.
 export GITMOTE_S3_BUCKET="gitmote"
 export GITMOTE_S3_ENDPOINT="http://localhost:9100"
 export AWS_REGION="us-east-1"
 export AWS_ACCESS_KEY_ID="minioadmin"
 export AWS_SECRET_ACCESS_KEY="minioadmin"
-export GITMOTE_DB="$ROOT/data/meta.sqlite3"
-export GITMOTE_CACHE="$ROOT/data/cache"
-export GITMOTE_SOCK="$ROOT/data/gitmote.sock"
+export GITMOTE_DATA="$ROOT/data"
 export GITMOTE_HOOK="$ROOT/bin/gitmote-hook"
 export GITMOTE_RUNNER="$ROOT/bin/gitmote-runner"
 export GITMOTE_COOKIE_KEY="dev-cookie-key-not-for-production"

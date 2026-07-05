@@ -1,9 +1,9 @@
 # Dogfood Make targets — build, run, publish the image
 
 Part of [easy to operate](README.md). Operator ergonomics for the container
-lifecycle. Depends on [minimal-env-replica](minimal-env-replica.md) (so
-`make prod` restores the *whole* forge from S3) and
-[public-registry](public-registry.md) (the image tags).
+lifecycle. The bucket-derived replica already lets `make prod` restore the
+*whole* forge from S3; this depends on [public-registry](public-registry.md)
+(the image tags).
 
 ## Spec
 

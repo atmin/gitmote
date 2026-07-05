@@ -1,7 +1,7 @@
 # Local self-hosting stack: MinIO (object store) + gitmote (single writer).
-# Driven by `make e2e-local` (scripts/e2e-local.sh). Not a production topology —
-# litestream replication of the metadata DB lands in the deploy task; here the
-# sqlite file lives on the gitmote-data volume, so refs survive a restart.
+# Driven by `make e2e-local` (scripts/e2e-local.sh). A bucket alone derives the
+# metadata replica and single-writer lease, so refs survive both a restart (via
+# the gitmote-data volume) and a full wipe (restored from S3 — see e2e-restore).
 name: gitmote-e2e
 
 services:
@@ -35,15 +35,12 @@ services:
     image: gitmote:e2e
     depends_on: [minio]
     environment:
-      GITMOTE_ADDR: ":8080"
       GITMOTE_S3_BUCKET: gitmote
       GITMOTE_S3_ENDPOINT: http://minio:9000
-      GITMOTE_DB: /data/meta.sqlite3    # persistent (named volume) — refs survive restart
-      GITMOTE_CACHE: /cache             # ephemeral — materialized repos rebuild from S3
-      GITMOTE_SOCK: /tmp/gitmote.sock
-      # Opt-in litestream replication of the metadata DB. Empty by default
-      # (e2e-local proves volume durability); e2e-restore.sh sets it to exercise
-      # restore-from-S3 after the DB volume is wiped — the deploy cold-start path.
+      GITMOTE_DATA: /data               # db, cache, and socket all live here
+      # A bucket alone derives the replica (s3://gitmote/meta), so replication is
+      # on by default. e2e-restore.sh sets this explicitly to the same value while
+      # it wipes the volume, exercising the restore-from-S3 cold-start path.
       GITMOTE_DB_REPLICA: ${GITMOTE_DB_REPLICA:-}
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: minioadmin

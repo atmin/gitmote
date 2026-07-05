@@ -21,6 +21,9 @@ RUN apt-get update \
 # gitmote resolves the hook as gitmote-hook beside its own executable, so keep
 # both in the same directory.
 COPY --from=build /out/gitmote /out/gitmote-hook /usr/local/bin/
-RUN mkdir -p /data /cache
+# db, cache, and socket all live under GITMOTE_DATA; mount one volume at /data to
+# persist metadata (also restored from S3 on cold start).
+ENV GITMOTE_DATA=/data
+RUN mkdir -p /data
 EXPOSE 8080
 ENTRYPOINT ["gitmote"]

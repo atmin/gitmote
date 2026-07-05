@@ -15,10 +15,6 @@ Two independent chains plus a docs cap — order within a chain matters, the cha
 run in parallel:
 
 **Chain A — shrink the surface**
-- [minimal-env-replica.md](minimal-env-replica.md) — derive the DB replica from
-  the bucket (drop `GITMOTE_DB_REPLICA`); a bucket ⇒ replicate + lease (durable by
-  default, `RoleOff`-with-a-bucket retired); collapse db/cache/sock into one
-  `GITMOTE_DATA`.
 - [minimal-env-secrets.md](minimal-env-secrets.md) — auto-generate + persist
   `GITMOTE_COOKIE_KEY` and (lazily) `WORKER_SECRET` in meta; CI master key stays
   env-only.
@@ -31,8 +27,8 @@ run in parallel:
 - [public-registry.md](public-registry.md) — publish `ghcr.io/atmin/gitmote` +
   `…/gitmote-runner` publicly; deploy from GHCR; kill the by-hand runner push.
 - [dogfood-make.md](dogfood-make.md) — `make image` / `make prod` / `make publish`;
-  `make prod` runs the real image against dev MinIO. *(needs -replica for full
-  shared state, and -registry for the tags.)*
+  `make prod` runs the real image against dev MinIO. *(needs -registry for the
+  tags.)*
 
 **Cap**
 - [operate-docs.md](operate-docs.md) — `docker run` quickstart (incl. "grab the

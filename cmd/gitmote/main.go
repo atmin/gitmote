@@ -34,6 +34,10 @@ var version = "dev"
 
 const shutdownTimeout = 10 * time.Second
 
+// listenAddr is the fixed bind address. Ports are mapped at the container, so
+// there is no reason to make this a knob.
+const listenAddr = ":8080"
+
 const (
 	// reconcileInterval is how often the leader sweeps abandoned CI jobs.
 	reconcileInterval = 5 * time.Minute
@@ -54,20 +58,17 @@ func main() {
 		return
 	}
 
-	addr := flag.String("addr", envOr("GITMOTE_ADDR", ":8080"), "listen address")
-	flag.Parse()
-
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
-	if err := run(context.Background(), logger, *addr); err != nil {
+	if err := run(context.Background(), logger, listenAddr); err != nil {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)
 	}
 }
 
 // runBootstrap creates the first admin, token, and repo from an empty instance.
-// It opens the metadata DB per the environment (GITMOTE_DB, and GITMOTE_DB_REPLICA
-// for litestream) and prints the one-time token to out on success. The deferred
+// It opens the metadata DB per the environment (the data dir, and the replica
+// derived from the bucket) and prints the one-time token to out on success. The deferred
 // Close durably flushes replication, so this short-lived process reliably pushes
 // the new admin/token/repo to S3 for the server to restore.
 func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
@@ -242,11 +243,10 @@ func alwaysServable(p string) bool {
 // HMAC key that signs session cookies); it shares this metadata handle, so it
 // runs alongside the git server.
 //
-// Metadata lives at GITMOTE_DB (default ./gitmote.sqlite3), replicated to
-// GITMOTE_DB_REPLICA when set (litestream; empty is local-only). Materialized
-// repos cache under GITMOTE_CACHE (default a temp dir). The push path listens on
-// GITMOTE_SOCK (default a temp path) and installs the pre-receive hook binary
-// at GITMOTE_HOOK (default gitmote-hook alongside this binary).
+// The db, cache, and socket derive from GITMOTE_DATA (see dataDir); metadata
+// replicates to a bucket-derived replica (see replicaTarget). The push path
+// installs the pre-receive hook binary at GITMOTE_HOOK (default gitmote-hook
+// alongside this binary).
 func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *webui.Handler, *ci.ReportAPI, func() bool, func() error, error) {
 	noop := func() error { return nil }
 
@@ -276,14 +276,12 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		logger.Warn("lost the writer lease; now read-only", "error", err)
 	})
 
-	sockPath := envOr("GITMOTE_SOCK", filepath.Join(os.TempDir(), "gitmote.sock"))
-	writer, err := githttp.NewWriter(md, objs, hookBinaryPath(), sockPath, logger)
+	writer, err := githttp.NewWriter(md, objs, hookBinaryPath(), sockPath(), logger)
 	if err != nil {
 		_ = md.Close()
 		return nil, nil, nil, nil, noop, fmt.Errorf("write path: %w", err)
 	}
-	cacheRoot := envOr("GITMOTE_CACHE", filepath.Join(os.TempDir(), "gitmote-repos"))
-	materializer := repo.New(md, objs, cacheRoot)
+	materializer := repo.New(md, objs, cachePath())
 	guard := auth.NewGuard(md)
 
 	// CI secrets: master keys from GITMOTE_CI_SECRET_KEY_V<n>. A malformed key is
@@ -425,20 +423,20 @@ func runnerBinaryPath() string {
 }
 
 // metaConfigFromEnv builds the metadata database config from the environment.
-// GITMOTE_DB_REPLICA is an s3:// URL used for both restore-on-cold-start and
-// continuous backup (litestream); empty leaves the database local-only (tests,
-// local dev), so the same binary runs unreplicated or replicated by env alone.
-// The replica reuses the object store's endpoint and the AWS default credential
-// chain, so one credential set covers both git objects and the metadata WAL.
+// The replica (see replicaTarget) is an s3:// URL used for both
+// restore-on-cold-start and continuous backup (litestream); empty leaves the
+// database local-only (tests, ephemeral runs with no bucket), so the same binary
+// runs unreplicated or replicated by env alone. The replica reuses the object
+// store's endpoint and the AWS default credential chain, so one credential set
+// covers both git objects and the metadata WAL.
 //
 // role selects single-writer coordination and is applied only when a replica is
 // configured — there is nothing to coordinate on without a shared WAL, so an
-// unreplicated database stays RoleOff (always writer), keeping tests and local
-// dev unchanged.
+// unreplicated database stays RoleOff (always writer), keeping tests unchanged.
 func metaConfigFromEnv(logger *slog.Logger, role s3lite.Role) meta.Config {
-	replica := os.Getenv("GITMOTE_DB_REPLICA")
+	replica := replicaTarget()
 	cfg := meta.Config{
-		LocalPath:   envOr("GITMOTE_DB", "gitmote.sqlite3"),
+		LocalPath:   dbPath(),
 		RestoreFrom: replica,
 		BackupTo:    replica,
 		S3:          s3lite.S3Config{Endpoint: os.Getenv("GITMOTE_S3_ENDPOINT")},
@@ -449,6 +447,38 @@ func metaConfigFromEnv(logger *slog.Logger, role s3lite.Role) meta.Config {
 	}
 	return cfg
 }
+
+// replicaTarget resolves the metadata replica URL. An explicit GITMOTE_DB_REPLICA
+// wins as an override; otherwise, whenever a bucket is set, the replica is derived
+// as s3://{bucket}/meta — a sibling of the git objects. A bucket alone therefore
+// yields durability and the single-writer lease with no second env.
+//
+// Derive from the bucket only, never bucket+prefix: s3://{bucket}/{prefix}meta
+// would be a different path and orphan the existing sibling replica. The sibling
+// layout (objects/ + meta) is deliberate.
+func replicaTarget() string {
+	if replica := os.Getenv("GITMOTE_DB_REPLICA"); replica != "" {
+		return replica
+	}
+	if bucket := os.Getenv("GITMOTE_S3_BUCKET"); bucket != "" {
+		return "s3://" + bucket + "/meta"
+	}
+	return ""
+}
+
+// dataDir is the base directory for gitmote's local, restore-from-S3 state:
+// GITMOTE_DATA, defaulting to a temp dir. The db, cache, and socket derive from
+// it — one -v ./data:/data mounts the lot — each still overridable individually.
+func dataDir() string {
+	return envOr("GITMOTE_DATA", filepath.Join(os.TempDir(), "gitmote"))
+}
+
+// dbPath, cachePath, and sockPath resolve the metadata DB, materialized-repo
+// cache, and pre-receive hook socket under dataDir, honoring the per-path
+// overrides (GITMOTE_DB / GITMOTE_CACHE / GITMOTE_SOCK) when set.
+func dbPath() string    { return envOr("GITMOTE_DB", filepath.Join(dataDir(), "meta.sqlite3")) }
+func cachePath() string { return envOr("GITMOTE_CACHE", filepath.Join(dataDir(), "cache")) }
+func sockPath() string  { return envOr("GITMOTE_SOCK", filepath.Join(dataDir(), "gitmote.sock")) }
 
 // envOr returns the value of the environment variable key, or fallback if
 // it is unset or empty.

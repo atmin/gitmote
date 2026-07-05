@@ -62,12 +62,12 @@ one-time `bootstrap` subcommand **inside the single writer** to create the first
 admin, mint a token (printed once), and create the initial repo:
 
 ```sh
-GITMOTE_DB=/data/meta.sqlite3 gitmote bootstrap -handle atmin -repo atmin/gitmote
+GITMOTE_DATA=/data gitmote bootstrap -handle atmin -repo atmin/gitmote
 ```
 
 It prints an access token exactly once — save it. Re-running is safe: it refuses
 to clobber an existing admin. Then start the server (`GITMOTE_S3_BUCKET` et al.,
-sharing the same `GITMOTE_DB`) and clone/push with the token:
+sharing the same `GITMOTE_DATA`) and clone/push with the token:
 
 ```sh
 git clone http://atmin:<token>@<host>/atmin/gitmote

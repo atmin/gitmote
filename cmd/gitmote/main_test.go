@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/atmin/s3lite"
 )
 
 func TestHealthz(t *testing.T) {
@@ -166,6 +168,94 @@ func TestRunBootstrap(t *testing.T) {
 	}
 	if !strings.Contains(out2.String(), "already bootstrapped") {
 		t.Errorf("second run did not report already-bootstrapped:\n%s", out2.String())
+	}
+}
+
+func TestReplicaTarget(t *testing.T) {
+	// A bucket alone derives s3://{bucket}/meta; the object prefix must NOT leak
+	// into the replica path (that would orphan the existing sibling replica). An
+	// explicit GITMOTE_DB_REPLICA overrides the derivation.
+	tests := []struct {
+		name    string
+		replica string
+		bucket  string
+		prefix  string
+		want    string
+	}{
+		{"derived from bucket", "", "gitmote", "", "s3://gitmote/meta"},
+		{"prefix does not leak", "", "gitmote", "objects/", "s3://gitmote/meta"},
+		{"explicit replica overrides", "s3://other/wal", "gitmote", "objects/", "s3://other/wal"},
+		{"no bucket, no replica", "", "", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITMOTE_DB_REPLICA", tt.replica)
+			t.Setenv("GITMOTE_S3_BUCKET", tt.bucket)
+			t.Setenv("GITMOTE_S3_PREFIX", tt.prefix)
+			if got := replicaTarget(); got != tt.want {
+				t.Errorf("replicaTarget() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMetaConfigDerivesReplicaAndRole(t *testing.T) {
+	// With a bucket set, metaConfigFromEnv derives the replica and applies the
+	// leased role — a bucket always means durability + the single-writer lease.
+	t.Setenv("GITMOTE_DB_REPLICA", "")
+	t.Setenv("GITMOTE_S3_BUCKET", "gitmote")
+	t.Setenv("GITMOTE_S3_PREFIX", "objects/")
+	t.Setenv("GITMOTE_DATA", t.TempDir())
+
+	cfg := metaConfigFromEnv(nil, s3lite.RoleAuto)
+	if cfg.RestoreFrom != "s3://gitmote/meta" || cfg.BackupTo != "s3://gitmote/meta" {
+		t.Errorf("replica = %q / %q, want s3://gitmote/meta (prefix must not leak)", cfg.RestoreFrom, cfg.BackupTo)
+	}
+	if cfg.Role != s3lite.RoleAuto {
+		t.Errorf("Role = %v, want RoleAuto (a bucket must yield the lease)", cfg.Role)
+	}
+}
+
+func TestMetaConfigNoBucketStaysRoleOff(t *testing.T) {
+	// No bucket and no replica: nothing to coordinate on, so the database stays
+	// local-only and RoleOff (always writer) — tests and ephemeral runs unchanged.
+	t.Setenv("GITMOTE_DB_REPLICA", "")
+	t.Setenv("GITMOTE_S3_BUCKET", "")
+
+	cfg := metaConfigFromEnv(nil, s3lite.RoleAuto)
+	if cfg.RestoreFrom != "" || cfg.BackupTo != "" {
+		t.Errorf("replica = %q / %q, want empty (no bucket)", cfg.RestoreFrom, cfg.BackupTo)
+	}
+	if cfg.Role != s3lite.RoleOff {
+		t.Errorf("Role = %v, want RoleOff", cfg.Role)
+	}
+}
+
+func TestDataPathsUnderGitmoteData(t *testing.T) {
+	// GITMOTE_DATA alone places the db, cache, and socket under it.
+	dir := t.TempDir()
+	t.Setenv("GITMOTE_DATA", dir)
+	t.Setenv("GITMOTE_DB", "")
+	t.Setenv("GITMOTE_CACHE", "")
+	t.Setenv("GITMOTE_SOCK", "")
+
+	if got, want := dbPath(), filepath.Join(dir, "meta.sqlite3"); got != want {
+		t.Errorf("dbPath() = %q, want %q", got, want)
+	}
+	if got, want := cachePath(), filepath.Join(dir, "cache"); got != want {
+		t.Errorf("cachePath() = %q, want %q", got, want)
+	}
+	if got, want := sockPath(), filepath.Join(dir, "gitmote.sock"); got != want {
+		t.Errorf("sockPath() = %q, want %q", got, want)
+	}
+}
+
+func TestDataPathOverride(t *testing.T) {
+	// The explicit per-path vars still override the GITMOTE_DATA derivation.
+	t.Setenv("GITMOTE_DATA", "/data")
+	t.Setenv("GITMOTE_DB", "/custom/db.sqlite3")
+	if got, want := dbPath(), "/custom/db.sqlite3"; got != want {
+		t.Errorf("dbPath() = %q, want the GITMOTE_DB override %q", got, want)
 	}
 }
 
