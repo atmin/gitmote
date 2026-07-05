@@ -10,11 +10,26 @@ first-run auto-bootstrap (shrink the surface), public GHCR images with
 CI-substrate docs (the cap). `docker run ghcr.io/atmin/gitmote` with a bucket and
 credentials is now a working forge; kill/restart restores from S3.
 
-## Later
+## URLs, urls, urls
 
-- **URL redesign** — unify `/-/tree/` vs `/-/blob/` (or rewrite relative links in
-  rendered markdown) so in-repo markdown links resolve correctly and carry the
-  ref. (A relative link on a tree page currently resolves to `/-/tree/<file>` →
-  "empty tree".)
+Make a personal instance's URLs simple and correct: a **flat single-segment repo
+namespace** (`host/<repo>`, no `owner/`, no `/-/`), content addressed in-path
+(`tree`/`blob`/`raw` + greedy ref, no `?ref=` query param), public/private
+visibility with spectators & collaborators, and rendered-markdown links that
+actually resolve. Greenfield — **reset the bucket + meta**, no migration. Design +
+rationale: [../docs/architecture/urls.md](../docs/architecture/urls.md). Order
+within the chain matters:
+
+- [urls-namespace-access.md](urls-namespace-access.md) — flat single-segment repos
+  + `visibility` (public → anonymous read; write always needs an ACL) + repo-read
+  browse authz + **admin-only force-push of the default branch**.
+- [urls-content-routing.md](urls-content-routing.md) — `tree`/`blob`/`raw` verbs,
+  ref-in-path greedy resolution, default-branch landing. *(needs -namespace.)*
+- [urls-markdown-links.md](urls-markdown-links.md) — rewrite rendered-markdown
+  relative links (nav → `blob`/`tree`) and embeds (→ `raw`), ref preserved.
+  *(needs -content-routing.)*
+- [urls-dashboard-ui.md](urls-dashboard-ui.md) — `/` dashboard, top-level globals
+  (`/login`, `/users`, …), per-repo `settings`/`access`/`secrets`. *(last —
+  reshapes the UI onto the new routes.)*
 
 Speculative directions live in [../docs/evolution/](../docs/evolution/).
