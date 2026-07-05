@@ -1,8 +1,8 @@
 {{define "browse_blob.html"}}{{template "top" .}}
 {{template "browse_head" .}}
-<p>{{.Size}} bytes · <a href="/browse/{{.Repo}}/-/raw/{{.Path}}?ref={{.Ref}}">raw</a></p>
+<p>{{.Size}} bytes · <a href="/{{.Repo}}/raw/{{.Ref}}/{{.Path}}">raw</a></p>
 {{if .Binary}}
-<p>Binary file — <a href="/browse/{{.Repo}}/-/raw/{{.Path}}?ref={{.Ref}}">download</a>.</p>
+<p>Binary file — <a href="/{{.Repo}}/raw/{{.Ref}}/{{.Path}}">download</a>.</p>
 {{else if .Rendered}}
 <div class="markdown-body">{{.Rendered}}</div>
 {{else if .Highlighted}}

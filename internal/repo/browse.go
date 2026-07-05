@@ -83,6 +83,33 @@ func Tree(ctx context.Context, dir, sha, treePath string) ([]TreeEntry, error) {
 	return parseTree(out), nil
 }
 
+// EntryType reports whether p names a "tree" or a "blob" within commit sha,
+// returning ErrNotFound when it names neither. An empty path is the repo root, a
+// tree. It lets the unified browse handler choose the listing vs the file view,
+// and the blob handler redirect a directory to its tree URL.
+func EntryType(ctx context.Context, dir, sha, p string) (string, error) {
+	if p == "" {
+		return "tree", nil
+	}
+	if err := safeRev(sha); err != nil {
+		return "", err
+	}
+	if err := safePath(p); err != nil {
+		return "", err
+	}
+	// Without a trailing slash, ls-tree reports the entry itself (one row), so its
+	// type field distinguishes a directory from a file.
+	out, err := runGitOut(ctx, dir, "ls-tree", "--long", "--end-of-options", sha, "--", strings.TrimSuffix(p, "/"))
+	if err != nil {
+		return "", err
+	}
+	entries := parseTree(out)
+	if len(entries) == 0 {
+		return "", ErrNotFound
+	}
+	return entries[0].Type, nil
+}
+
 // parseTree parses `git ls-tree --long` output: "<mode> <type> <sha> <size>\t<name>".
 func parseTree(out []byte) []TreeEntry {
 	var entries []TreeEntry

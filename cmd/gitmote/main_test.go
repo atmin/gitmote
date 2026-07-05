@@ -15,10 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atmin/gitmote/internal/auth"
 	"github.com/atmin/gitmote/internal/ci"
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/repo"
 	"github.com/atmin/gitmote/internal/store"
+	"github.com/atmin/gitmote/internal/webui"
 	"github.com/atmin/s3lite"
 )
 
@@ -92,6 +94,57 @@ func TestGitHandlerMountedAtRoot(t *testing.T) {
 	gitResp.Body.Close()
 	if gitResp.StatusCode != http.StatusTeapot {
 		t.Errorf("git route status = %d, want %d (routed to git handler)", gitResp.StatusCode, http.StatusTeapot)
+	}
+}
+
+// TestUIRoutesDoNotShadowGitEndpoints locks the flat-namespace mux seam: the
+// browse verbs (/{repo}/tree/…) share the mux with git's own /{repo}/info/refs.
+// Only enumerated verbs are registered, so git's smart-HTTP suffixes must still
+// fall through to the catch-all while browse verbs and the bare landing reach
+// the UI (docs/architecture/urls.md → Implementation seams).
+func TestUIRoutesDoNotShadowGitEndpoints(t *testing.T) {
+	ctx := context.Background()
+	m, err := meta.Open(ctx, meta.Config{LocalPath: filepath.Join(t.TempDir(), "meta.sqlite3")})
+	if err != nil {
+		t.Fatalf("meta.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	mz := repo.New(m, store.NewMem(), t.TempDir())
+	ui, err := webui.New(m, mz, store.NewMem(), auth.NewGuard(m), nil, []byte("k"), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("webui.New: %v", err)
+	}
+
+	gitHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	srv := httptest.NewServer(newHandler(gitHandler, ui, nil, nil))
+	defer srv.Close()
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	get := func(p string) int {
+		resp, err := client.Get(srv.URL + p)
+		if err != nil {
+			t.Fatalf("GET %s: %v", p, err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// Git's segment-2 suffixes fall through to the git handler.
+	for _, p := range []string{"/some-repo/info/refs?service=git-upload-pack", "/some-repo/HEAD"} {
+		if code := get(p); code != http.StatusTeapot {
+			t.Errorf("GET %s = %d, want 418 (git catch-all)", p, code)
+		}
+	}
+	// Browse verbs and the bare landing reach the UI (unknown repo, anonymous →
+	// login redirect), never the git handler.
+	for _, p := range []string{"/some-repo", "/some-repo/tree/main"} {
+		if code := get(p); code == http.StatusTeapot {
+			t.Errorf("GET %s hit the git handler; want the UI", p)
+		}
 	}
 }
 

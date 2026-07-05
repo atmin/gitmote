@@ -4,7 +4,7 @@
 <p>
   <code>{{.Commit.SHA}}</code><br>
   {{.Commit.Author}} &lt;{{.Commit.Email}}&gt; · {{.Commit.When.Format "2006-01-02 15:04"}}
-  {{if .Run}}· CI <a href="/browse/{{.Repo}}/-/run/{{.Run.ID}}" style="color:{{statusColor .Run.Status}}">{{.Run.Status}}</a>{{end}}
+  {{if .Run}}· CI <a href="/{{.Repo}}/runs/{{.Run.ID}}" style="color:{{statusColor .Run.Status}}">{{.Run.Status}}</a>{{end}}
 </p>
 {{if .Commit.Body}}<pre>{{.Commit.Body}}</pre>{{end}}
 <pre>{{.Diff}}</pre>

@@ -57,7 +57,7 @@ type secretsData struct {
 // --- browse ---
 
 // refChoice is one entry in the ref switcher: a display name (short, e.g.
-// "main") and the value to pass as ?ref=.
+// "main") and the value the switcher puts in the tree URL's ref segment.
 type refChoice struct {
 	Name string
 	Ref  string
@@ -73,8 +73,8 @@ type crumb struct {
 // and the switcher's options, on top of the shared nav/flash base.
 type browseBase struct {
 	base
-	Repo string      // full repo name (may contain slashes)
-	Ref  string      // selected ref (query value), defaults to the repo's default branch
+	Repo string      // repo name (a single path segment)
+	Ref  string      // selected ref (in-path), defaults to the repo's default branch
 	Refs []refChoice // branches and tags for the switcher
 }
 
@@ -95,6 +95,13 @@ type blobData struct {
 	Rendered    template.HTML // rendered markdown, for a .md blob
 	Binary      bool
 	Size        int64
+}
+
+type refsData struct {
+	browseBase
+	Path   string      // always empty; present so the shared browse_head renders
+	Crumbs []crumb     // always nil; present so the shared browse_head renders
+	Refs   []refChoice // the repo's branches and tags
 }
 
 type commitsData struct {

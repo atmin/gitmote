@@ -1,19 +1,20 @@
 {{define "browse_head"}}
 <h1>{{.Repo}}</h1>
 <p>
-  <a href="/browse/{{.Repo}}/-/tree/?ref={{.Ref}}">{{.Repo}}</a>
-  {{range .Crumbs}} / <a href="/browse/{{$.Repo}}/-/tree/{{.Path}}?ref={{$.Ref}}">{{.Name}}</a>{{end}}
+  <a href="/{{.Repo}}/tree/{{.Ref}}">{{.Repo}}</a>
+  {{range .Crumbs}} / <a href="/{{$.Repo}}/tree/{{$.Ref}}/{{.Path}}">{{.Name}}</a>{{end}}
   &nbsp;·&nbsp;
-  <a href="/browse/{{.Repo}}/-/commits?ref={{.Ref}}{{if .Path}}&path={{.Path}}{{end}}">history</a>
+  <a href="/{{.Repo}}/commits/{{.Ref}}{{if .Path}}/{{.Path}}{{end}}">history</a>
+  &nbsp;·&nbsp;
+  <a href="/{{.Repo}}/refs">branches</a>
 </p>
 {{if .Refs}}
-<form class="inline" method="get" action="/browse/{{.Repo}}/-/tree/{{.Path}}">
+<form class="inline">
   <label>Ref
-    <select name="ref" onchange="this.form.submit()">
+    <select onchange="location.href='/{{.Repo}}/tree/'+this.value{{if .Path}}+'/{{.Path}}'{{end}}">
       {{range .Refs}}<option value="{{.Ref}}"{{if eq .Ref $.Ref}} selected{{end}}>{{.Name}}</option>{{end}}
     </select>
   </label>
-  <noscript><button type="submit">Go</button></noscript>
 </form>
 {{end}}
 {{end}}

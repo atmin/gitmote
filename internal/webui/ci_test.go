@@ -51,22 +51,22 @@ func TestCIRunsListAndDetail(t *testing.T) {
 	_, runID, jobID := x.seedRun("app", "deadbeefcafe1234", "ok\n")
 
 	// Runs list links to the run and shows the short SHA.
-	rec := x.do(http.MethodGet, "/browse/app/-/runs", nil, session)
+	rec := x.do(http.MethodGet, "/app/runs", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("runs list: %d (%s)", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "/browse/app/-/run/"+itoa(runID)) || !strings.Contains(body, "deadbeef") {
+	if !strings.Contains(body, "/app/runs/"+itoa(runID)) || !strings.Contains(body, "deadbeef") {
 		t.Errorf("runs list missing run link or short sha: %s", body)
 	}
 
 	// Run detail shows the job and links to its log.
-	rec = x.do(http.MethodGet, "/browse/app/-/run/"+itoa(runID), nil, session)
+	rec = x.do(http.MethodGet, "/app/runs/"+itoa(runID), nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("run detail: %d (%s)", rec.Code, rec.Body)
 	}
 	if !strings.Contains(rec.Body.String(), "ci.yml") ||
-		!strings.Contains(rec.Body.String(), "/run/"+itoa(runID)+"/job/"+itoa(jobID)+"/log") {
+		!strings.Contains(rec.Body.String(), "/runs/"+itoa(runID)+"/job/"+itoa(jobID)+"/log") {
 		t.Errorf("run detail missing job or log link: %s", rec.Body)
 	}
 }
@@ -77,7 +77,7 @@ func TestCIJobLogRendersSafely(t *testing.T) {
 	// Green "ok" via ANSI, then HTML that must be escaped.
 	_, runID, jobID := x.seedRun("app", "sha1", "\x1b[32mok\x1b[0m <b>x</b>\n")
 
-	rec := x.do(http.MethodGet, "/browse/app/-/run/"+itoa(runID)+"/job/"+itoa(jobID)+"/log", nil, session)
+	rec := x.do(http.MethodGet, "/app/runs/"+itoa(runID)+"/job/"+itoa(jobID)+"/log", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("log view: %d (%s)", rec.Code, rec.Body)
 	}
@@ -104,7 +104,7 @@ func TestCIRunNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Unknown run id → 404.
-	if rec := x.do(http.MethodGet, "/browse/app/-/run/9999", nil, session); rec.Code != http.StatusNotFound {
+	if rec := x.do(http.MethodGet, "/app/runs/9999", nil, session); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown run = %d, want 404", rec.Code)
 	}
 }
@@ -121,7 +121,7 @@ func TestCIRunCrossRepoIsNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A run that belongs to app must not be reachable under other.
-	rec := x.do(http.MethodGet, "/browse/other/-/run/"+itoa(runID), nil, session)
+	rec := x.do(http.MethodGet, "/other/runs/"+itoa(runID), nil, session)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("cross-repo run = %d, want 404", rec.Code)
 	}
@@ -129,8 +129,8 @@ func TestCIRunCrossRepoIsNotFound(t *testing.T) {
 
 func TestCIRunsRequireAdmin(t *testing.T) {
 	x := newHarness(t)
-	// Unauthenticated GET is redirected to login like the rest of /browse.
-	if rec := x.do(http.MethodGet, "/browse/app/-/runs", nil, nil); rec.Code != http.StatusSeeOther {
+	// Unauthenticated GET is redirected to login like the rest of browsing.
+	if rec := x.do(http.MethodGet, "/app/runs", nil, nil); rec.Code != http.StatusSeeOther {
 		t.Errorf("unauth runs = %d, want 303 redirect", rec.Code)
 	}
 }
@@ -147,17 +147,17 @@ func TestCICommitBadge(t *testing.T) {
 	}
 
 	// The commit with a run shows a badge linking to it.
-	rec := x.do(http.MethodGet, "/browse/repo/-/commit/"+head, nil, session)
+	rec := x.do(http.MethodGet, "/repo/commit/"+head, nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("commit page: %d (%s)", rec.Code, rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), "/browse/repo/-/run/"+itoa(run.ID)) {
+	if !strings.Contains(rec.Body.String(), "/repo/runs/"+itoa(run.ID)) {
 		t.Errorf("commit with a run is missing the CI badge: %s", rec.Body)
 	}
 
 	// A commit without a run shows no badge.
-	rec = x.do(http.MethodGet, "/browse/repo/-/commit/"+first, nil, session)
-	if strings.Contains(rec.Body.String(), "/-/run/") {
+	rec = x.do(http.MethodGet, "/repo/commit/"+first, nil, session)
+	if strings.Contains(rec.Body.String(), "/repo/runs/") {
 		t.Errorf("commit without a run should have no badge: %s", rec.Body)
 	}
 }

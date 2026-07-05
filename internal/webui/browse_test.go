@@ -92,6 +92,60 @@ func (x *harness) seedBrowseRepo(name, branch string) (head, first string) {
 	return head, first
 }
 
+// TestBrowseBlobOnDirRedirects: blob on a directory 301s to the tree URL,
+// canonicalizing rather than 404ing (the self-healing verb).
+func TestBrowseBlobOnDirRedirects(t *testing.T) {
+	x := newHarness(t)
+	x.seedBrowseRepo("app", "main")
+	session := x.login(x.mintTokenFor(x.admin.ID))
+
+	rec := x.do(http.MethodGet, "/app/blob/main/sub", nil, session)
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("blob-on-dir = %d, want 301 (%s)", rec.Code, rec.Body)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/app/tree/main/sub" {
+		t.Fatalf("blob-on-dir redirected to %q, want /app/tree/main/sub", loc)
+	}
+}
+
+// TestBrowseGreedyRef covers ref-in-path resolution: a slashed branch, and a
+// branch that beats a same-named tag on a tie.
+func TestBrowseGreedyRef(t *testing.T) {
+	x := newHarness(t)
+	head, first := x.seedBrowseRepo("app", "main")
+	session := x.login(x.mintTokenFor(x.admin.ID))
+	ctx := context.Background()
+	r, _ := x.md.GetRepo(ctx, "app")
+
+	// A slashed branch, plus a branch and a tag sharing the name "rel" (branch at
+	// head, tag at the first commit) to exercise the branch-over-tag tie-break.
+	if err := x.md.CASRef(ctx, r.ID, "refs/heads/feature/x", meta.ZeroSHA, head); err != nil {
+		t.Fatalf("CASRef feature/x: %v", err)
+	}
+	if err := x.md.CASRef(ctx, r.ID, "refs/heads/rel", meta.ZeroSHA, head); err != nil {
+		t.Fatalf("CASRef branch rel: %v", err)
+	}
+	if err := x.md.CASRef(ctx, r.ID, "refs/tags/rel", meta.ZeroSHA, first); err != nil {
+		t.Fatalf("CASRef tag rel: %v", err)
+	}
+
+	// Slashed branch: ref "feature/x", path "README.md" → the rendered README.
+	rec := x.do(http.MethodGet, "/app/tree/feature/x/README.md", nil, session)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<h1") {
+		t.Fatalf("slashed-branch blob = %d (%s)", rec.Code, rec.Body)
+	}
+
+	// Tie-break: "rel" resolves to the branch (head, which has println) not the
+	// tag (first, which does not).
+	rec = x.do(http.MethodGet, "/app/blob/rel/hello.go", nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tie-break blob = %d (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "println") {
+		t.Fatalf("tie-break resolved the tag, not the branch:\n%s", rec.Body)
+	}
+}
+
 func write(t *testing.T, dir, rel, content string) {
 	t.Helper()
 	full := filepath.Join(dir, rel)
@@ -126,7 +180,7 @@ func TestBrowseAccessControl(t *testing.T) {
 	stranger, _ := x.md.CreateUser(ctx, "stranger")
 	strangerSession := x.sessionFor(stranger.ID)
 
-	const target = "/browse/app/-/tree/"
+	const target = "/app/tree/main"
 
 	if rec := x.do(http.MethodGet, target, nil, adminSession); rec.Code != http.StatusOK {
 		t.Errorf("admin browse private = %d, want 200", rec.Code)
@@ -155,27 +209,27 @@ func TestBrowseTreeAndBlob(t *testing.T) {
 	x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	// Root tree lists the top-level entries.
-	rec := x.do(http.MethodGet, "/browse/app/-/tree/", nil, session)
+	// The bare repo landing lists the top-level entries at the default branch.
+	rec := x.do(http.MethodGet, "/app", nil, session)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("tree = %d (%s)", rec.Code, rec.Body)
+		t.Fatalf("landing = %d (%s)", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
 	for _, want := range []string{"hello.go", "sub", "bin.dat"} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("tree body missing %q:\n%s", want, body)
+			t.Fatalf("landing body missing %q:\n%s", want, body)
 		}
 	}
 
 	// Subdirectory tree.
-	rec = x.do(http.MethodGet, "/browse/app/-/tree/sub?ref=main", nil, session)
+	rec = x.do(http.MethodGet, "/app/tree/main/sub", nil, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "note.txt") {
 		t.Fatalf("sub tree = %d (%s)", rec.Code, rec.Body)
 	}
 
 	// Text blob renders its content (highlighting splits tokens into spans, so
 	// assert on a single token that survives).
-	rec = x.do(http.MethodGet, "/browse/app/-/blob/hello.go?ref=main", nil, session)
+	rec = x.do(http.MethodGet, "/app/blob/main/hello.go", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("blob = %d (%s)", rec.Code, rec.Body)
 	}
@@ -184,7 +238,7 @@ func TestBrowseTreeAndBlob(t *testing.T) {
 	}
 
 	// Binary blob shows the download affordance, not garbage.
-	rec = x.do(http.MethodGet, "/browse/app/-/blob/bin.dat?ref=main", nil, session)
+	rec = x.do(http.MethodGet, "/app/blob/main/bin.dat", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("binary blob = %d", rec.Code)
 	}
@@ -198,7 +252,7 @@ func TestBrowseRawDownload(t *testing.T) {
 	x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	rec := x.do(http.MethodGet, "/browse/app/-/raw/sub/note.txt?ref=main", nil, session)
+	rec := x.do(http.MethodGet, "/app/raw/main/sub/note.txt", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("raw = %d (%s)", rec.Code, rec.Body)
 	}
@@ -215,7 +269,7 @@ func TestBrowseRefSwitcher(t *testing.T) {
 	x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	rec := x.do(http.MethodGet, "/browse/app/-/tree/", nil, session)
+	rec := x.do(http.MethodGet, "/app/tree/main", nil, session)
 	body := rec.Body.String()
 	// The switcher lists both the branch and the tag from meta.ListRefs.
 	if !strings.Contains(body, `value="main"`) || !strings.Contains(body, `value="v1"`) {
@@ -228,7 +282,7 @@ func TestBrowseCommitsAndCommit(t *testing.T) {
 	head, _ := x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	rec := x.do(http.MethodGet, "/browse/app/-/commits?ref=main", nil, session)
+	rec := x.do(http.MethodGet, "/app/commits/main", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("commits = %d (%s)", rec.Code, rec.Body)
 	}
@@ -237,7 +291,7 @@ func TestBrowseCommitsAndCommit(t *testing.T) {
 		t.Fatalf("commits body missing subjects:\n%s", body)
 	}
 
-	rec = x.do(http.MethodGet, "/browse/app/-/commit/"+head, nil, session)
+	rec = x.do(http.MethodGet, "/app/commit/"+head, nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("commit = %d (%s)", rec.Code, rec.Body)
 	}
@@ -252,7 +306,7 @@ func TestBrowseHighlightAndMarkdown(t *testing.T) {
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
 	// A .go blob is syntax-highlighted: chroma class spans, not a bare <pre>.
-	rec := x.do(http.MethodGet, "/browse/app/-/blob/hello.go?ref=main", nil, session)
+	rec := x.do(http.MethodGet, "/app/blob/main/hello.go", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("go blob = %d (%s)", rec.Code, rec.Body)
 	}
@@ -261,13 +315,13 @@ func TestBrowseHighlightAndMarkdown(t *testing.T) {
 	}
 
 	// A .md blob renders markdown in place of highlighted source.
-	rec = x.do(http.MethodGet, "/browse/app/-/blob/README.md?ref=main", nil, session)
+	rec = x.do(http.MethodGet, "/app/blob/main/README.md", nil, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<h1") {
 		t.Fatalf("md blob not rendered:\n%s", rec.Body)
 	}
 
 	// The tree page renders the directory's README below the listing.
-	rec = x.do(http.MethodGet, "/browse/app/-/tree/", nil, session)
+	rec = x.do(http.MethodGet, "/app/tree/main", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("tree = %d", rec.Code)
 	}
@@ -285,7 +339,7 @@ func TestBrowseMermaid(t *testing.T) {
 
 	// A markdown blob with a mermaid fence renders the diagram container AND pulls
 	// in the mermaid script.
-	rec := x.do(http.MethodGet, "/browse/app/-/blob/diagram.md?ref=main", nil, session)
+	rec := x.do(http.MethodGet, "/app/blob/main/diagram.md", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("diagram blob = %d (%s)", rec.Code, rec.Body)
 	}
@@ -297,7 +351,7 @@ func TestBrowseMermaid(t *testing.T) {
 	}
 
 	// A markdown blob without a diagram must NOT pull in the script (conditional).
-	rec = x.do(http.MethodGet, "/browse/app/-/blob/README.md?ref=main", nil, session)
+	rec = x.do(http.MethodGet, "/app/blob/main/README.md", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("readme blob = %d", rec.Code)
 	}
@@ -324,7 +378,7 @@ func TestBrowseBlobSizeGuard(t *testing.T) {
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
 	// A blob over the cap falls back to a plain <pre>, no chroma markup.
-	rec := x.do(http.MethodGet, "/browse/app/-/blob/big.go?ref=main", nil, session)
+	rec := x.do(http.MethodGet, "/app/blob/main/big.go", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("big blob = %d", rec.Code)
 	}
@@ -344,12 +398,12 @@ func TestBrowseNotFoundAndTraversal(t *testing.T) {
 	cases := []struct {
 		name, target string
 	}{
-		{"unknown repo", "/browse/ghost/-/tree/?ref=main"},
-		{"unknown ref", "/browse/app/-/tree/?ref=nope"},
-		// The path arrives as an uncleaned query param, so it reaches the
-		// reader's safePath guard rather than being normalized by the mux.
-		{"path traversal", "/browse/app/-/commits?ref=main&path=../etc/passwd"},
-		{"missing blob", "/browse/app/-/blob/nope.txt?ref=main"},
+		{"unknown repo", "/ghost/tree/main"},
+		// No leading prefix names a ref, so greedy resolution finds none → 404.
+		{"unknown ref", "/app/tree/nope"},
+		{"unknown ref with path", "/app/tree/nope/sub"},
+		{"missing blob", "/app/blob/main/nope.txt"},
+		{"missing tree path", "/app/tree/main/nope"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

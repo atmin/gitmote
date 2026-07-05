@@ -6,7 +6,7 @@
   <tbody>
   {{range .Commits}}
     <tr>
-      <td><a href="/browse/{{$.Repo}}/-/commit/{{.SHA}}?ref={{$.Ref}}"><code>{{slice .SHA 0 10}}</code></a></td>
+      <td><a href="/{{$.Repo}}/commit/{{.SHA}}"><code>{{slice .SHA 0 10}}</code></a></td>
       <td>{{.Subject}}</td>
       <td>{{.Author}}</td>
       <td>{{.When.Format "2006-01-02 15:04"}}</td>

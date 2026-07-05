@@ -165,10 +165,31 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// Read-only browsing. Gated on repo-read (public → anyone, private → an ACL),
 	// not on admin — this is what makes spectators and public repos usable; the
-	// per-request check lives in browse via authorizeRead. The action tail is
-	// split manually on "/-/" (see browse), so one subtree handler covers all of
-	// tree/blob/raw/commits/commit.
-	mux.HandleFunc("GET /browse/{rest...}", h.browse)
+	// per-request check lives in each handler via authorizeRead. The repo is a
+	// single path segment and the ref lives in the path (greedily resolved), so
+	// each content verb is its own enumerated route. Only these fixed verbs are
+	// registered — never a broad /{repo}/{rest...} — so git's own /{repo}/info/refs,
+	// /{repo}/git-upload-pack, … fall through to the smart-HTTP catch-all at "/"
+	// (docs/architecture/urls.md → Implementation seams).
+	// Each verb registers a bare form and a "/{rest...}" form: a "/{rest...}"
+	// pattern is a subtree, so ServeMux would otherwise 307-redirect the bare
+	// "/{repo}/runs" to "/{repo}/runs/". The bare form (empty rest) selects the
+	// default branch, or the list for runs.
+	mux.HandleFunc("GET /{repo}/tree", h.browseTreeRoute)
+	mux.HandleFunc("GET /{repo}/tree/{rest...}", h.browseTreeRoute)
+	mux.HandleFunc("GET /{repo}/blob", h.browseBlobRoute)
+	mux.HandleFunc("GET /{repo}/blob/{rest...}", h.browseBlobRoute)
+	mux.HandleFunc("GET /{repo}/raw", h.browseRawRoute)
+	mux.HandleFunc("GET /{repo}/raw/{rest...}", h.browseRawRoute)
+	mux.HandleFunc("GET /{repo}/commits", h.browseCommitsRoute)
+	mux.HandleFunc("GET /{repo}/commits/{rest...}", h.browseCommitsRoute)
+	mux.HandleFunc("GET /{repo}/commit/{sha}", h.browseCommitRoute)
+	mux.HandleFunc("GET /{repo}/refs", h.browseRefsRoute)
+	mux.HandleFunc("GET /{repo}/runs", h.ciRunsRoute)
+	mux.HandleFunc("GET /{repo}/runs/{rest...}", h.ciRunsRoute)
+	// The bare repo landing: README + tree at the default branch. One segment, so
+	// distinct from git's GET /{repo}/info/refs.
+	mux.HandleFunc("GET /{repo}", h.browseLanding)
 
 	// The vendored mermaid library for diagram rendering, served same-origin.
 	// Public and non-sensitive (a pinned copy of an open-source library), so it

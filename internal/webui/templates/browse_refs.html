@@ -1,0 +1,16 @@
+{{define "browse_refs.html"}}{{template "top" .}}
+{{template "browse_head" .}}
+<h1>Branches &amp; tags</h1>
+{{if .Refs}}
+<table>
+  <thead><tr><th>Ref</th></tr></thead>
+  <tbody>
+  {{range .Refs}}
+    <tr><td><a href="/{{$.Repo}}/tree/{{.Ref}}">{{.Name}}</a></td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>No branches or tags yet.</p>
+{{end}}
+{{template "bottom" .}}{{end}}

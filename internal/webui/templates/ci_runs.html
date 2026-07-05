@@ -1,6 +1,6 @@
 {{define "ci_runs.html"}}{{template "top" .}}
 <h1>CI runs — {{.Repo}}</h1>
-<p><a href="/browse/{{.Repo}}/-/tree/">files</a> · <a href="/browse/{{.Repo}}/-/commits">history</a></p>
+<p><a href="/{{.Repo}}">files</a> · <a href="/{{.Repo}}/commits">history</a></p>
 
 {{if .Runs}}
 <table>
@@ -8,7 +8,7 @@
   <tbody>
   {{range .Runs}}
     <tr>
-      <td><a href="/browse/{{$.Repo}}/-/run/{{.ID}}">#{{.ID}}</a></td>
+      <td><a href="/{{$.Repo}}/runs/{{.ID}}">#{{.ID}}</a></td>
       <td><span style="color:{{statusColor .Status}}">{{.Status}}</span></td>
       <td>{{.Ref}}</td>
       <td><code>{{short .SHA}}</code></td>

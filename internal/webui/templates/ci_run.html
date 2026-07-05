@@ -3,8 +3,8 @@
 <p>
   <span style="color:{{statusColor .Run.Status}}">{{.Run.Status}}</span>
   · {{.Run.Ref}} · <code>{{short .Run.SHA}}</code>
-  · <a href="/browse/{{.Repo}}/-/commit/{{.Run.SHA}}">commit</a>
-  · <a href="/browse/{{.Repo}}/-/runs">all runs</a>
+  · <a href="/{{.Repo}}/commit/{{.Run.SHA}}">commit</a>
+  · <a href="/{{.Repo}}/runs">all runs</a>
 </p>
 
 {{if .Jobs}}
@@ -15,7 +15,7 @@
     <tr>
       <td>{{.Name}}</td>
       <td><span style="color:{{statusColor .Status}}">{{.Status}}</span></td>
-      <td><a href="/browse/{{$.Repo}}/-/run/{{$.Run.ID}}/job/{{.ID}}/log">log</a></td>
+      <td><a href="/{{$.Repo}}/runs/{{$.Run.ID}}/job/{{.ID}}/log">log</a></td>
     </tr>
   {{end}}
   </tbody>

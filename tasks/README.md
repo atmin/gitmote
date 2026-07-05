@@ -18,12 +18,12 @@ namespace** (`host/<repo>`, no `owner/`, no `/-/`), content addressed in-path
 visibility with spectators & collaborators, and rendered-markdown links that
 actually resolve. Greenfield — **reset the bucket + meta**, no migration. Design +
 rationale: [../docs/architecture/urls.md](../docs/architecture/urls.md). Order
-within the chain matters — the **flat namespace + visibility & access** slice has
-landed (single-segment repos, `visibility`, repo-read browse authz, admin-only
-default-branch force-push); the rest remain:
+within the chain matters — the **flat namespace + visibility & access** and the
+**content routing** slices have landed (single-segment repos, `visibility`,
+repo-read browse authz, admin-only default-branch force-push; `tree`/`blob`/`raw`
+verbs with ref-in-path greedy resolution and the bare `/<repo>` landing); the
+rest remain:
 
-- [urls-content-routing.md](urls-content-routing.md) — `tree`/`blob`/`raw` verbs,
-  ref-in-path greedy resolution, default-branch landing. *(needs -namespace.)*
 - [urls-markdown-links.md](urls-markdown-links.md) — rewrite rendered-markdown
   relative links (nav → `blob`/`tree`) and embeds (→ `raw`), ref preserved.
   *(needs -content-routing.)*

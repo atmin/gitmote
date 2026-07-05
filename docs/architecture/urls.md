@@ -8,9 +8,11 @@ is no per-user namespace to disambiguate, so there is nothing to disambiguate.
 > **Status:** partially landed. The **flat single-segment namespace** and
 > **access & visibility** (public → anonymous read, repo-read browse, admin-only
 > default-branch force-push) are implemented and reconciled into
-> [storage.md](storage.md) and [auth.md](auth.md). Still to land from the
-> `tasks/urls-*` chain: the `tree`/`blob`/`raw` content routing, rendered-markdown
-> link rewriting, and the dashboard UI on the new routes.
+> [storage.md](storage.md) and [auth.md](auth.md); the **`tree`/`blob`/`raw`
+> content routing** (ref-in-path greedy resolution, unified `tree`, self-healing
+> `blob`, the bare `/{repo}` landing) is implemented per the sections below. Still
+> to land from the `tasks/urls-*` chain: rendered-markdown link rewriting, and the
+> dashboard UI on the new routes.
 
 ## The namespace
 
