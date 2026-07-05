@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -239,9 +241,9 @@ func alwaysServable(p string) bool {
 // configured (GITMOTE_S3_BUCKET). Without it, the server runs health/version
 // only — a dev convenience — and the returned close func is a no-op.
 //
-// The management UI (second return) is built when GITMOTE_COOKIE_KEY is set (the
-// HMAC key that signs session cookies); it shares this metadata handle, so it
-// runs alongside the git server.
+// The management UI (second return) is always built: the HMAC key that signs
+// session cookies is GITMOTE_COOKIE_KEY, or an auto-generated key persisted in
+// meta. It shares this metadata handle, so it runs alongside the git server.
 //
 // The db, cache, and socket derive from GITMOTE_DATA (see dataDir); metadata
 // replicates to a bucket-derived replica (see replicaTarget). The push path
@@ -302,25 +304,40 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	// and a WORKER_SECRET (authenticates the report API). With neither configured,
 	// runs still record but nothing executes.
 	jobDefID := os.Getenv("SCW_CI_JOB_DEFINITION_ID")
-	workerSecret := os.Getenv("WORKER_SECRET")
 	gitmoteURL := os.Getenv("GITMOTE_URL")
+	// Cloud needs a reachable URL for the runner to clone + report back; fail loud
+	// if the job definition is set without one — before provisioning any secret.
+	if jobDefID != "" && gitmoteURL == "" {
+		_ = writer.Close()
+		_ = md.Close()
+		return nil, nil, nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but GITMOTE_URL is missing")
+	}
+	// WORKER_SECRET authenticates the runner's report-back. It's meaningless
+	// without a CI substrate, so resolve it lazily only then: env → else
+	// meta get-or-create (generated once, restored on every later boot), so a
+	// plain no-CI run provisions nothing. It reaches the cloud runner injected at
+	// trigger time, never baked into the job definition (dispatcher jobEnv).
+	var workerSecret string
+	if jobDefID != "" || gitmoteURL != "" {
+		workerSecret, err = resolveWorkerSecret(ctx, md)
+		if err != nil {
+			_ = writer.Close()
+			_ = md.Close()
+			return nil, nil, nil, nil, noop, fmt.Errorf("worker secret: %w", err)
+		}
+	}
 	var trigger ci.Trigger = ci.NoopTrigger{}
 	switch {
 	case jobDefID != "":
-		if workerSecret == "" || gitmoteURL == "" {
-			_ = writer.Close()
-			_ = md.Close()
-			return nil, nil, nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but WORKER_SECRET or GITMOTE_URL is missing")
-		}
 		// SCW_REGION falls back to the AWS_REGION already set for the object store.
 		trigger = scaleway.NewJobsClient(os.Getenv("SCW_SECRET_KEY"), envOr("SCW_REGION", os.Getenv("AWS_REGION")), jobDefID)
 		logger.Info("CI trigger: Scaleway Serverless Jobs", "job_definition_id", jobDefID)
-	case workerSecret != "" && gitmoteURL != "":
+	case gitmoteURL != "":
 		trigger = ci.NewLocalTrigger(runnerBinaryPath(), logger)
 		logger.Info("CI trigger: local runner", "runner", runnerBinaryPath(), "url", gitmoteURL)
 	default:
 		logger.Warn("CI trigger disabled; runs record but do not execute " +
-			"(set GITMOTE_URL + WORKER_SECRET for local, or SCW_CI_JOB_DEFINITION_ID for cloud)")
+			"(set GITMOTE_URL for local, or SCW_CI_JOB_DEFINITION_ID + GITMOTE_URL for cloud)")
 	}
 
 	// A successful, branch-advancing push discovers its workflows, records a run,
@@ -378,7 +395,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		return nil, nil, nil, nil, noop, err
 	}
 
-	ui, err := buildUI(md, materializer, objs, guard, secretsSvc, logger)
+	ui, err := buildUI(ctx, md, materializer, objs, guard, secretsSvc, logger)
 	if err != nil {
 		_ = cleanup()
 		return nil, nil, nil, nil, noop, err
@@ -386,16 +403,56 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	return handler, ui, reportAPI, md.IsLeader, cleanup, nil
 }
 
-// buildUI constructs the management UI when GITMOTE_COOKIE_KEY is set; otherwise
-// it returns nil (UI disabled) so a misconfigured key never yields an insecurely
-// signed session.
-func buildUI(md *meta.Metadata, mz *repo.Materializer, objs store.Store, guard *auth.Guard, secretsSvc *secrets.Service, logger *slog.Logger) (*webui.Handler, error) {
-	key := os.Getenv("GITMOTE_COOKIE_KEY")
-	if key == "" {
-		logger.Warn("GITMOTE_COOKIE_KEY unset; management UI disabled")
-		return nil, nil
+// buildUI constructs the management UI (always on). Its session cookie key is
+// GITMOTE_COOKIE_KEY when set, else an auto-generated key persisted in meta and
+// restored across restart / scale-to-zero — so a session stays valid through an
+// idle→wake and the UI needs no secret config.
+func buildUI(ctx context.Context, md *meta.Metadata, mz *repo.Materializer, objs store.Store, guard *auth.Guard, secretsSvc *secrets.Service, logger *slog.Logger) (*webui.Handler, error) {
+	cookieKey, err := resolveCookieKey(ctx, md)
+	if err != nil {
+		return nil, fmt.Errorf("cookie key: %w", err)
 	}
-	return webui.New(md, mz, objs, guard, secretsSvc, []byte(key), logger)
+	return webui.New(md, mz, objs, guard, secretsSvc, cookieKey, logger)
+}
+
+// resolveCookieKey returns the session cookie key: GITMOTE_COOKIE_KEY when set,
+// else the persisted "cookie_key" server secret, auto-generated on first boot.
+func resolveCookieKey(ctx context.Context, md *meta.Metadata) ([]byte, error) {
+	if v := os.Getenv("GITMOTE_COOKIE_KEY"); v != "" {
+		return []byte(v), nil
+	}
+	return md.GetOrCreateSecret(ctx, "cookie_key", genSecret)
+}
+
+// resolveWorkerSecret returns the CI report-API secret: WORKER_SECRET when set,
+// else the persisted "worker_secret" server secret, auto-generated on first boot.
+func resolveWorkerSecret(ctx context.Context, md *meta.Metadata) (string, error) {
+	if v := os.Getenv("WORKER_SECRET"); v != "" {
+		return v, nil
+	}
+	b, err := md.GetOrCreateSecret(ctx, "worker_secret", genSecret)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// genSecretBytes is the entropy of an auto-generated server secret before
+// hex-encoding: 32 bytes → a 64-char hex string, ample for an HMAC cookie key
+// and the worker-secret bearer compare.
+const genSecretBytes = 32
+
+// genSecret generates a fresh server secret as a hex string's bytes, so the
+// persisted value is printable and usable directly as an HMAC key or a bearer
+// token. It's the get-or-create generator for both auto-provisioned secrets.
+func genSecret() ([]byte, error) {
+	b := make([]byte, genSecretBytes)
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	enc := make([]byte, hex.EncodedLen(len(b)))
+	hex.Encode(enc, b)
+	return enc, nil
 }
 
 // hookBinaryPath resolves the pre-receive hook executable: GITMOTE_HOOK if set,

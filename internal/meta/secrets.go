@@ -74,3 +74,38 @@ func (m *Metadata) DeleteSecret(ctx context.Context, repoID int64, name string) 
 		`DELETE FROM ci_secrets WHERE repo_id = ? AND name = ?`, repoID, name)
 	return err
 }
+
+// GetOrCreateSecret returns the persisted server secret named name, generating
+// and persisting it with gen the first time it's requested. It backs the
+// auto-provisioned session cookie key and CI worker secret (see cmd/gitmote): an
+// absent value is created once — on the very first, uncontended cold start, which
+// is necessarily the leader (a follower opens read-only, so its insert would fail
+// loud, and a restart then reads the leader's value restored from the replica).
+// Narrowly scoped to these named server secrets, not a general key–value store.
+func (m *Metadata) GetOrCreateSecret(ctx context.Context, name string, gen func() ([]byte, error)) ([]byte, error) {
+	var val []byte
+	err := m.db.QueryRowContext(ctx,
+		`SELECT value FROM server_secrets WHERE name = ?`, name).Scan(&val)
+	if err == nil {
+		return val, nil
+	}
+	if !isNoRows(err) {
+		return nil, err
+	}
+	val, err = gen()
+	if err != nil {
+		return nil, err
+	}
+	// ON CONFLICT DO NOTHING keeps a concurrent creator's value; the re-read below
+	// then returns whichever insert won, so every caller agrees on one value.
+	if _, err := m.db.ExecContext(ctx,
+		`INSERT INTO server_secrets (name, value) VALUES (?, ?)
+		 ON CONFLICT(name) DO NOTHING`, name, val); err != nil {
+		return nil, err
+	}
+	if err := m.db.QueryRowContext(ctx,
+		`SELECT value FROM server_secrets WHERE name = ?`, name).Scan(&val); err != nil {
+		return nil, err
+	}
+	return val, nil
+}

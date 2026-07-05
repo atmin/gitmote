@@ -92,3 +92,14 @@ CREATE TABLE IF NOT EXISTS ci_secrets (
   created_at TEXT NOT NULL,
   PRIMARY KEY (repo_id, name)
 );
+
+-- Server secrets auto-provisioned on first boot when no env overrides them: the
+-- session cookie key and the CI worker secret. Persisting them (vs. a per-boot
+-- key) keeps sessions valid and in-flight CI authenticated across a scale-to-zero
+-- idle→wake. Deliberately just these two named keys, not a general KV store. The
+-- CI *master* key is NOT here — it stays env-only (safety.md §5). See
+-- Metadata.GetOrCreateSecret and cmd/gitmote.
+CREATE TABLE IF NOT EXISTS server_secrets (
+  name  TEXT PRIMARY KEY,                      -- "cookie_key", "worker_secret"
+  value BLOB NOT NULL
+);

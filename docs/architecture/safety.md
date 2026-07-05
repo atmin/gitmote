@@ -53,8 +53,8 @@
 
 5. **CI secrets are encrypted at rest, and the threat model is narrow — say so.**
    Per-repo CI secrets are sealed with AES-256-GCM under a **server-held** master
-   key (`GITMOTE_CI_SECRET_KEY_V<n>`, a container env var alongside
-   `GITMOTE_COOKIE_KEY` and the AWS keys); a per-repo subkey is derived with
+   key (`GITMOTE_CI_SECRET_KEY_V<n>`, a container env var alongside the AWS keys —
+   env-only, never persisted; see §6); a per-repo subkey is derived with
    HKDF-SHA256, and the envelope's AAD binds `(repoID, name, version)` so a stolen
    ciphertext can't be replayed under a different repo/name/version. Only the
    sealed `{v, iv, ct}` lives in s3lite — never the plaintext or the key. So the
@@ -66,3 +66,16 @@
    design): the server is the trust boundary. Rotation is a new key version + bump
    (old envelopes still decrypt under their own version); values are write-only in
    the UI (only names are ever shown) and are never logged.
+
+6. **Two server secrets are auto-provisioned into the replica — the CI master key
+   is not.** The session cookie key (`GITMOTE_COOKIE_KEY`) and the CI worker
+   secret (`WORKER_SECRET`) are generated on first boot and persisted in
+   `server_secrets` when no env overrides them, so a scale-to-zero container keeps
+   sessions valid and in-flight CI authenticated across an idle→wake (a per-boot
+   key would log everyone out and orphan runs). This is acceptable precisely
+   because the replica already holds users, tokens, and ACLs; sessions are
+   short-lived; and the worker secret only authorizes CI report submission, never
+   decryption. The CI **master key** stays env-only by contrast (§5): it decrypts
+   every repo's secrets, so a replica leak must never expose it. An explicit env
+   still wins for both, and generation is get-or-create on the leader (a follower's
+   DB is read-only), so restarts and rolling deploys reuse the one restored value.

@@ -3,14 +3,21 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/atmin/gitmote/internal/ci"
+	"github.com/atmin/gitmote/internal/meta"
+	"github.com/atmin/gitmote/internal/repo"
+	"github.com/atmin/gitmote/internal/store"
 	"github.com/atmin/s3lite"
 )
 
@@ -257,6 +264,211 @@ func TestDataPathOverride(t *testing.T) {
 	if got, want := dbPath(), "/custom/db.sqlite3"; got != want {
 		t.Errorf("dbPath() = %q, want the GITMOTE_DB override %q", got, want)
 	}
+}
+
+// openMeta opens a fresh, local-only metadata DB at a temp path.
+func openMeta(t *testing.T) *meta.Metadata {
+	t.Helper()
+	md, err := meta.Open(context.Background(), meta.Config{
+		LocalPath: filepath.Join(t.TempDir(), "meta.sqlite3"),
+	})
+	if err != nil {
+		t.Fatalf("meta.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = md.Close() })
+	return md
+}
+
+func TestResolveWorkerSecretGeneratesPersistsAndOverrides(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("WORKER_SECRET", "")
+	md := openMeta(t)
+
+	// No env: generated, and a hex string of the expected width.
+	s1, err := resolveWorkerSecret(ctx, md)
+	if err != nil {
+		t.Fatalf("resolveWorkerSecret: %v", err)
+	}
+	if len(s1) != hex.EncodedLen(genSecretBytes) {
+		t.Errorf("generated secret len = %d, want %d hex chars", len(s1), hex.EncodedLen(genSecretBytes))
+	}
+	// Stable across calls (persisted, not regenerated).
+	if s2, _ := resolveWorkerSecret(ctx, md); s2 != s1 {
+		t.Errorf("second resolve = %q, want the persisted %q", s2, s1)
+	}
+
+	// An explicit env wins over the persisted value.
+	t.Setenv("WORKER_SECRET", "explicit-secret")
+	if s3, _ := resolveWorkerSecret(ctx, md); s3 != "explicit-secret" {
+		t.Errorf("resolve with env = %q, want the env value", s3)
+	}
+}
+
+func TestResolveCookieKeyGeneratesPersistsAndOverrides(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("GITMOTE_COOKIE_KEY", "")
+	md := openMeta(t)
+
+	k1, err := resolveCookieKey(ctx, md)
+	if err != nil {
+		t.Fatalf("resolveCookieKey: %v", err)
+	}
+	if len(k1) == 0 {
+		t.Fatal("generated cookie key is empty")
+	}
+	// A restored session key must be stable, so a signed cookie survives a restart.
+	if k2, _ := resolveCookieKey(ctx, md); string(k2) != string(k1) {
+		t.Errorf("second resolve = %q, want the persisted %q", k2, k1)
+	}
+
+	t.Setenv("GITMOTE_COOKIE_KEY", "explicit-key")
+	if k3, _ := resolveCookieKey(ctx, md); string(k3) != "explicit-key" {
+		t.Errorf("resolve with env = %q, want the env value", k3)
+	}
+}
+
+// captureTrigger records the env of each trigger call.
+type captureTrigger struct{ calls []map[string]string }
+
+func (c *captureTrigger) Trigger(_ context.Context, env map[string]string) error {
+	c.calls = append(c.calls, env)
+	return nil
+}
+
+func TestResolvedWorkerSecretReachesDispatcherAndReportAPI(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("WORKER_SECRET", "")
+	md := openMeta(t)
+
+	secret, err := resolveWorkerSecret(ctx, md)
+	if err != nil {
+		t.Fatalf("resolveWorkerSecret: %v", err)
+	}
+
+	// The dispatcher injects the resolved secret into the runner env at trigger —
+	// the cloud runner reads WORKER_SECRET from there, never a baked-in job def.
+	s := store.NewMem()
+	mz := repo.New(md, s, t.TempDir())
+	r, head := seedWorkflowRepo(t, md, s)
+	tr := &captureTrigger{}
+	ci.NewDispatcher(ci.Config{
+		Runs: md, Materializer: mz, Trigger: tr,
+		BaseURL: "https://gitmote.test", WorkerSecret: secret,
+	}).Dispatch(ctx, ci.Event{
+		RepoID: r.ID, RepoName: r.Name, Ref: "refs/heads/main",
+		OldSHA: meta.ZeroSHA, NewSHA: head,
+	})
+	if len(tr.calls) != 1 {
+		t.Fatalf("trigger calls = %d, want 1", len(tr.calls))
+	}
+	if got := tr.calls[0]["WORKER_SECRET"]; got != secret {
+		t.Errorf("injected WORKER_SECRET = %q, want the resolved %q", got, secret)
+	}
+
+	// The report API validates that same secret — closing the loop the runner
+	// rides: injected at trigger, checked on report-back.
+	api := ci.NewReportAPI(md, s, nil, secret, nil)
+	mux := http.NewServeMux()
+	api.Register(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	if code := claimStatus(t, srv.URL, "wrong-secret"); code != http.StatusUnauthorized {
+		t.Errorf("claim with wrong secret = %d, want 401", code)
+	}
+	// The resolved secret authenticates: a nonexistent job id is a 404, not a 401.
+	if code := claimStatus(t, srv.URL, secret); code == http.StatusUnauthorized {
+		t.Error("claim with resolved secret = 401, want auth to pass")
+	}
+}
+
+// claimStatus issues a job claim to the report API with the given worker secret
+// and returns the HTTP status.
+func claimStatus(t *testing.T, base, secret string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, base+"/internal/ci/jobs/1", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Worker-Secret", secret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// seedWorkflowRepo builds a real repo with one workflow, loads its objects into
+// the store the materializer reads, and records the repo + branch ref in meta.
+func seedWorkflowRepo(t *testing.T, md *meta.Metadata, s store.Store) (*meta.Repo, string) {
+	t.Helper()
+	ctx := context.Background()
+	const name = "atmin/app"
+
+	src := t.TempDir()
+	git := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = src
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	git("init", "-b", "main", ".")
+	wf := filepath.Join(src, ".github", "workflows")
+	if err := os.MkdirAll(wf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wf, "ci.yml"),
+		[]byte("name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "-A")
+	git("commit", "-m", "seed")
+	head := gitRevParse(t, src)
+
+	objRoot := filepath.Join(src, ".git", "objects")
+	if err := filepath.WalkDir(objRoot, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(objRoot, p)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return s.Put(ctx, name+"/objects/"+filepath.ToSlash(rel), bytes.NewReader(data))
+	}); err != nil {
+		t.Fatalf("seed objects: %v", err)
+	}
+
+	r, err := md.CreateRepo(ctx, name, "main")
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	if err := md.CASRef(ctx, r.ID, "refs/heads/main", meta.ZeroSHA, head); err != nil {
+		t.Fatalf("CASRef: %v", err)
+	}
+	return r, head
+}
+
+func gitRevParse(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse: %v\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func TestRunFailsOnBadAddr(t *testing.T) {

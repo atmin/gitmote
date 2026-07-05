@@ -15,13 +15,9 @@ Two independent chains plus a docs cap — order within a chain matters, the cha
 run in parallel:
 
 **Chain A — shrink the surface**
-- [minimal-env-secrets.md](minimal-env-secrets.md) — auto-generate + persist
-  `GITMOTE_COOKIE_KEY` and (lazily) `WORKER_SECRET` in meta; CI master key stays
-  env-only.
 - [onboarding-bootstrap.md](onboarding-bootstrap.md) — first-run **auto-bootstrap**
   prints the admin token once to the logs with clear instructions (no setup page,
-  no race); `bootstrap --reissue` recovers a lost token. *(needs -secrets for the
-  cookie key.)*
+  no race); `bootstrap --reissue` recovers a lost token.
 
 **Chain B — the image**
 - [public-registry.md](public-registry.md) — publish `ghcr.io/atmin/gitmote` +
