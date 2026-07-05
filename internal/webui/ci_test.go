@@ -22,6 +22,11 @@ func (x *harness) seedRun(repoName, sha, log string) (repoID, runID, jobID int64
 			x.t.Fatalf("CreateRepo: %v", err)
 		}
 	}
+	// Browse (the CI run views) is gated on repo-read; grant the harness admin an
+	// ACL so it can view runs on this private-by-default repo.
+	if err := x.md.SetACL(ctx, r.ID, x.admin.ID, meta.PermAdmin); err != nil {
+		x.t.Fatalf("SetACL: %v", err)
+	}
 	run, err := x.md.CreateRun(ctx, r.ID, "refs/heads/main", sha)
 	if err != nil {
 		x.t.Fatalf("CreateRun: %v", err)
@@ -43,20 +48,20 @@ func (x *harness) seedRun(repoName, sha, log string) (repoID, runID, jobID int64
 func TestCIRunsListAndDetail(t *testing.T) {
 	x := newHarness(t)
 	session := x.login(x.mintTokenFor(x.admin.ID))
-	_, runID, jobID := x.seedRun("atmin/app", "deadbeefcafe1234", "ok\n")
+	_, runID, jobID := x.seedRun("app", "deadbeefcafe1234", "ok\n")
 
 	// Runs list links to the run and shows the short SHA.
-	rec := x.do(http.MethodGet, "/browse/atmin/app/-/runs", nil, session)
+	rec := x.do(http.MethodGet, "/browse/app/-/runs", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("runs list: %d (%s)", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "/browse/atmin/app/-/run/"+itoa(runID)) || !strings.Contains(body, "deadbeef") {
+	if !strings.Contains(body, "/browse/app/-/run/"+itoa(runID)) || !strings.Contains(body, "deadbeef") {
 		t.Errorf("runs list missing run link or short sha: %s", body)
 	}
 
 	// Run detail shows the job and links to its log.
-	rec = x.do(http.MethodGet, "/browse/atmin/app/-/run/"+itoa(runID), nil, session)
+	rec = x.do(http.MethodGet, "/browse/app/-/run/"+itoa(runID), nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("run detail: %d (%s)", rec.Code, rec.Body)
 	}
@@ -70,9 +75,9 @@ func TestCIJobLogRendersSafely(t *testing.T) {
 	x := newHarness(t)
 	session := x.login(x.mintTokenFor(x.admin.ID))
 	// Green "ok" via ANSI, then HTML that must be escaped.
-	_, runID, jobID := x.seedRun("atmin/app", "sha1", "\x1b[32mok\x1b[0m <b>x</b>\n")
+	_, runID, jobID := x.seedRun("app", "sha1", "\x1b[32mok\x1b[0m <b>x</b>\n")
 
-	rec := x.do(http.MethodGet, "/browse/atmin/app/-/run/"+itoa(runID)+"/job/"+itoa(jobID)+"/log", nil, session)
+	rec := x.do(http.MethodGet, "/browse/app/-/run/"+itoa(runID)+"/job/"+itoa(jobID)+"/log", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("log view: %d (%s)", rec.Code, rec.Body)
 	}
@@ -91,11 +96,15 @@ func TestCIJobLogRendersSafely(t *testing.T) {
 func TestCIRunNotFound(t *testing.T) {
 	x := newHarness(t)
 	session := x.login(x.mintTokenFor(x.admin.ID))
-	if _, err := x.md.CreateRepo(context.Background(), "atmin/app", "main"); err != nil {
+	r, err := x.md.CreateRepo(context.Background(), "app", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := x.md.SetACL(context.Background(), r.ID, x.admin.ID, meta.PermAdmin); err != nil {
 		t.Fatal(err)
 	}
 	// Unknown run id → 404.
-	if rec := x.do(http.MethodGet, "/browse/atmin/app/-/run/9999", nil, session); rec.Code != http.StatusNotFound {
+	if rec := x.do(http.MethodGet, "/browse/app/-/run/9999", nil, session); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown run = %d, want 404", rec.Code)
 	}
 }
@@ -103,12 +112,16 @@ func TestCIRunNotFound(t *testing.T) {
 func TestCIRunCrossRepoIsNotFound(t *testing.T) {
 	x := newHarness(t)
 	session := x.login(x.mintTokenFor(x.admin.ID))
-	_, runID, _ := x.seedRun("atmin/app", "sha1", "x")
-	if _, err := x.md.CreateRepo(context.Background(), "atmin/other", "main"); err != nil {
+	_, runID, _ := x.seedRun("app", "sha1", "x")
+	other, err := x.md.CreateRepo(context.Background(), "other", "main")
+	if err != nil {
 		t.Fatal(err)
 	}
-	// A run that belongs to atmin/app must not be reachable under atmin/other.
-	rec := x.do(http.MethodGet, "/browse/atmin/other/-/run/"+itoa(runID), nil, session)
+	if err := x.md.SetACL(context.Background(), other.ID, x.admin.ID, meta.PermAdmin); err != nil {
+		t.Fatal(err)
+	}
+	// A run that belongs to app must not be reachable under other.
+	rec := x.do(http.MethodGet, "/browse/other/-/run/"+itoa(runID), nil, session)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("cross-repo run = %d, want 404", rec.Code)
 	}
@@ -117,7 +130,7 @@ func TestCIRunCrossRepoIsNotFound(t *testing.T) {
 func TestCIRunsRequireAdmin(t *testing.T) {
 	x := newHarness(t)
 	// Unauthenticated GET is redirected to login like the rest of /browse.
-	if rec := x.do(http.MethodGet, "/browse/atmin/app/-/runs", nil, nil); rec.Code != http.StatusSeeOther {
+	if rec := x.do(http.MethodGet, "/browse/app/-/runs", nil, nil); rec.Code != http.StatusSeeOther {
 		t.Errorf("unauth runs = %d, want 303 redirect", rec.Code)
 	}
 }
@@ -126,24 +139,24 @@ func TestCICommitBadge(t *testing.T) {
 	x := newHarness(t)
 	ctx := context.Background()
 	session := x.login(x.mintTokenFor(x.admin.ID))
-	head, first := x.seedBrowseRepo("atmin/repo", "main")
-	r, _ := x.md.GetRepo(ctx, "atmin/repo")
+	head, first := x.seedBrowseRepo("repo", "main")
+	r, _ := x.md.GetRepo(ctx, "repo")
 	run, err := x.md.CreateRun(ctx, r.ID, "refs/heads/main", head)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// The commit with a run shows a badge linking to it.
-	rec := x.do(http.MethodGet, "/browse/atmin/repo/-/commit/"+head, nil, session)
+	rec := x.do(http.MethodGet, "/browse/repo/-/commit/"+head, nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("commit page: %d (%s)", rec.Code, rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), "/browse/atmin/repo/-/run/"+itoa(run.ID)) {
+	if !strings.Contains(rec.Body.String(), "/browse/repo/-/run/"+itoa(run.ID)) {
 		t.Errorf("commit with a run is missing the CI badge: %s", rec.Body)
 	}
 
 	// A commit without a run shows no badge.
-	rec = x.do(http.MethodGet, "/browse/atmin/repo/-/commit/"+first, nil, session)
+	rec = x.do(http.MethodGet, "/browse/repo/-/commit/"+first, nil, session)
 	if strings.Contains(rec.Body.String(), "/-/run/") {
 		t.Errorf("commit without a run should have no badge: %s", rec.Body)
 	}

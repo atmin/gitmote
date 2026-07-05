@@ -29,6 +29,9 @@ func (h *Handler) browse(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if !h.authorizeRead(w, r, repoName) {
+		return
+	}
 	action, arg, _ := strings.Cut(tail, "/")
 	switch action {
 	case "tree":
@@ -48,6 +51,51 @@ func (h *Handler) browse(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// authorizeRead gates a browse request on repo-read: a public repo is readable
+// by anyone, a private repo needs a signed-in user with an ACL (CanRead). It
+// writes the response and returns false on refusal — 404 for an unknown repo, a
+// login redirect for an anonymous viewer of a private repo, 403 for a signed-in
+// viewer without access. Management routes stay admin-gated (requireAdmin).
+func (h *Handler) authorizeRead(w http.ResponseWriter, r *http.Request, repoName string) bool {
+	// The viewer is optional here: a valid session resolves to its user, else the
+	// request is anonymous (uid 0), which CanRead allows only for a public repo.
+	var uid int64
+	if id, ok := h.sess.verify(r, h.now()); ok {
+		if u, err := h.md.GetUserByID(r.Context(), id); err == nil {
+			uid = u.ID
+		}
+	}
+	rp, err := h.md.GetRepo(r.Context(), repoName)
+	if errors.Is(err, meta.ErrNotFound) {
+		// Don't reveal a private forge's inventory to anonymous callers: a missing
+		// repo redirects to login rather than 404ing (a signed-in user gets the 404).
+		if uid == 0 {
+			h.denyUnauth(w, r)
+			return false
+		}
+		http.NotFound(w, r)
+		return false
+	}
+	if err != nil {
+		h.serverError(w, "get repo", err)
+		return false
+	}
+	can, err := h.md.CanRead(r.Context(), rp, uid)
+	if err != nil {
+		h.serverError(w, "authorize read", err)
+		return false
+	}
+	if can {
+		return true
+	}
+	if uid == 0 {
+		h.denyUnauth(w, r) // anonymous → login
+		return false
+	}
+	http.Error(w, "forbidden", http.StatusForbidden)
+	return false
 }
 
 // browseCtx is the resolved starting point every browse handler needs: the repo

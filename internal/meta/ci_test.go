@@ -9,7 +9,7 @@ import (
 func TestCreateRun(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)
-	r := seedRepo(t, m, "atmin/repo")
+	r := seedRepo(t, m, "repo")
 	const main = "refs/heads/main"
 
 	run, err := m.CreateRun(ctx, r.ID, main, shaA)
@@ -36,7 +36,7 @@ func TestCreateRun(t *testing.T) {
 func TestSetRunStatus(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)
-	r := seedRepo(t, m, "atmin/repo")
+	r := seedRepo(t, m, "repo")
 
 	run, err := m.CreateRun(ctx, r.ID, "refs/heads/main", shaA)
 	if err != nil {
@@ -63,8 +63,8 @@ func TestSetRunStatus(t *testing.T) {
 func TestListRunsNewestFirst(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)
-	r := seedRepo(t, m, "atmin/repo")
-	other := seedRepo(t, m, "atmin/other")
+	r := seedRepo(t, m, "repo")
+	other := seedRepo(t, m, "other")
 
 	first, _ := m.CreateRun(ctx, r.ID, "refs/heads/main", shaA)
 	second, _ := m.CreateRun(ctx, r.ID, "refs/heads/main", shaB)

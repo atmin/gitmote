@@ -86,7 +86,7 @@ func TestAuthorize(t *testing.T) {
 	m := openMeta(t)
 	g := NewGuard(m)
 
-	repo, err := m.CreateRepo(ctx, "atmin/repo", "main")
+	repo, err := m.CreateRepo(ctx, "repo", "main")
 	if err != nil {
 		t.Fatalf("CreateRepo: %v", err)
 	}
@@ -101,18 +101,18 @@ func TestAuthorize(t *testing.T) {
 		"wrong secret": bearer("gmt_" + sel + ".wrongsecret"),
 	}
 	for name, r := range unauth {
-		if _, err := g.Authorize(r, "atmin/repo", meta.PermRead); !errors.Is(err, ErrUnauthorized) {
+		if _, err := g.Authorize(r, "repo", meta.PermRead); !errors.Is(err, ErrUnauthorized) {
 			t.Errorf("%s: Authorize = %v, want ErrUnauthorized", name, err)
 		}
 	}
 
 	// Valid token, no ACL → ErrForbidden.
-	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermRead); !errors.Is(err, ErrForbidden) {
+	if _, err := g.Authorize(bearer(raw), "repo", meta.PermRead); !errors.Is(err, ErrForbidden) {
 		t.Errorf("no ACL: Authorize = %v, want ErrForbidden", err)
 	}
 
 	// Valid token, unknown repo → meta.ErrNotFound.
-	if _, err := g.Authorize(bearer(raw), "no/such", meta.PermRead); !errors.Is(err, meta.ErrNotFound) {
+	if _, err := g.Authorize(bearer(raw), "nope", meta.PermRead); !errors.Is(err, meta.ErrNotFound) {
 		t.Errorf("unknown repo: Authorize = %v, want meta.ErrNotFound", err)
 	}
 
@@ -120,14 +120,14 @@ func TestAuthorize(t *testing.T) {
 	if err := m.SetACL(ctx, repo.ID, userID, meta.PermRead); err != nil {
 		t.Fatalf("SetACL: %v", err)
 	}
-	user, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermRead)
+	user, err := g.Authorize(bearer(raw), "repo", meta.PermRead)
 	if err != nil {
 		t.Fatalf("read with read ACL: %v", err)
 	}
 	if user.ID != userID {
 		t.Errorf("authorized user = %d, want %d", user.ID, userID)
 	}
-	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermWrite); !errors.Is(err, ErrForbidden) {
+	if _, err := g.Authorize(bearer(raw), "repo", meta.PermWrite); !errors.Is(err, ErrForbidden) {
 		t.Errorf("write with read ACL: Authorize = %v, want ErrForbidden", err)
 	}
 
@@ -135,7 +135,7 @@ func TestAuthorize(t *testing.T) {
 	if err := m.SetACL(ctx, repo.ID, userID, meta.PermAdmin); err != nil {
 		t.Fatalf("SetACL admin: %v", err)
 	}
-	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermRead); err != nil {
+	if _, err := g.Authorize(bearer(raw), "repo", meta.PermRead); err != nil {
 		t.Errorf("read with admin ACL: %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestBasicAuthCredentials(t *testing.T) {
 	ctx := context.Background()
 	m := openMeta(t)
 	g := NewGuard(m)
-	repo, _ := m.CreateRepo(ctx, "atmin/repo", "main")
+	repo, _ := m.CreateRepo(ctx, "repo", "main")
 	raw, userID := seedToken(t, m)
 	if err := m.SetACL(ctx, repo.ID, userID, meta.PermRead); err != nil {
 		t.Fatalf("SetACL: %v", err)
@@ -194,7 +194,7 @@ func TestBasicAuthCredentials(t *testing.T) {
 	} {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.SetBasicAuth(creds.user, creds.pass)
-		if _, err := g.Authorize(r, "atmin/repo", meta.PermRead); err != nil {
+		if _, err := g.Authorize(r, "repo", meta.PermRead); err != nil {
 			t.Errorf("Basic(%q,%q): Authorize = %v, want ok", creds.user, creds.pass, err)
 		}
 	}
@@ -204,7 +204,7 @@ func TestTokenExpiry(t *testing.T) {
 	ctx := context.Background()
 	m := openMeta(t)
 	g := NewGuard(m)
-	repo, _ := m.CreateRepo(ctx, "atmin/repo", "main")
+	repo, _ := m.CreateRepo(ctx, "repo", "main")
 	u, _ := m.CreateUser(ctx, "atmin")
 	if err := m.SetACL(ctx, repo.ID, u.ID, meta.PermRead); err != nil {
 		t.Fatalf("SetACL: %v", err)
@@ -218,13 +218,13 @@ func TestTokenExpiry(t *testing.T) {
 
 	// Before expiry: authorizes.
 	g.now = func() time.Time { return expiry.Add(-time.Minute) }
-	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermRead); err != nil {
+	if _, err := g.Authorize(bearer(raw), "repo", meta.PermRead); err != nil {
 		t.Errorf("before expiry: Authorize = %v, want ok", err)
 	}
 
 	// At/after expiry: rejected as unauthorized.
 	g.now = func() time.Time { return expiry }
-	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermRead); !errors.Is(err, ErrUnauthorized) {
+	if _, err := g.Authorize(bearer(raw), "repo", meta.PermRead); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("at expiry: Authorize = %v, want ErrUnauthorized", err)
 	}
 	g.now = func() time.Time { return expiry.Add(time.Hour) }
@@ -237,8 +237,8 @@ func TestRepoScope(t *testing.T) {
 	ctx := context.Background()
 	m := openMeta(t)
 	g := NewGuard(m)
-	repoA, _ := m.CreateRepo(ctx, "atmin/a", "main")
-	repoB, _ := m.CreateRepo(ctx, "atmin/b", "main")
+	repoA, _ := m.CreateRepo(ctx, "a", "main")
+	repoB, _ := m.CreateRepo(ctx, "b", "main")
 	u, _ := m.CreateUser(ctx, "atmin")
 	// The owner has read on BOTH repos.
 	if err := m.SetACL(ctx, repoA.ID, u.ID, meta.PermRead); err != nil {
@@ -253,10 +253,10 @@ func TestRepoScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintScoped: %v", err)
 	}
-	if _, err := g.Authorize(bearer(raw), "atmin/a", meta.PermRead); err != nil {
+	if _, err := g.Authorize(bearer(raw), "a", meta.PermRead); err != nil {
 		t.Errorf("scoped repo: Authorize = %v, want ok", err)
 	}
-	if _, err := g.Authorize(bearer(raw), "atmin/b", meta.PermRead); !errors.Is(err, ErrForbidden) {
+	if _, err := g.Authorize(bearer(raw), "b", meta.PermRead); !errors.Is(err, ErrForbidden) {
 		t.Errorf("other repo: Authorize = %v, want ErrForbidden", err)
 	}
 }
@@ -265,7 +265,7 @@ func TestReadOnlyToken(t *testing.T) {
 	ctx := context.Background()
 	m := openMeta(t)
 	g := NewGuard(m)
-	repo, _ := m.CreateRepo(ctx, "atmin/repo", "main")
+	repo, _ := m.CreateRepo(ctx, "repo", "main")
 	u, _ := m.CreateUser(ctx, "atmin")
 	// The owner can write, but the token is read-only.
 	if err := m.SetACL(ctx, repo.ID, u.ID, meta.PermWrite); err != nil {
@@ -276,10 +276,10 @@ func TestReadOnlyToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintScoped: %v", err)
 	}
-	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermRead); err != nil {
+	if _, err := g.Authorize(bearer(raw), "repo", meta.PermRead); err != nil {
 		t.Errorf("read with read-only token: Authorize = %v, want ok", err)
 	}
-	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermWrite); !errors.Is(err, ErrForbidden) {
+	if _, err := g.Authorize(bearer(raw), "repo", meta.PermWrite); !errors.Is(err, ErrForbidden) {
 		t.Errorf("write with read-only token: Authorize = %v, want ErrForbidden", err)
 	}
 }
@@ -288,7 +288,7 @@ func TestUnscopedTokenUnaffected(t *testing.T) {
 	ctx := context.Background()
 	m := openMeta(t)
 	g := NewGuard(m)
-	repo, _ := m.CreateRepo(ctx, "atmin/repo", "main")
+	repo, _ := m.CreateRepo(ctx, "repo", "main")
 	raw, userID := seedToken(t, m) // ordinary CreateToken PAT
 	if err := m.SetACL(ctx, repo.ID, userID, meta.PermWrite); err != nil {
 		t.Fatalf("SetACL: %v", err)
@@ -296,8 +296,48 @@ func TestUnscopedTokenUnaffected(t *testing.T) {
 
 	// No expiry, any owned repo, read + write per ACL — even far in the future.
 	g.now = func() time.Time { return time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC) }
-	if _, err := g.Authorize(bearer(raw), "atmin/repo", meta.PermWrite); err != nil {
+	if _, err := g.Authorize(bearer(raw), "repo", meta.PermWrite); err != nil {
 		t.Errorf("unscoped token write: Authorize = %v, want ok", err)
+	}
+}
+
+func TestAuthorizeVisibility(t *testing.T) {
+	ctx := context.Background()
+	m := openMeta(t)
+	g := NewGuard(m)
+
+	pub, _ := m.CreateRepo(ctx, "pub", "main")
+	if err := m.SetVisibility(ctx, pub.ID, meta.VisibilityPublic); err != nil {
+		t.Fatalf("SetVisibility: %v", err)
+	}
+	if _, err := m.CreateRepo(ctx, "priv", "main"); err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+
+	// Anonymous read of a public repo is allowed — a nil user, no error.
+	if u, err := g.Authorize(bearer(""), "pub", meta.PermRead); err != nil || u != nil {
+		t.Errorf("anon read public = (%v, %v), want (nil, nil)", u, err)
+	}
+	// Writes are never anonymous, public or not.
+	if _, err := g.Authorize(bearer(""), "pub", meta.PermWrite); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("anon write public = %v, want ErrUnauthorized", err)
+	}
+	// Anonymous read of a private repo is refused (and existence is hidden).
+	if _, err := g.Authorize(bearer(""), "priv", meta.PermRead); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("anon read private = %v, want ErrUnauthorized", err)
+	}
+	// Anonymous read of a missing repo is also 401, not 404 — no inventory leak.
+	if _, err := g.Authorize(bearer(""), "missing", meta.PermRead); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("anon read missing = %v, want ErrUnauthorized", err)
+	}
+
+	// A valid token with no ACL still reads a public repo, but not a private one.
+	raw, _ := seedToken(t, m)
+	if _, err := g.Authorize(bearer(raw), "pub", meta.PermRead); err != nil {
+		t.Errorf("token read public (no ACL) = %v, want ok", err)
+	}
+	if _, err := g.Authorize(bearer(raw), "priv", meta.PermRead); !errors.Is(err, ErrForbidden) {
+		t.Errorf("token read private (no ACL) = %v, want ErrForbidden", err)
 	}
 }
 

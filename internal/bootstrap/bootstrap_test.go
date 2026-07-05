@@ -33,7 +33,7 @@ func TestRunCreatesUsableInstanceWithRepo(t *testing.T) {
 	ctx := context.Background()
 	m := openMeta(t)
 
-	res, err := Run(ctx, m, Options{AdminHandle: "atmin", RepoName: "atmin/gitmote"})
+	res, err := Run(ctx, m, Options{AdminHandle: "atmin", RepoName: "gitmote"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -43,8 +43,8 @@ func TestRunCreatesUsableInstanceWithRepo(t *testing.T) {
 	if res.Admin == nil || !res.Admin.IsAdmin {
 		t.Fatalf("admin = %+v, want a global admin", res.Admin)
 	}
-	if res.Repo == nil || res.Repo.Name != "atmin/gitmote" {
-		t.Fatalf("repo = %+v, want atmin/gitmote", res.Repo)
+	if res.Repo == nil || res.Repo.Name != "gitmote" {
+		t.Fatalf("repo = %+v, want gitmote", res.Repo)
 	}
 	if res.RawToken == "" {
 		t.Fatal("no token returned")
@@ -54,7 +54,7 @@ func TestRunCreatesUsableInstanceWithRepo(t *testing.T) {
 	// initial repo (the admin holds a repo-admin ACL).
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+res.RawToken)
-	user, err := auth.NewGuard(m).Authorize(req, "atmin/gitmote", meta.PermWrite)
+	user, err := auth.NewGuard(m).Authorize(req, "gitmote", meta.PermWrite)
 	if err != nil {
 		t.Fatalf("Authorize with bootstrap token: %v", err)
 	}

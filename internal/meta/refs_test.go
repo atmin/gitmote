@@ -30,7 +30,7 @@ func refSHA(t *testing.T, m *Metadata, repoID int64, name string) string {
 func TestCASRefCreateUpdateDelete(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)
-	r := seedRepo(t, m, "atmin/repo")
+	r := seedRepo(t, m, "repo")
 	const main = "refs/heads/main"
 
 	// Create: old is the zero id (ref must be absent).
@@ -61,7 +61,7 @@ func TestCASRefCreateUpdateDelete(t *testing.T) {
 func TestCASRefRejectsAndRollsBack(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)
-	r := seedRepo(t, m, "atmin/repo")
+	r := seedRepo(t, m, "repo")
 	const main = "refs/heads/main"
 
 	if err := m.CASRef(ctx, r.ID, main, ZeroSHA, shaA); err != nil {
@@ -91,7 +91,7 @@ func TestCASRefRejectsAndRollsBack(t *testing.T) {
 func TestCASRefsAtomicMultiRef(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)
-	r := seedRepo(t, m, "atmin/repo")
+	r := seedRepo(t, m, "repo")
 	const (
 		main = "refs/heads/main"
 		dev  = "refs/heads/dev"

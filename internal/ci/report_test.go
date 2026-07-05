@@ -40,7 +40,7 @@ func newReportFixture(t *testing.T, isLeader func() bool) reportFixture {
 	t.Cleanup(func() { _ = md.Close() })
 	s := store.NewMem()
 
-	r, err := md.CreateRepo(ctx, "atmin/app", "main")
+	r, err := md.CreateRepo(ctx, "app", "main")
 	if err != nil {
 		t.Fatalf("CreateRepo: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestClaimTransitionsAndReturnsSpec(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&spec); err != nil {
 		t.Fatalf("decode spec: %v", err)
 	}
-	if spec.JobID != f.jobID || spec.RunID != f.runID || spec.Repo != "atmin/app" ||
+	if spec.JobID != f.jobID || spec.RunID != f.runID || spec.Repo != "app" ||
 		spec.SHA != "deadbeef" || spec.Ref != "refs/heads/main" || spec.WorkflowDir != workflowDir {
 		t.Errorf("spec = %+v, want the seeded job's coordinates", spec)
 	}

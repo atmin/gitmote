@@ -72,11 +72,16 @@ type CommitInfo struct {
 // dispatch can't hold the push handler open indefinitely.
 const afterCommitTimeout = 30 * time.Second
 
-// pushOp is the parent-side context a nonce resolves to.
+// pushOp is the parent-side context a nonce resolves to. defaultBranch and
+// pusherIsAdmin are the inputs to the default-branch force-push guard
+// (docs/architecture/urls.md): a force-push or deletion of the default branch is
+// admin-only, so the guard needs the branch to protect and the pusher's level.
 type pushOp struct {
-	repoID   int64
-	repoName string
-	outcome  *pushOutcome
+	repoID        int64
+	repoName      string
+	defaultBranch string
+	pusherIsAdmin bool
+	outcome       *pushOutcome
 }
 
 // pushOutcome collects the refs a push committed. The hook callback (Writer.handle)
@@ -166,18 +171,31 @@ func (p *Push) Release() { p.release() }
 func (p *Push) Committed() []CommitInfo { return p.outcome.committed() }
 
 // Begin starts a push: it resolves the repo, takes the per-repo write lock (so
-// pushes to one repo serialize), and mints a nonce bound to this operation. The
-// caller must Release the returned Push. Begin returns meta.ErrNotFound for an
-// unknown repo.
-func (w *Writer) Begin(ctx context.Context, repoName string) (*Push, error) {
+// pushes to one repo serialize), and mints a nonce bound to this operation. It
+// also resolves the pusher's ACL level, so the hook callback can apply the
+// admin-only default-branch force-push guard. The caller must Release the
+// returned Push. Begin returns meta.ErrNotFound for an unknown repo.
+func (w *Writer) Begin(ctx context.Context, repoName string, pusherID int64) (*Push, error) {
 	repo, err := w.meta.GetRepo(ctx, repoName)
 	if err != nil {
+		return nil, err
+	}
+	// The pusher already holds ≥write (Authorize passed); resolve whether they
+	// also hold admin, which the force-push guard requires for the default branch.
+	perm, err := w.meta.GetACL(ctx, repo.ID, pusherID)
+	if err != nil && !errors.Is(err, meta.ErrNotFound) {
 		return nil, err
 	}
 	lk := w.lockRepo(repoName)
 	lk.Lock()
 	outcome := &pushOutcome{}
-	nonce, err := w.register(pushOp{repoID: repo.ID, repoName: repoName, outcome: outcome})
+	nonce, err := w.register(pushOp{
+		repoID:        repo.ID,
+		repoName:      repoName,
+		defaultBranch: repo.DefaultBranch,
+		pusherIsAdmin: perm == meta.PermAdmin,
+		outcome:       outcome,
+	})
 	if err != nil {
 		lk.Unlock()
 		return nil, err
@@ -243,6 +261,19 @@ func (w *Writer) handle(req hookrpc.Request) hookrpc.Response {
 	op, ok := w.take(req.Nonce)
 	if !ok {
 		return hookrpc.Response{Reason: "invalid or expired nonce"}
+	}
+
+	// Default-branch protection: a force-push or deletion of the default branch is
+	// admin-only. Reject per-ref before uploading anything, so the client sees a
+	// clean refusal (not a post-hoc CAS failure) and no objects are wasted.
+	if !op.pusherIsAdmin {
+		protected := "refs/heads/" + op.defaultBranch
+		for _, c := range req.Commands {
+			if c.Ref == protected && c.Force {
+				return hookrpc.Response{Reason: fmt.Sprintf(
+					"force-push or deletion of the default branch %q requires admin", op.defaultBranch)}
+			}
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), casTimeout)

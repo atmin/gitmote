@@ -133,7 +133,7 @@ func newDispatcher(md *meta.Metadata, mz *repo.Materializer, tr Trigger) *Dispat
 func TestDispatchOneWorkflowCreatesRunAndJob(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+	r, head := seedRepo(t, md, s, "app", map[string]string{
 		".github/workflows/ci.yml": "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
 	})
 
@@ -162,7 +162,7 @@ func TestDispatchOneWorkflowCreatesRunAndJob(t *testing.T) {
 		t.Errorf("env run/job ids = %q/%q, want %d/%d",
 			env["GITMOTE_CI_RUN_ID"], env["GITMOTE_CI_JOB_ID"], runs[0].ID, jobs[0].ID)
 	}
-	if env["GITMOTE_REPO"] != "atmin/app" || env["GITMOTE_SHA"] != head ||
+	if env["GITMOTE_REPO"] != "app" || env["GITMOTE_SHA"] != head ||
 		env["GITMOTE_REF"] != "refs/heads/main" {
 		t.Errorf("env checkout coords = %+v, want repo/sha/ref set", env)
 	}
@@ -174,7 +174,7 @@ func TestDispatchOneWorkflowCreatesRunAndJob(t *testing.T) {
 func TestDispatchTwoWorkflowsCreateTwoJobs(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+	r, head := seedRepo(t, md, s, "app", map[string]string{
 		".github/workflows/ci.yml":      "name: CI\non: push\n",
 		".github/workflows/deploy.yaml": "name: Deploy\non: push\n",
 	})
@@ -198,7 +198,7 @@ func TestDispatchTwoWorkflowsCreateTwoJobs(t *testing.T) {
 func TestDispatchNoWorkflowsNoRun(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "atmin/app", nil) // no .github/workflows
+	r, head := seedRepo(t, md, s, "app", nil) // no .github/workflows
 
 	newDispatcher(md, mz, &stubTrigger{}).Dispatch(ctx, branchEvent(r, head))
 
@@ -210,7 +210,7 @@ func TestDispatchNoWorkflowsNoRun(t *testing.T) {
 func TestDispatchMalformedWorkflowFailsRun(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+	r, head := seedRepo(t, md, s, "app", map[string]string{
 		".github/workflows/good.yml": "name: Good\non: push\n",
 		".github/workflows/bad.yml":  "name: Bad\n  : : not: valid: yaml\n\t- broken\n",
 	})
@@ -235,7 +235,7 @@ func TestDispatchMalformedWorkflowFailsRun(t *testing.T) {
 func TestDispatchIgnoresTagsAndDeletes(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+	r, head := seedRepo(t, md, s, "app", map[string]string{
 		".github/workflows/ci.yml": "name: CI\non: push\n",
 	})
 	d := newDispatcher(md, mz, &stubTrigger{})
@@ -257,7 +257,7 @@ func TestDispatchIgnoresTagsAndDeletes(t *testing.T) {
 func TestDispatchAllTriggersFailMarksRunError(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+	r, head := seedRepo(t, md, s, "app", map[string]string{
 		".github/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
@@ -277,7 +277,7 @@ func TestDispatchAllTriggersFailMarksRunError(t *testing.T) {
 func TestDispatchOneTriggerFailsOthersProceed(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+	r, head := seedRepo(t, md, s, "app", map[string]string{
 		".github/workflows/a.yml": "name: A\non: push\n",
 		".github/workflows/b.yml": "name: B\non: push\n",
 	})
@@ -333,7 +333,7 @@ func (m *stubMinter) MintScoped(_ context.Context, userID int64, _ string, repoS
 func TestDispatchMintsScopedCloneToken(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+	r, head := seedRepo(t, md, s, "app", map[string]string{
 		".github/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
@@ -371,7 +371,7 @@ func TestDispatchMintsScopedCloneToken(t *testing.T) {
 func TestDispatchMintFailureLeavesRunUsable(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+	r, head := seedRepo(t, md, s, "app", map[string]string{
 		".github/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
@@ -406,7 +406,7 @@ func (s stubSecrets) Secrets(context.Context, int64) (map[string]string, error) 
 func TestDispatchInjectsSecrets(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+	r, head := seedRepo(t, md, s, "app", map[string]string{
 		".github/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
@@ -427,7 +427,7 @@ func TestDispatchInjectsSecrets(t *testing.T) {
 		t.Errorf("GITMOTE_CI_SECRET_API_TOKEN = %q, want the injected value", env["GITMOTE_CI_SECRET_API_TOKEN"])
 	}
 	// The namespacing keeps a secret from ever shadowing the runner's coordinates.
-	if env["GITMOTE_URL"] != "https://gitmote.test" || env["GITMOTE_REPO"] != "atmin/app" {
+	if env["GITMOTE_URL"] != "https://gitmote.test" || env["GITMOTE_REPO"] != "app" {
 		t.Errorf("coordinates altered by secret injection: %+v", env)
 	}
 }
@@ -435,7 +435,7 @@ func TestDispatchInjectsSecrets(t *testing.T) {
 func TestDispatchSecretsFailureRunsWithout(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "atmin/app", map[string]string{
+	r, head := seedRepo(t, md, s, "app", map[string]string{
 		".github/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
@@ -451,7 +451,7 @@ func TestDispatchSecretsFailureRunsWithout(t *testing.T) {
 	if len(tr.calls) != 1 {
 		t.Fatalf("trigger calls = %d, want 1 (secrets failure must not abort dispatch)", len(tr.calls))
 	}
-	if tr.calls[0]["GITMOTE_REPO"] != "atmin/app" {
+	if tr.calls[0]["GITMOTE_REPO"] != "app" {
 		t.Errorf("job env missing fixed coords: %+v", tr.calls[0])
 	}
 }

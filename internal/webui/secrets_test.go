@@ -13,7 +13,7 @@ func TestSecretsGoldenPath(t *testing.T) {
 	ctx := context.Background()
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	repo, err := x.md.CreateRepo(ctx, "atmin/app", "main")
+	repo, err := x.md.CreateRepo(ctx, "app", "main")
 	if err != nil {
 		t.Fatalf("CreateRepo: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestSecretsGoldenPath(t *testing.T) {
 	// Set a secret. The value must never appear in the response.
 	const value = "hunter2-NEEDLE"
 	rec := x.do(http.MethodPost, "/ui/secrets",
-		url.Values{"repo": {"atmin/app"}, "name": {"API_TOKEN"}, "value": {value}}, session)
+		url.Values{"repo": {"app"}, "name": {"API_TOKEN"}, "value": {value}}, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "saved secret API_TOKEN") {
 		t.Fatalf("set secret: %d (%s)", rec.Code, rec.Body)
 	}
@@ -39,7 +39,7 @@ func TestSecretsGoldenPath(t *testing.T) {
 	}
 
 	// The list page shows the name but never the value.
-	rec = x.do(http.MethodGet, "/ui/secrets?repo=atmin/app", nil, session)
+	rec = x.do(http.MethodGet, "/ui/secrets?repo=app", nil, session)
 	if !strings.Contains(rec.Body.String(), "API_TOKEN") {
 		t.Errorf("list page missing the secret name (body: %s)", rec.Body)
 	}
@@ -49,7 +49,7 @@ func TestSecretsGoldenPath(t *testing.T) {
 
 	// Delete it.
 	rec = x.do(http.MethodPost, "/ui/secrets/delete",
-		url.Values{"repo": {"atmin/app"}, "name": {"API_TOKEN"}}, session)
+		url.Values{"repo": {"app"}, "name": {"API_TOKEN"}}, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete secret: %d (%s)", rec.Code, rec.Body)
 	}
@@ -62,12 +62,12 @@ func TestSecretsRejectsReservedName(t *testing.T) {
 	x := newHarness(t)
 	ctx := context.Background()
 	session := x.login(x.mintTokenFor(x.admin.ID))
-	if _, err := x.md.CreateRepo(ctx, "atmin/app", "main"); err != nil {
+	if _, err := x.md.CreateRepo(ctx, "app", "main"); err != nil {
 		t.Fatalf("CreateRepo: %v", err)
 	}
 
 	rec := x.do(http.MethodPost, "/ui/secrets",
-		url.Values{"repo": {"atmin/app"}, "name": {"WORKER_SECRET"}, "value": {"x"}}, session)
+		url.Values{"repo": {"app"}, "name": {"WORKER_SECRET"}, "value": {"x"}}, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "reserved") {
 		t.Errorf("reserved name: %d (%s), want a rejection message", rec.Code, rec.Body)
 	}
@@ -82,7 +82,7 @@ func TestSecretsRequireAdmin(t *testing.T) {
 		t.Errorf("unauth GET /ui/secrets = %d, want 303 redirect", rec.Code)
 	}
 	rec := x.do(http.MethodPost, "/ui/secrets",
-		url.Values{"repo": {"atmin/app"}, "name": {"K"}, "value": {"v"}}, nil)
+		url.Values{"repo": {"app"}, "name": {"K"}, "value": {"v"}}, nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("unauth POST /ui/secrets = %d, want 401", rec.Code)
 	}

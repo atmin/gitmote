@@ -161,11 +161,11 @@ func TestRunBootstrap(t *testing.T) {
 	t.Setenv("GITMOTE_DB", dbPath)
 
 	var out bytes.Buffer
-	args := []string{"-handle", "atmin", "-repo", "atmin/gitmote"}
+	args := []string{"-handle", "atmin", "-repo", "gitmote"}
 	if err := runBootstrap(context.Background(), args, &out); err != nil {
 		t.Fatalf("runBootstrap: %v", err)
 	}
-	if !strings.Contains(out.String(), "atmin/gitmote") || !strings.Contains(out.String(), "access token") {
+	if !strings.Contains(out.String(), "gitmote") || !strings.Contains(out.String(), "access token") {
 		t.Errorf("bootstrap output missing repo/token:\n%s", out.String())
 	}
 
@@ -490,7 +490,7 @@ func claimStatus(t *testing.T, base, secret string) int {
 func seedWorkflowRepo(t *testing.T, md *meta.Metadata, s store.Store) (*meta.Repo, string) {
 	t.Helper()
 	ctx := context.Background()
-	const name = "atmin/app"
+	const name = "app"
 
 	src := t.TempDir()
 	git := func(args ...string) {

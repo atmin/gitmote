@@ -4,8 +4,10 @@
 
 CREATE TABLE IF NOT EXISTS repos (
   id             INTEGER PRIMARY KEY,
-  name           TEXT NOT NULL UNIQUE,          -- "atmin/dotfiles"
+  name           TEXT NOT NULL UNIQUE,          -- single path segment, e.g. "gitmote"
   default_branch TEXT NOT NULL DEFAULT 'main',
+  visibility     TEXT NOT NULL DEFAULT 'private'   -- 'private' | 'public'; public = read-anonymous
+                 CHECK (visibility IN ('private','public')),
   created_at     TEXT NOT NULL
 );
 

@@ -40,12 +40,15 @@ func TestMigrationsIdempotentAndFreshSchema(t *testing.T) {
 
 	// Fresh DB: schema is usable — a round-trip proves the tables exist.
 	m := openAt(t, path)
-	r, err := m.CreateRepo(ctx, "atmin/dotfiles", "")
+	r, err := m.CreateRepo(ctx, "dotfiles", "")
 	if err != nil {
 		t.Fatalf("CreateRepo on fresh schema: %v", err)
 	}
 	if r.DefaultBranch != "main" {
 		t.Errorf("default branch = %q, want main", r.DefaultBranch)
+	}
+	if r.Visibility != VisibilityPrivate {
+		t.Errorf("visibility = %q, want private", r.Visibility)
 	}
 	if err := m.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -53,7 +56,7 @@ func TestMigrationsIdempotentAndFreshSchema(t *testing.T) {
 
 	// Re-open the same file: migrations are a no-op and data survives.
 	m2 := openAt(t, path)
-	got, err := m2.GetRepo(ctx, "atmin/dotfiles")
+	got, err := m2.GetRepo(ctx, "dotfiles")
 	if err != nil {
 		t.Fatalf("GetRepo after re-open: %v", err)
 	}
@@ -103,7 +106,7 @@ func TestScopedTokenColumnsMigrateAndPersist(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	m3 := openAt(t, path) // second migrate is a no-op
-	r := seedRepo(t, m3, "atmin/repo")
+	r := seedRepo(t, m3, "repo")
 	exp := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
 	if _, err := m3.CreateScopedToken(ctx, u.ID, "sel2", "ver2", "scoped", &r.ID, true, exp); err != nil {
 		t.Fatalf("CreateScopedToken: %v", err)
@@ -126,8 +129,8 @@ func TestRepoCRUD(t *testing.T) {
 		t.Fatalf("GetRepo(missing) = %v, want ErrNotFound", err)
 	}
 
-	seedRepo(t, m, "a/one")
-	b := seedRepo(t, m, "b/two")
+	seedRepo(t, m, "one")
+	b := seedRepo(t, m, "two")
 	if b.DefaultBranch != "main" {
 		t.Errorf("default branch = %q, want main", b.DefaultBranch)
 	}
@@ -136,13 +139,107 @@ func TestRepoCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListRepos: %v", err)
 	}
-	if len(repos) != 2 || repos[0].Name != "a/one" || repos[1].Name != "b/two" {
-		t.Errorf("ListRepos = %+v, want [a/one b/two]", repos)
+	if len(repos) != 2 || repos[0].Name != "one" || repos[1].Name != "two" {
+		t.Errorf("ListRepos = %+v, want [one two]", repos)
 	}
 
 	// name is UNIQUE.
-	if _, err := m.CreateRepo(ctx, "a/one", ""); err == nil {
+	if _, err := m.CreateRepo(ctx, "one", ""); err == nil {
 		t.Error("CreateRepo(duplicate name) succeeded, want error")
+	}
+}
+
+// TestRepoNameValidation covers the flat single-segment namespace rules: a
+// trailing ".git" is stripped, reserved globals and structural forms are
+// rejected with a clear error, and a ".git" clone URL resolves via GetRepo.
+func TestRepoNameValidation(t *testing.T) {
+	ctx := context.Background()
+
+	// A trailing ".git" is stripped at creation and tolerated at lookup.
+	m := open(t)
+	r, err := m.CreateRepo(ctx, "gitmote.git", "")
+	if err != nil {
+		t.Fatalf("CreateRepo(gitmote.git): %v", err)
+	}
+	if r.Name != "gitmote" {
+		t.Errorf("normalized name = %q, want gitmote", r.Name)
+	}
+	if got, err := m.GetRepo(ctx, "gitmote.git"); err != nil || got.ID != r.ID {
+		t.Errorf("GetRepo(gitmote.git) = (%v, %v), want the same repo", got, err)
+	}
+
+	// Rejected names: reserved globals, a leading dot, the bare dash, a slash, empty.
+	for _, name := range []string{"login", "api", "internal", ".hidden", "-", "a/b", ""} {
+		if _, err := m.CreateRepo(ctx, name, ""); err == nil {
+			t.Errorf("CreateRepo(%q) succeeded, want a validation error", name)
+		}
+	}
+}
+
+// TestSetVisibility flips a repo public and back, and rejects an invalid value.
+func TestSetVisibility(t *testing.T) {
+	ctx := context.Background()
+	m := open(t)
+	r := seedRepo(t, m, "repo")
+	if r.Public() {
+		t.Fatal("new repo should default to private")
+	}
+
+	if err := m.SetVisibility(ctx, r.ID, VisibilityPublic); err != nil {
+		t.Fatalf("SetVisibility(public): %v", err)
+	}
+	got, _ := m.GetRepo(ctx, "repo")
+	if !got.Public() {
+		t.Errorf("visibility = %q, want public", got.Visibility)
+	}
+
+	// The CHECK constraint rejects an unknown value.
+	if err := m.SetVisibility(ctx, r.ID, "secret"); err == nil {
+		t.Error("SetVisibility(secret) succeeded, want a CHECK violation")
+	}
+	// Unknown repo id.
+	if err := m.SetVisibility(ctx, 9999, VisibilityPublic); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetVisibility(unknown id) = %v, want ErrNotFound", err)
+	}
+}
+
+// TestCanRead covers the visibility-aware repo-read shared by git and browse:
+// a public repo is anyone-readable, a private repo needs an ACL.
+func TestCanRead(t *testing.T) {
+	ctx := context.Background()
+	m := open(t)
+	priv := seedRepo(t, m, "priv")
+	pub := seedRepo(t, m, "pub")
+	if err := m.SetVisibility(ctx, pub.ID, VisibilityPublic); err != nil {
+		t.Fatalf("SetVisibility: %v", err)
+	}
+	pub, _ = m.GetRepo(ctx, "pub")
+
+	u, _ := m.CreateUser(ctx, "spectator")
+
+	cases := []struct {
+		name   string
+		repo   *Repo
+		userID int64
+		want   bool
+	}{
+		{"public anonymous", pub, 0, true},
+		{"public user", pub, u.ID, true},
+		{"private anonymous", priv, 0, false},
+		{"private no ACL", priv, u.ID, false},
+	}
+	for _, c := range cases {
+		if got, err := m.CanRead(ctx, c.repo, c.userID); err != nil || got != c.want {
+			t.Errorf("%s: CanRead = (%v, %v), want %v", c.name, got, err, c.want)
+		}
+	}
+
+	// A read ACL opens the private repo.
+	if err := m.SetACL(ctx, priv.ID, u.ID, PermRead); err != nil {
+		t.Fatalf("SetACL: %v", err)
+	}
+	if got, err := m.CanRead(ctx, priv, u.ID); err != nil || !got {
+		t.Errorf("private with read ACL: CanRead = (%v, %v), want true", got, err)
 	}
 }
 
@@ -206,7 +303,7 @@ func TestACLLookup(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)
 
-	r := seedRepo(t, m, "atmin/repo")
+	r := seedRepo(t, m, "repo")
 	u, err := m.CreateUser(ctx, "atmin")
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)

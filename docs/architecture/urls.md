@@ -5,10 +5,12 @@ people. That single fact sets the whole URL shape — repos live in a **flat,
 single-segment namespace** (`gitmote.example.com/<repo>`), not `user/repo`. There
 is no per-user namespace to disambiguate, so there is nothing to disambiguate.
 
-> **Status:** target design. It is implemented by the `tasks/urls-*` chain; the
-> sections here are reconciled into [storage.md](storage.md), [auth.md](auth.md),
-> and [request-flows.md](request-flows.md) as those tasks land. Until then the
-> code still serves the old `owner/repo` scheme.
+> **Status:** partially landed. The **flat single-segment namespace** and
+> **access & visibility** (public → anonymous read, repo-read browse, admin-only
+> default-branch force-push) are implemented and reconciled into
+> [storage.md](storage.md) and [auth.md](auth.md). Still to land from the
+> `tasks/urls-*` chain: the `tree`/`blob`/`raw` content routing, rendered-markdown
+> link rewriting, and the dashboard UI on the new routes.
 
 ## The namespace
 

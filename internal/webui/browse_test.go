@@ -78,6 +78,11 @@ func (x *harness) seedBrowseRepo(name, branch string) (head, first string) {
 	if err != nil {
 		x.t.Fatalf("CreateRepo: %v", err)
 	}
+	// Browse is gated on repo-read; grant the harness admin an ACL so a logged-in
+	// admin can browse this (private-by-default) repo.
+	if err := x.md.SetACL(ctx, r.ID, x.admin.ID, meta.PermAdmin); err != nil {
+		x.t.Fatalf("SetACL: %v", err)
+	}
 	if err := x.md.CASRef(ctx, r.ID, "refs/heads/"+branch, meta.ZeroSHA, head); err != nil {
 		x.t.Fatalf("CASRef branch: %v", err)
 	}
@@ -98,24 +103,60 @@ func write(t *testing.T, dir, rel, content string) {
 	}
 }
 
-func TestBrowseRequiresAdmin(t *testing.T) {
+// TestBrowseAccessControl exercises the repo-read gate on browse: a private repo
+// is browsable by the admin and a read-ACL spectator, refused (403) for a
+// signed-in stranger, and redirects an anonymous viewer to login; flipping it
+// public opens it to anyone.
+func TestBrowseAccessControl(t *testing.T) {
 	x := newHarness(t)
-	x.seedBrowseRepo("alice/app", "main")
+	ctx := context.Background()
+	x.seedBrowseRepo("app", "main") // private by default; grants the admin an ACL
+	r, _ := x.md.GetRepo(ctx, "app")
 
-	// No session cookie: a GET redirects to login rather than serving content.
-	rec := x.do(http.MethodGet, "/browse/alice/app/-/tree/", nil, nil)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("unauth browse = %d, want 303", rec.Code)
+	adminSession := x.login(x.mintTokenFor(x.admin.ID))
+
+	// A spectator: a non-admin with a read ACL.
+	spec, _ := x.md.CreateUser(ctx, "spectator")
+	if err := x.md.SetACL(ctx, r.ID, spec.ID, meta.PermRead); err != nil {
+		t.Fatalf("SetACL: %v", err)
+	}
+	specSession := x.sessionFor(spec.ID)
+
+	// A stranger: a signed-in user with no ACL.
+	stranger, _ := x.md.CreateUser(ctx, "stranger")
+	strangerSession := x.sessionFor(stranger.ID)
+
+	const target = "/browse/app/-/tree/"
+
+	if rec := x.do(http.MethodGet, target, nil, adminSession); rec.Code != http.StatusOK {
+		t.Errorf("admin browse private = %d, want 200", rec.Code)
+	}
+	if rec := x.do(http.MethodGet, target, nil, specSession); rec.Code != http.StatusOK {
+		t.Errorf("spectator browse private = %d, want 200", rec.Code)
+	}
+	if rec := x.do(http.MethodGet, target, nil, strangerSession); rec.Code != http.StatusForbidden {
+		t.Errorf("stranger browse private = %d, want 403", rec.Code)
+	}
+	if rec := x.do(http.MethodGet, target, nil, nil); rec.Code != http.StatusSeeOther {
+		t.Errorf("anonymous browse private = %d, want 303 (login)", rec.Code)
+	}
+
+	// Make it public: an anonymous viewer may now browse.
+	if err := x.md.SetVisibility(ctx, r.ID, meta.VisibilityPublic); err != nil {
+		t.Fatalf("SetVisibility: %v", err)
+	}
+	if rec := x.do(http.MethodGet, target, nil, nil); rec.Code != http.StatusOK {
+		t.Errorf("anonymous browse public = %d, want 200", rec.Code)
 	}
 }
 
 func TestBrowseTreeAndBlob(t *testing.T) {
 	x := newHarness(t)
-	x.seedBrowseRepo("alice/app", "main")
+	x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
 	// Root tree lists the top-level entries.
-	rec := x.do(http.MethodGet, "/browse/alice/app/-/tree/", nil, session)
+	rec := x.do(http.MethodGet, "/browse/app/-/tree/", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("tree = %d (%s)", rec.Code, rec.Body)
 	}
@@ -127,14 +168,14 @@ func TestBrowseTreeAndBlob(t *testing.T) {
 	}
 
 	// Subdirectory tree.
-	rec = x.do(http.MethodGet, "/browse/alice/app/-/tree/sub?ref=main", nil, session)
+	rec = x.do(http.MethodGet, "/browse/app/-/tree/sub?ref=main", nil, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "note.txt") {
 		t.Fatalf("sub tree = %d (%s)", rec.Code, rec.Body)
 	}
 
 	// Text blob renders its content (highlighting splits tokens into spans, so
 	// assert on a single token that survives).
-	rec = x.do(http.MethodGet, "/browse/alice/app/-/blob/hello.go?ref=main", nil, session)
+	rec = x.do(http.MethodGet, "/browse/app/-/blob/hello.go?ref=main", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("blob = %d (%s)", rec.Code, rec.Body)
 	}
@@ -143,7 +184,7 @@ func TestBrowseTreeAndBlob(t *testing.T) {
 	}
 
 	// Binary blob shows the download affordance, not garbage.
-	rec = x.do(http.MethodGet, "/browse/alice/app/-/blob/bin.dat?ref=main", nil, session)
+	rec = x.do(http.MethodGet, "/browse/app/-/blob/bin.dat?ref=main", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("binary blob = %d", rec.Code)
 	}
@@ -154,10 +195,10 @@ func TestBrowseTreeAndBlob(t *testing.T) {
 
 func TestBrowseRawDownload(t *testing.T) {
 	x := newHarness(t)
-	x.seedBrowseRepo("alice/app", "main")
+	x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	rec := x.do(http.MethodGet, "/browse/alice/app/-/raw/sub/note.txt?ref=main", nil, session)
+	rec := x.do(http.MethodGet, "/browse/app/-/raw/sub/note.txt?ref=main", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("raw = %d (%s)", rec.Code, rec.Body)
 	}
@@ -171,10 +212,10 @@ func TestBrowseRawDownload(t *testing.T) {
 
 func TestBrowseRefSwitcher(t *testing.T) {
 	x := newHarness(t)
-	x.seedBrowseRepo("alice/app", "main")
+	x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	rec := x.do(http.MethodGet, "/browse/alice/app/-/tree/", nil, session)
+	rec := x.do(http.MethodGet, "/browse/app/-/tree/", nil, session)
 	body := rec.Body.String()
 	// The switcher lists both the branch and the tag from meta.ListRefs.
 	if !strings.Contains(body, `value="main"`) || !strings.Contains(body, `value="v1"`) {
@@ -184,10 +225,10 @@ func TestBrowseRefSwitcher(t *testing.T) {
 
 func TestBrowseCommitsAndCommit(t *testing.T) {
 	x := newHarness(t)
-	head, _ := x.seedBrowseRepo("alice/app", "main")
+	head, _ := x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	rec := x.do(http.MethodGet, "/browse/alice/app/-/commits?ref=main", nil, session)
+	rec := x.do(http.MethodGet, "/browse/app/-/commits?ref=main", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("commits = %d (%s)", rec.Code, rec.Body)
 	}
@@ -196,7 +237,7 @@ func TestBrowseCommitsAndCommit(t *testing.T) {
 		t.Fatalf("commits body missing subjects:\n%s", body)
 	}
 
-	rec = x.do(http.MethodGet, "/browse/alice/app/-/commit/"+head, nil, session)
+	rec = x.do(http.MethodGet, "/browse/app/-/commit/"+head, nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("commit = %d (%s)", rec.Code, rec.Body)
 	}
@@ -207,11 +248,11 @@ func TestBrowseCommitsAndCommit(t *testing.T) {
 
 func TestBrowseHighlightAndMarkdown(t *testing.T) {
 	x := newHarness(t)
-	x.seedBrowseRepo("alice/app", "main")
+	x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
 	// A .go blob is syntax-highlighted: chroma class spans, not a bare <pre>.
-	rec := x.do(http.MethodGet, "/browse/alice/app/-/blob/hello.go?ref=main", nil, session)
+	rec := x.do(http.MethodGet, "/browse/app/-/blob/hello.go?ref=main", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("go blob = %d (%s)", rec.Code, rec.Body)
 	}
@@ -220,13 +261,13 @@ func TestBrowseHighlightAndMarkdown(t *testing.T) {
 	}
 
 	// A .md blob renders markdown in place of highlighted source.
-	rec = x.do(http.MethodGet, "/browse/alice/app/-/blob/README.md?ref=main", nil, session)
+	rec = x.do(http.MethodGet, "/browse/app/-/blob/README.md?ref=main", nil, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<h1") {
 		t.Fatalf("md blob not rendered:\n%s", rec.Body)
 	}
 
 	// The tree page renders the directory's README below the listing.
-	rec = x.do(http.MethodGet, "/browse/alice/app/-/tree/", nil, session)
+	rec = x.do(http.MethodGet, "/browse/app/-/tree/", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("tree = %d", rec.Code)
 	}
@@ -237,14 +278,14 @@ func TestBrowseHighlightAndMarkdown(t *testing.T) {
 
 func TestBrowseMermaid(t *testing.T) {
 	x := newHarness(t)
-	x.seedBrowseRepo("alice/app", "main")
+	x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
 	const script = "/ui/static/mermaid.min.js"
 
 	// A markdown blob with a mermaid fence renders the diagram container AND pulls
 	// in the mermaid script.
-	rec := x.do(http.MethodGet, "/browse/alice/app/-/blob/diagram.md?ref=main", nil, session)
+	rec := x.do(http.MethodGet, "/browse/app/-/blob/diagram.md?ref=main", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("diagram blob = %d (%s)", rec.Code, rec.Body)
 	}
@@ -256,7 +297,7 @@ func TestBrowseMermaid(t *testing.T) {
 	}
 
 	// A markdown blob without a diagram must NOT pull in the script (conditional).
-	rec = x.do(http.MethodGet, "/browse/alice/app/-/blob/README.md?ref=main", nil, session)
+	rec = x.do(http.MethodGet, "/browse/app/-/blob/README.md?ref=main", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("readme blob = %d", rec.Code)
 	}
@@ -279,11 +320,11 @@ func TestBrowseMermaid(t *testing.T) {
 
 func TestBrowseBlobSizeGuard(t *testing.T) {
 	x := newHarness(t)
-	x.seedBrowseRepo("alice/app", "main")
+	x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
 	// A blob over the cap falls back to a plain <pre>, no chroma markup.
-	rec := x.do(http.MethodGet, "/browse/alice/app/-/blob/big.go?ref=main", nil, session)
+	rec := x.do(http.MethodGet, "/browse/app/-/blob/big.go?ref=main", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("big blob = %d", rec.Code)
 	}
@@ -297,18 +338,18 @@ func TestBrowseBlobSizeGuard(t *testing.T) {
 
 func TestBrowseNotFoundAndTraversal(t *testing.T) {
 	x := newHarness(t)
-	x.seedBrowseRepo("alice/app", "main")
+	x.seedBrowseRepo("app", "main")
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
 	cases := []struct {
 		name, target string
 	}{
-		{"unknown repo", "/browse/bob/ghost/-/tree/?ref=main"},
-		{"unknown ref", "/browse/alice/app/-/tree/?ref=nope"},
+		{"unknown repo", "/browse/ghost/-/tree/?ref=main"},
+		{"unknown ref", "/browse/app/-/tree/?ref=nope"},
 		// The path arrives as an uncleaned query param, so it reaches the
 		// reader's safePath guard rather than being normalized by the mux.
-		{"path traversal", "/browse/alice/app/-/commits?ref=main&path=../etc/passwd"},
-		{"missing blob", "/browse/alice/app/-/blob/nope.txt?ref=main"},
+		{"path traversal", "/browse/app/-/commits?ref=main&path=../etc/passwd"},
+		{"missing blob", "/browse/app/-/blob/nope.txt?ref=main"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

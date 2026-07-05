@@ -24,7 +24,7 @@ func newSvc(t *testing.T) (*Service, int64) {
 		t.Fatalf("meta.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = md.Close() })
-	r, err := md.CreateRepo(context.Background(), "atmin/app", "main")
+	r, err := md.CreateRepo(context.Background(), "app", "main")
 	if err != nil {
 		t.Fatalf("CreateRepo: %v", err)
 	}

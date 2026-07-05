@@ -9,11 +9,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/atmin/gitmote/internal/hookrpc"
 )
+
+// zeroSHA is git's all-zero object id: the "absent" side of a create (old) or a
+// delete (new).
+const zeroSHA = "0000000000000000000000000000000000000000"
 
 func main() {
 	if err := run(os.Stdin); err != nil {
@@ -45,6 +50,9 @@ func run(stdin io.Reader) error {
 	if err != nil {
 		return err
 	}
+	for i := range commands {
+		commands[i].Force = isForce(commands[i].Old, commands[i].New)
+	}
 
 	resp, err := hookrpc.Call(sock, hookrpc.Request{
 		Nonce:          nonce,
@@ -58,6 +66,24 @@ func run(stdin io.Reader) error {
 		return fmt.Errorf("push rejected: %s", resp.Reason)
 	}
 	return nil
+}
+
+// isForce reports whether a ref update rewrites history: a deletion (new is the
+// zero id) or a non-fast-forward (old is not an ancestor of new). A create (old
+// is the zero id) is not a force. It runs `git merge-base --is-ancestor` in the
+// bare repo, where receive-pack has both the existing objects and the pushed
+// ones (the quarantine) visible; a non-zero exit — not-ancestor, or any git
+// error — is treated as a force so the default-branch guard fails safe.
+func isForce(old, new string) bool {
+	switch {
+	case new == zeroSHA:
+		return true // delete
+	case old == zeroSHA:
+		return false // create
+	default:
+		err := exec.Command("git", "merge-base", "--is-ancestor", old, new).Run()
+		return err != nil // exit 0 = ancestor (fast-forward); non-zero = non-fast-forward
+	}
 }
 
 // parseCommands reads the `<old> <new> <ref>` lines git feeds a pre-receive hook.

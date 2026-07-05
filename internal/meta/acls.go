@@ -1,6 +1,9 @@
 package meta
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Perm is a repository access level, ordered read < write < admin. It matches
 // the CHECK constraint on acls.perm.
@@ -61,6 +64,27 @@ func (m *Metadata) DeleteACL(ctx context.Context, repoID, userID int64) error {
 	_, err := m.db.ExecContext(ctx,
 		`DELETE FROM acls WHERE repo_id = ? AND user_id = ?`, repoID, userID)
 	return err
+}
+
+// CanRead reports whether a viewer may read repo: a public repo is readable by
+// anyone (userID 0 = anonymous); a private repo needs any ACL grant (read,
+// write, or admin). It is the visibility-aware repo-read shared by the git-read
+// and browse paths (docs/architecture/urls.md, auth.md).
+func (m *Metadata) CanRead(ctx context.Context, repo *Repo, userID int64) (bool, error) {
+	if repo.Public() {
+		return true, nil
+	}
+	if userID == 0 {
+		return false, nil
+	}
+	_, err := m.GetACL(ctx, repo.ID, userID)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // GetACL returns user's permission on repo, or ErrNotFound when none is set

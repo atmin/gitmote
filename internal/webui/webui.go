@@ -6,9 +6,11 @@
 // s3lite tables and object store the git path uses; it introduces no new source
 // of truth.
 //
-// Access is gated on the global-admin role (users.is_admin). A browser logs in
-// by pasting a personal access token once (verified through the same path git
-// auth uses); the server then issues a signed, stateless session cookie.
+// Management (create/list repos, tokens, users, ACLs, secrets) is gated on the
+// global-admin role (users.is_admin); read-only browsing is gated on repo-read
+// (public → anyone, private → an ACL — see authorizeRead). A browser logs in by
+// pasting a personal access token once (verified through the same path git auth
+// uses); the server then issues a signed, stateless session cookie.
 package webui
 
 import (
@@ -53,12 +55,6 @@ type SecretsAdmin interface {
 	SetSecret(ctx context.Context, repoID int64, name, value string) error
 	ListSecretNames(ctx context.Context, repoID int64) ([]string, error)
 	DeleteSecret(ctx context.Context, repoID int64, name string) error
-}
-
-// reservedOwners are top-level path segments the server already routes; a repo
-// whose owner is one of these would shadow those routes, so creation refuses it.
-var reservedOwners = map[string]bool{
-	"ui": true, "login": true, "logout": true, "healthz": true, "version": true,
 }
 
 // nameSegment matches a valid owner or repo path segment.
@@ -167,10 +163,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ui/secrets", h.requireAdmin(h.postSecret))
 	mux.HandleFunc("POST /ui/secrets/delete", h.requireAdmin(h.postDeleteSecret))
 
-	// Read-only browsing. The repo name contains slashes and the action tail is
-	// split manually on "/-/" (see browse), so one subtree handler covers all
-	// of tree/blob/raw/commits/commit.
-	mux.HandleFunc("GET /browse/{rest...}", h.requireAdmin(h.browse))
+	// Read-only browsing. Gated on repo-read (public → anyone, private → an ACL),
+	// not on admin — this is what makes spectators and public repos usable; the
+	// per-request check lives in browse via authorizeRead. The action tail is
+	// split manually on "/-/" (see browse), so one subtree handler covers all of
+	// tree/blob/raw/commits/commit.
+	mux.HandleFunc("GET /browse/{rest...}", h.browse)
 
 	// The vendored mermaid library for diagram rendering, served same-origin.
 	// Public and non-sensitive (a pinned copy of an open-source library), so it
@@ -291,10 +289,8 @@ func (h *Handler) postRepo(w http.ResponseWriter, r *http.Request) {
 		h.renderRepos(w, r, "", "owner and name must be alphanumeric (._- allowed, not leading)")
 		return
 	}
-	if reservedOwners[owner] {
-		h.renderRepos(w, r, "", "owner is reserved: "+owner)
-		return
-	}
+	// The reserved-name and structural rules live in meta.CreateRepo (one source
+	// for routing + validation); its error is surfaced below.
 	ownerUser, err := h.md.GetUser(r.Context(), owner)
 	if errors.Is(err, meta.ErrNotFound) {
 		h.renderRepos(w, r, "", "no such user for owner: "+owner)
@@ -304,8 +300,9 @@ func (h *Handler) postRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	full := owner + "/" + name
-	repo, err := h.md.CreateRepo(r.Context(), full, branch)
+	// Flat namespace: the repo is a single path segment (no owner/ prefix).
+	// CreateRepo enforces the reserved-name and structural rules.
+	repo, err := h.md.CreateRepo(r.Context(), name, branch)
 	if err != nil {
 		h.renderRepos(w, r, "", "create repo: "+err.Error())
 		return
@@ -316,7 +313,7 @@ func (h *Handler) postRepo(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, "grant owner acl", err)
 		return
 	}
-	h.renderRepos(w, r, "created "+full, "")
+	h.renderRepos(w, r, "created "+name, "")
 }
 
 func (h *Handler) postDefaultBranch(w http.ResponseWriter, r *http.Request) {

@@ -41,7 +41,7 @@ token to the logs behind a `SAVE IT NOW` banner — grab it there (no setup page
 Then sign in at <http://localhost:8080/login> by pasting it, and clone/push:
 
 ```sh
-git clone http://admin:<token>@localhost:8080/<owner>/<repo>   # create the repo in /ui first
+git clone http://admin:<token>@localhost:8080/<repo>   # create the repo in /ui first
 ```
 
 Lost the token? It's never stored (only its hash), so re-mint one — stop the
@@ -59,7 +59,7 @@ env surface, CI, and the Scaleway deployment.
 
 `make dev` gives you a running instance in one command: it builds the binaries,
 starts MinIO in a container (S3 on :9100), runs gitmote **natively** on :8080,
-and ensures an admin + a `atmin/gitmote` repo (auto-bootstrap), minting a fresh
+and ensures an admin + a `gitmote` repo (auto-bootstrap), minting a fresh
 token each run and printing it. State (the metadata DB and object cache) persists
 under `data/`, so repos and history survive restarts:
 

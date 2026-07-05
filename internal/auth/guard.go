@@ -21,30 +21,47 @@ type Guard struct {
 // NewGuard returns a Guard backed by the metadata layer.
 func NewGuard(md *meta.Metadata) *Guard { return &Guard{md: md, now: time.Now} }
 
-// Authorize verifies the request's token and checks the resulting user holds at
-// least perm on repoName. The returned error selects the response:
+// Authorize checks the request may act on repoName at perm. A public repo is
+// readable with no token; every other case needs a valid token plus the ACL
+// level. The returned error selects the response:
 //
-//   - ErrUnauthorized — no/invalid token: 401 with a Basic challenge;
+//   - ErrUnauthorized — no/invalid token where one is required: 401 with a Basic challenge;
 //   - ErrForbidden — authenticated but lacking the permission: 403;
 //   - meta.ErrNotFound — the repo does not exist: 404;
 //   - any other error — an internal failure: 500.
 //
-// It returns the authenticated user on success.
+// On success it returns the authenticated user, or nil for an anonymous read of
+// a public repo (reads never dereference the user; only the write path does).
 func (g *Guard) Authorize(r *http.Request, repoName string, perm meta.Perm) (*meta.User, error) {
 	ctx := r.Context()
 
-	raw, ok := tokenFromRequest(r)
-	if !ok {
-		return nil, ErrUnauthorized
+	raw, hasToken := tokenFromRequest(r)
+
+	repo, err := g.md.GetRepo(ctx, repoName)
+	if errors.Is(err, meta.ErrNotFound) {
+		// Hide a private forge's repo inventory from anonymous callers: an
+		// unauthenticated request never learns whether a repo exists (it gets the
+		// same 401 challenge whether or not it does).
+		if !hasToken {
+			return nil, ErrUnauthorized
+		}
+		return nil, err // 404 to an authenticated caller
 	}
-	vt, err := g.verify(ctx, raw)
 	if err != nil {
 		return nil, err
 	}
 
-	repo, err := g.md.GetRepo(ctx, repoName)
+	// Anonymous: allowed only for reading a public repo; anything else needs a token.
+	if !hasToken {
+		if perm == meta.PermRead && repo.Public() {
+			return nil, nil
+		}
+		return nil, ErrUnauthorized
+	}
+
+	vt, err := g.verify(ctx, raw)
 	if err != nil {
-		return nil, err // meta.ErrNotFound flows through to a 404
+		return nil, err
 	}
 
 	// Token constraints gate before the ACL: a repo-scoped token reaches only its
@@ -55,6 +72,19 @@ func (g *Guard) Authorize(r *http.Request, repoName string, perm meta.Perm) (*me
 	}
 	if vt.readOnly && permRank[perm] > permRank[meta.PermRead] {
 		return nil, ErrForbidden
+	}
+
+	// Reading is gated by repo-read (public → anyone, private → any ACL), not by a
+	// specific ACL level; write/admin require the matching ACL level.
+	if perm == meta.PermRead {
+		ok, err := g.md.CanRead(ctx, repo, vt.user.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, ErrForbidden
+		}
+		return &vt.user, nil
 	}
 
 	granted, err := g.md.GetACL(ctx, repo.ID, vt.user.ID)

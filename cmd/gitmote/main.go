@@ -77,7 +77,7 @@ func main() {
 func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 	handle := fs.String("handle", os.Getenv("GITMOTE_ADMIN_HANDLE"), "admin user handle (default admin, or GITMOTE_ADMIN_HANDLE)")
-	repoName := fs.String("repo", "", "optional initial repository, e.g. atmin/gitmote (repos are otherwise made in the UI)")
+	repoName := fs.String("repo", "", "optional initial repository, e.g. gitmote (repos are otherwise made in the UI)")
 	branch := fs.String("default-branch", "main", "default branch for the initial repo")
 	reissue := fs.Bool("reissue", false, "mint a fresh token for the existing admin (recover a lost token)")
 	if err := fs.Parse(args); err != nil {
@@ -122,7 +122,7 @@ func writeBootstrapBanner(out io.Writer, res *bootstrap.Result) error {
 	const bar = "========================================================================"
 	repoLines := fmt.Sprintf(
 		"  Repos:    create one in the UI, then clone:\n"+
-			"            git clone http://%s:<token>@<host>/<owner>/<repo>\n",
+			"            git clone http://%s:<token>@<host>/<repo>\n",
 		res.Admin.Handle)
 	if res.Repo != nil {
 		repoLines = fmt.Sprintf(

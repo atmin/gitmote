@@ -23,10 +23,15 @@ const (
 
 // RefCommand is one `<old> <new> <ref>` line from the hook's stdin. old/new are
 // object ids; the all-zero id means "absent" (create when old, delete when new).
+// Force is set by the hook when the update rewrites history — a deletion, or a
+// non-fast-forward (old is not an ancestor of new). The parent uses it to gate
+// force-pushes of the default branch to admins (docs/architecture/urls.md); the
+// hook computes it because only it sits in the repo with the objects present.
 type RefCommand struct {
-	Old string `json:"old"`
-	New string `json:"new"`
-	Ref string `json:"ref"`
+	Old   string `json:"old"`
+	New   string `json:"new"`
+	Ref   string `json:"ref"`
+	Force bool   `json:"force"`
 }
 
 // Request is the hook → parent message: the nonce, the ref commands, and the

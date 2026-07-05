@@ -22,8 +22,8 @@ const DefaultAdminHandle = "admin"
 type Options struct {
 	// AdminHandle is the first global admin's handle; empty means DefaultAdminHandle.
 	AdminHandle string
-	// RepoName is an optional initial repo, e.g. "atmin/gitmote"; empty creates
-	// none (repos are made in the UI).
+	// RepoName is an optional initial repo, e.g. "gitmote"; empty creates none
+	// (repos are made in the UI).
 	RepoName string
 	// DefaultBranch for the initial repo; empty means "main". Ignored without a repo.
 	DefaultBranch string

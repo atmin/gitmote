@@ -400,7 +400,9 @@ func TestAfterCommitPanicLeavesPushGreen(t *testing.T) {
 // tryGit runs a git command hermetically and returns its combined output and
 // error without failing the test — for operations expected to be rejected.
 func tryGit(dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
+	// Disable any credential helper so a token from an earlier authed push is not
+	// cached and reused, keeping an "anonymous" request genuinely anonymous.
+	cmd := exec.CommandContext(context.Background(), "git", append([]string{"-c", "credential.helper="}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
@@ -619,6 +621,130 @@ func TestAtomicMultiRefRollback(t *testing.T) {
 	}
 	if got := serverRefSHA(t, m, r.ID, "refs/heads/feature"); got != "" {
 		t.Errorf("feature = %q, want absent — atomic rollback", got)
+	}
+}
+
+// TestDefaultBranchForcePushGuard is the admin-only default-branch protection: a
+// write collaborator may fast-forward the default branch and force-push a
+// non-default branch, but a non-fast-forward of the default branch is refused;
+// an admin may force-push it. (Golden + failure both, per CONTRIBUTING.)
+func TestDefaultBranchForcePushGuard(t *testing.T) {
+	ctx := context.Background()
+	srv, m, _, _ := newWriteServer(t)
+	r, _ := m.CreateRepo(ctx, repoName, "main")
+	writeRaw := mintUser(t, m, r.ID, "collab", meta.PermWrite)
+	adminRaw := mintUser(t, m, r.ID, "boss", meta.PermAdmin)
+	writeRemote := authedURL(srv.URL, writeRaw) + "/" + repoName
+	adminRemote := authedURL(srv.URL, adminRaw) + "/" + repoName
+
+	// The collaborator establishes main (a create) and fast-forwards it — allowed.
+	src := initCommit(t, "one\n")
+	base := git(t, src, "rev-parse", "HEAD")
+	git(t, src, "push", writeRemote, "main")
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "commit", "-am", "ff")
+	git(t, src, "push", writeRemote, "main")
+	ff := git(t, src, "rev-parse", "HEAD")
+
+	// The collaborator rewrites history off base and force-pushes the DEFAULT
+	// branch — refused; main stays at the fast-forward tip.
+	git(t, src, "reset", "--hard", base)
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("one\nrewritten\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "commit", "-am", "rewrite")
+	rewritten := git(t, src, "rev-parse", "HEAD")
+	if out, err := tryGit(src, "push", "--force", writeRemote, "main"); err == nil {
+		t.Fatalf("collaborator force-push of the default branch succeeded, want refusal\n%s", out)
+	}
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != ff {
+		t.Errorf("main after refused force = %q, want unchanged %q", got, ff)
+	}
+
+	// The same rewrite is fine on a NON-default branch: create feature at the
+	// fast-forward tip, then force-push the rewrite over it — allowed.
+	git(t, src, "push", writeRemote, ff+":refs/heads/feature")
+	if out, err := tryGit(src, "push", "--force", writeRemote, "HEAD:refs/heads/feature"); err != nil {
+		t.Fatalf("collaborator force-push of a non-default branch failed, want ok: %v\n%s", err, out)
+	}
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/feature"); got != rewritten {
+		t.Errorf("feature after force = %q, want %q", got, rewritten)
+	}
+
+	// An admin may force-push the default branch.
+	if out, err := tryGit(src, "push", "--force", adminRemote, "main"); err != nil {
+		t.Fatalf("admin force-push of the default branch failed, want ok: %v\n%s", err, out)
+	}
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != rewritten {
+		t.Errorf("main after admin force = %q, want %q", got, rewritten)
+	}
+}
+
+// TestPublicRepoAnonymousReadWriteRefused proves visibility on the transport: a
+// public repo clones with no credentials, but an anonymous push is refused.
+func TestPublicRepoAnonymousReadWriteRefused(t *testing.T) {
+	ctx := context.Background()
+	srv, m, _, _ := newWriteServer(t)
+	r, _ := m.CreateRepo(ctx, repoName, "main")
+	if err := m.SetVisibility(ctx, r.ID, meta.VisibilityPublic); err != nil {
+		t.Fatalf("SetVisibility: %v", err)
+	}
+	writeRaw := mintUser(t, m, r.ID, "collab", meta.PermWrite)
+
+	// A collaborator seeds main.
+	src := initCommit(t, "hello\n")
+	git(t, src, "push", authedURL(srv.URL, writeRaw)+"/"+repoName, "main")
+	head := git(t, src, "rev-parse", "HEAD")
+
+	// Anonymous clone (no credentials) succeeds and matches.
+	dst := filepath.Join(t.TempDir(), "clone")
+	git(t, "", "clone", srv.URL+"/"+repoName, dst)
+	if got := git(t, dst, "rev-parse", "HEAD"); got != head {
+		t.Errorf("anon clone HEAD = %q, want %q", got, head)
+	}
+
+	// Anonymous push is refused, main unchanged.
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("hello\nmore\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "commit", "-am", "next")
+	if out, err := tryGit(src, "push", srv.URL+"/"+repoName, "main"); err == nil {
+		t.Fatalf("anonymous push to a public repo succeeded, want refusal\n%s", out)
+	}
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head {
+		t.Errorf("main after refused anon push = %q, want unchanged %q", got, head)
+	}
+}
+
+// TestPrivateRepoSpectatorCannotPush proves the spectator (read ACL) can clone a
+// private repo but not push it.
+func TestPrivateRepoSpectatorCannotPush(t *testing.T) {
+	ctx := context.Background()
+	srv, m, _, _ := newWriteServer(t)
+	r, _ := m.CreateRepo(ctx, repoName, "main") // private by default
+	writeRaw := mintUser(t, m, r.ID, "collab", meta.PermWrite)
+	readRaw := mintUser(t, m, r.ID, "spectator", meta.PermRead)
+
+	src := initCommit(t, "hello\n")
+	git(t, src, "push", authedURL(srv.URL, writeRaw)+"/"+repoName, "main")
+	head := git(t, src, "rev-parse", "HEAD")
+
+	// The spectator can clone (read ACL on a private repo).
+	dst := filepath.Join(t.TempDir(), "clone")
+	git(t, "", "clone", authedURL(srv.URL, readRaw)+"/"+repoName, dst)
+
+	// But cannot push.
+	if err := os.WriteFile(filepath.Join(dst, "file.txt"), []byte("hello\nedit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dst, "commit", "-am", "spectator edit")
+	if out, err := tryGit(dst, "push", authedURL(srv.URL, readRaw)+"/"+repoName, "main"); err == nil {
+		t.Fatalf("spectator push succeeded, want refusal\n%s", out)
+	}
+	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head {
+		t.Errorf("main after refused spectator push = %q, want unchanged %q", got, head)
 	}
 }
 

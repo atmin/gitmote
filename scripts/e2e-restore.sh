@@ -47,10 +47,10 @@ $DC up -d minio
 $DC run --rm mc
 
 echo "--- bootstrap (replicates initial metadata to S3) ---"
-BOOT="$($DC run --rm -T gitmote bootstrap -handle atmin -repo atmin/gitmote -default-branch "$BRANCH")"
+BOOT="$($DC run --rm -T gitmote bootstrap -handle atmin -repo gitmote -default-branch "$BRANCH")"
 TOKEN="$(printf '%s\n' "$BOOT" | grep -oE 'gmt_[0-9a-f]+\.[0-9a-f]+' | head -1)"
 [ -n "$TOKEN" ] || { printf '%s\n' "$BOOT"; fail "no token in bootstrap output"; }
-REPO_URL="http://atmin:${TOKEN}@localhost:8080/atmin/gitmote"
+REPO_URL="http://atmin:${TOKEN}@localhost:8080/gitmote"
 
 echo "--- start server + push ($BRANCH @ $PUSHED) ---"
 $DC up -d gitmote

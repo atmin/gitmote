@@ -238,7 +238,7 @@ scw container container create \
 scw container domain create container-id=<CONTAINER_ID> hostname=gitmote.atmin.net
 scw container domain list   container-id=<CONTAINER_ID>   # status pending → ready (minutes)
 #    Note: gitmote has no route at "/", so http(s)://gitmote.atmin.net/ returns 404
-#    by design; check /healthz for liveness. Git lives under /<owner>/<repo>/….
+#    by design; check /healthz for liveness. Git lives under /<repo>/….
 
 # 5. CI runner Serverless Job — point its definition at the public GHCR runner
 #    image (one image serves all repos; per-job env is injected at trigger). Set
@@ -316,8 +316,8 @@ git push origin master
 
 ```bash
 # Push the gitmote repo over HTTPS to the deployed instance:
-git push https://atmin:<token>@gitmote.atmin.net/atmin/gitmote HEAD:refs/heads/master
-git clone https://atmin:<token>@gitmote.atmin.net/atmin/gitmote /tmp/gitmote-clone
+git push https://atmin:<token>@gitmote.atmin.net/gitmote HEAD:refs/heads/master
+git clone https://atmin:<token>@gitmote.atmin.net/gitmote /tmp/gitmote-clone
 git -C /tmp/gitmote-clone fsck --full   # clean
 ```
 

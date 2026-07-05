@@ -141,21 +141,21 @@ func TestGoldenPath(t *testing.T) {
 	// Create a repo owned by alice.
 	rec := x.do(http.MethodPost, "/ui/repos",
 		url.Values{"owner": {"alice"}, "name": {"app"}, "default_branch": {"main"}}, session)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "created alice/app") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "created app") {
 		t.Fatalf("create repo: %d (%s)", rec.Code, rec.Body)
 	}
-	repo, err := x.md.GetRepo(ctx, "alice/app")
+	repo, err := x.md.GetRepo(ctx, "app")
 	if err != nil {
 		t.Fatalf("repo not created: %v", err)
 	}
 
 	// Set default branch.
 	rec = x.do(http.MethodPost, "/ui/repos/default-branch",
-		url.Values{"repo": {"alice/app"}, "default_branch": {"trunk"}}, session)
+		url.Values{"repo": {"app"}, "default_branch": {"trunk"}}, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("set default branch: %d (%s)", rec.Code, rec.Body)
 	}
-	if got, _ := x.md.GetRepo(ctx, "alice/app"); got.DefaultBranch != "trunk" {
+	if got, _ := x.md.GetRepo(ctx, "app"); got.DefaultBranch != "trunk" {
 		t.Errorf("default branch = %q, want trunk", got.DefaultBranch)
 	}
 
@@ -172,7 +172,7 @@ func TestGoldenPath(t *testing.T) {
 
 	// Grant write to alice on her repo.
 	rec = x.do(http.MethodPost, "/ui/acls",
-		url.Values{"repo": {"alice/app"}, "handle": {"alice"}, "perm": {"write"}}, session)
+		url.Values{"repo": {"app"}, "handle": {"alice"}, "perm": {"write"}}, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("grant acl: %d (%s)", rec.Code, rec.Body)
 	}
@@ -182,7 +182,7 @@ func TestGoldenPath(t *testing.T) {
 
 	// Revoke it again.
 	rec = x.do(http.MethodPost, "/ui/acls/revoke",
-		url.Values{"repo": {"alice/app"}, "user_id": {itoa(alice.ID)}}, session)
+		url.Values{"repo": {"app"}, "user_id": {itoa(alice.ID)}}, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("revoke acl: %d (%s)", rec.Code, rec.Body)
 	}
@@ -208,7 +208,7 @@ func TestCreateRepoGrantsOwnerAdmin(t *testing.T) {
 	}
 
 	bob, _ := x.md.GetUser(ctx, "bob")
-	repo, err := x.md.GetRepo(ctx, "bob/proj")
+	repo, err := x.md.GetRepo(ctx, "proj")
 	if err != nil {
 		t.Fatalf("repo not created: %v", err)
 	}
@@ -257,10 +257,13 @@ func TestCreateRepoRejectsReservedAndUnknownOwner(t *testing.T) {
 	x := newHarness(t)
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	// Reserved top-level owner would shadow a route.
-	rec := x.do(http.MethodPost, "/ui/repos", url.Values{"owner": {"ui"}, "name": {"x"}}, session)
+	// A reserved repo name (a global route) is refused by meta.CreateRepo.
+	rec := x.do(http.MethodPost, "/ui/repos", url.Values{"owner": {"root"}, "name": {"login"}}, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "reserved") {
-		t.Errorf("reserved owner: %d (%s)", rec.Code, rec.Body)
+		t.Errorf("reserved name: %d (%s)", rec.Code, rec.Body)
+	}
+	if _, err := x.md.GetRepo(context.Background(), "login"); err == nil {
+		t.Error("repo created despite a reserved name")
 	}
 
 	// Owner must be an existing user.
@@ -268,7 +271,7 @@ func TestCreateRepoRejectsReservedAndUnknownOwner(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "no such user") {
 		t.Errorf("unknown owner: %d (%s)", rec.Code, rec.Body)
 	}
-	if _, err := x.md.GetRepo(context.Background(), "ghost/x"); err == nil {
+	if _, err := x.md.GetRepo(context.Background(), "x"); err == nil {
 		t.Error("repo created despite unknown owner")
 	}
 }

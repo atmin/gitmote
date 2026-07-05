@@ -9,12 +9,12 @@ import (
 func TestSetDefaultBranch(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)
-	r := seedRepo(t, m, "atmin/app")
+	r := seedRepo(t, m, "app")
 
 	if err := m.SetDefaultBranch(ctx, r.ID, "trunk"); err != nil {
 		t.Fatalf("SetDefaultBranch: %v", err)
 	}
-	got, err := m.GetRepo(ctx, "atmin/app")
+	got, err := m.GetRepo(ctx, "app")
 	if err != nil {
 		t.Fatalf("GetRepo: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestDeleteToken(t *testing.T) {
 func TestListAndDeleteACL(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)
-	r := seedRepo(t, m, "atmin/app")
+	r := seedRepo(t, m, "app")
 	alice, _ := m.CreateUser(ctx, "alice")
 	bob, _ := m.CreateUser(ctx, "bob")
 	if err := m.SetACL(ctx, r.ID, bob.ID, PermWrite); err != nil {

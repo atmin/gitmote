@@ -123,7 +123,7 @@ func TestMaterialize(t *testing.T) {
 			ctx := context.Background()
 			m := openMeta(t)
 			s := store.NewMem()
-			const repoName = "atmin/dotfiles"
+			const repoName = "dotfiles"
 			branch, head := seedRepo(t, m, s, repoName, tc.repack)
 
 			mz := New(m, s, t.TempDir())
@@ -192,7 +192,7 @@ func TestMaterializeRefsNoObjects(t *testing.T) {
 	ctx := context.Background()
 	m := openMeta(t)
 	s := &spyStore{Store: store.NewMem()}
-	const repoName = "atmin/dotfiles"
+	const repoName = "dotfiles"
 	branch, head := seedRepo(t, m, s, repoName, false)
 
 	// An annotated tag: meta points the ref at the tag object, which is never
@@ -243,20 +243,20 @@ func TestMaterializeRefsNoObjects(t *testing.T) {
 
 func TestMaterializeUnknownRepo(t *testing.T) {
 	mz := New(openMeta(t), store.NewMem(), t.TempDir())
-	if _, err := mz.Materialize(context.Background(), "nope/nope"); !errors.Is(err, meta.ErrNotFound) {
+	if _, err := mz.Materialize(context.Background(), "nope"); !errors.Is(err, meta.ErrNotFound) {
 		t.Fatalf("Materialize(unknown) = %v, want meta.ErrNotFound", err)
 	}
 }
 
-func TestMaterializeRejectsUnsafeName(t *testing.T) {
-	ctx := context.Background()
-	m := openMeta(t)
-	// A repo whose name would escape the cache root must never materialize.
-	if _, err := m.CreateRepo(ctx, "../evil", "main"); err != nil {
-		t.Fatalf("CreateRepo: %v", err)
-	}
-	mz := New(m, store.NewMem(), t.TempDir())
-	if _, err := mz.Materialize(ctx, "../evil"); err == nil {
-		t.Fatal("Materialize(../evil) succeeded, want unsafe-name error")
+// TestRepoDirRejectsUnsafeName guards the cache-root escape defense directly:
+// CreateRepo now forbids "/" in a name, so such a name can't reach the
+// materializer through meta, but repoDir stays defense-in-depth against any name
+// that would resolve outside the cache root.
+func TestRepoDirRejectsUnsafeName(t *testing.T) {
+	mz := New(openMeta(t), store.NewMem(), t.TempDir())
+	for _, name := range []string{"../evil", "/etc/passwd", "a/../../b", ""} {
+		if _, err := mz.repoDir(name); err == nil {
+			t.Errorf("repoDir(%q) succeeded, want unsafe-name error", name)
+		}
 	}
 }

@@ -147,7 +147,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // pre-receive hook wired to call back on the socket. The hook's callback does
 // the object PUT + ref CAS (see Writer.handle).
 func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, repoName string, pusherID int64) {
-	push, err := h.writer.Begin(r.Context(), repoName)
+	push, err := h.writer.Begin(r.Context(), repoName, pusherID)
 	if err != nil {
 		if errors.Is(err, meta.ErrNotFound) {
 			http.NotFound(w, r)

@@ -18,13 +18,15 @@ import (
 	"github.com/atmin/gitmote/internal/store"
 )
 
-const repoName = "atmin/dotfiles"
+const repoName = "dotfiles"
 
 // git runs a git command hermetically and returns its trimmed combined output,
 // failing the test on a nonzero exit.
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.CommandContext(context.Background(), "git", args...)
+	// Disable any credential helper so a token in one URL is never cached and
+	// silently reused by a later "anonymous" request to the same host:port.
+	cmd := exec.CommandContext(context.Background(), "git", append([]string{"-c", "credential.helper="}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
@@ -269,13 +271,13 @@ func TestParseGitPath(t *testing.T) {
 		wantEndpoint string
 		wantOK       bool
 	}{
-		{"/atmin/dotfiles/info/refs", "atmin/dotfiles", "info/refs", true},
-		{"/atmin/dotfiles/git-upload-pack", "atmin/dotfiles", "git-upload-pack", true},
-		{"/atmin/dotfiles/git-receive-pack", "atmin/dotfiles", "git-receive-pack", true},
+		{"/dotfiles/info/refs", "dotfiles", "info/refs", true},
+		{"/dotfiles/git-upload-pack", "dotfiles", "git-upload-pack", true},
+		{"/dotfiles/git-receive-pack", "dotfiles", "git-receive-pack", true},
 		{"/one/info/refs", "one", "info/refs", true},
-		{"/info/refs", "", "", false},           // no repo
-		{"/git-upload-pack", "", "", false},     // no repo
-		{"/atmin/dotfiles/HEAD", "", "", false}, // not a served endpoint
+		{"/info/refs", "", "", false},       // no repo
+		{"/git-upload-pack", "", "", false}, // no repo
+		{"/dotfiles/HEAD", "", "", false},   // not a served endpoint
 		{"/", "", "", false},
 	}
 	for _, c := range cases {
