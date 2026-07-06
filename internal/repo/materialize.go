@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/atmin/gitmote/internal/meta"
 	"github.com/atmin/gitmote/internal/store"
 )
@@ -133,16 +135,26 @@ func (mz *Materializer) repoDir(name string) (string, error) {
 	return filepath.Join(mz.root, filepath.FromSlash(name)), nil
 }
 
+// hydrateConcurrency bounds the parallel object copies during hydration. Each
+// missing object is one S3 GET, and this is the cold-start / first-request cost
+// (docs/notes/object-hydration.md); fetching them concurrently turns N serial
+// round-trips into N/hydrateConcurrency. Kept modest to bound open sockets and
+// file descriptors against a large repo.
+const hydrateConcurrency = 16
+
 // hydrateObjects copies every object under the repo's store prefix onto disk,
 // mirroring the store's {repo}/objects/… layout into the bare repo's objects/
 // dir. Objects are immutable and content-addressed, so an object already on
-// disk is left untouched.
+// disk is left untouched, and copies are independent — hydrateConcurrency run
+// in parallel. A copy error cancels the group and aborts the rest.
 func (mz *Materializer) hydrateObjects(ctx context.Context, name, dir string) error {
 	prefix := name + "/objects/"
 	keys, err := mz.store.List(ctx, prefix)
 	if err != nil {
 		return err
 	}
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(hydrateConcurrency)
 	for _, key := range keys {
 		rel := strings.TrimPrefix(key, name+"/") // e.g. "objects/ab/cdef…"
 		dst := filepath.Join(dir, filepath.FromSlash(rel))
@@ -151,11 +163,9 @@ func (mz *Materializer) hydrateObjects(ctx context.Context, name, dir string) er
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err := mz.copyObject(ctx, key, dst); err != nil {
-			return err
-		}
+		g.Go(func() error { return mz.copyObject(ctx, key, dst) })
 	}
-	return nil
+	return g.Wait()
 }
 
 // copyObject streams one store object to dst, writing to a temp file first and

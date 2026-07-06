@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -259,4 +260,68 @@ func TestRepoDirRejectsUnsafeName(t *testing.T) {
 			t.Errorf("repoDir(%q) succeeded, want unsafe-name error", name)
 		}
 	}
+}
+
+// TestMaterializeManyObjectsParallel drives hydrateObjects with far more loose
+// objects than hydrateConcurrency, so the bounded pool actually queues, and
+// asserts the concurrent copies still reproduce a byte-identical, fsck-clean
+// repo (no torn objects, no lost keys) at the right head.
+func TestMaterializeManyObjectsParallel(t *testing.T) {
+	ctx := context.Background()
+	m := openMeta(t)
+	s := store.NewMem()
+	const repoName = "many"
+
+	// One commit touching 60 distinct files → 60 blobs + trees + a commit, well
+	// past hydrateConcurrency (16), forcing the pool to block and drain.
+	src := t.TempDir()
+	git(t, src, "init", "-b", "main", ".")
+	for i := 0; i < 60; i++ {
+		name := fmt.Sprintf("f%02d.txt", i)
+		if err := os.WriteFile(filepath.Join(src, name), []byte(fmt.Sprintf("content %d\n", i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, src, "add", "-A")
+	git(t, src, "commit", "-m", "many files") // no repack: keep objects loose
+	branch := git(t, src, "rev-parse", "--abbrev-ref", "HEAD")
+	head := git(t, src, "rev-parse", "HEAD")
+
+	objRoot := filepath.Join(src, ".git", "objects")
+	loose := 0
+	err := filepath.WalkDir(objRoot, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(objRoot, p)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		loose++
+		return s.Put(ctx, repoName+"/objects/"+filepath.ToSlash(rel), bytes.NewReader(data))
+	})
+	if err != nil {
+		t.Fatalf("seed objects: %v", err)
+	}
+	if loose <= hydrateConcurrency {
+		t.Fatalf("seeded %d objects, need > hydrateConcurrency (%d) to exercise queueing", loose, hydrateConcurrency)
+	}
+
+	r, err := m.CreateRepo(ctx, repoName, branch)
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	if err := m.CASRef(ctx, r.ID, "refs/heads/"+branch, meta.ZeroSHA, head); err != nil {
+		t.Fatalf("CASRef: %v", err)
+	}
+
+	dir, err := New(m, s, t.TempDir()).Materialize(ctx, repoName)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	assertRepo(t, dir, branch, head)
 }
