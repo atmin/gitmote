@@ -22,10 +22,12 @@ const secretEnvPrefix = "GITMOTE_CI_SECRET_"
 // act's default nested-container behavior, unchanged.
 const actPlatformsEnv = "GITMOTE_ACT_PLATFORMS"
 
-// ActEngine runs .github/workflows with nektos/act — the locked engine
+// ActEngine runs the repo's workflows with nektos/act — the locked engine
 // (tasks/16-ci.md Stage 0 #1). act runs each job in a container via the local
-// Docker/podman daemon, so one definition runs both self-hosted and on the
-// GitHub mirror. It requires `act` on PATH and a reachable Docker daemon.
+// Docker/podman daemon and speaks GitHub-Actions YAML, so a workflow is
+// byte-identical whether it lives in .gitmote/workflows (run here) or
+// .github/workflows (run on the GitHub mirror — break-glass). It requires `act`
+// on PATH and a reachable Docker daemon.
 type ActEngine struct{}
 
 // Run invokes act over workflowDir inside repoDir on the default (push) event,

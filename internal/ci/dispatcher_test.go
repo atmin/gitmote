@@ -134,7 +134,7 @@ func TestDispatchOneWorkflowCreatesRunAndJob(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
 	r, head := seedRepo(t, md, s, "app", map[string]string{
-		".github/workflows/ci.yml": "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
+		".gitmote/workflows/ci.yml": "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
 	})
 
 	tr := &stubTrigger{}
@@ -175,8 +175,8 @@ func TestDispatchTwoWorkflowsCreateTwoJobs(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
 	r, head := seedRepo(t, md, s, "app", map[string]string{
-		".github/workflows/ci.yml":      "name: CI\non: push\n",
-		".github/workflows/deploy.yaml": "name: Deploy\non: push\n",
+		".gitmote/workflows/ci.yml":      "name: CI\non: push\n",
+		".gitmote/workflows/deploy.yaml": "name: Deploy\non: push\n",
 	})
 
 	newDispatcher(md, mz, &stubTrigger{}).Dispatch(ctx, branchEvent(r, head))
@@ -198,7 +198,7 @@ func TestDispatchTwoWorkflowsCreateTwoJobs(t *testing.T) {
 func TestDispatchNoWorkflowsNoRun(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
-	r, head := seedRepo(t, md, s, "app", nil) // no .github/workflows
+	r, head := seedRepo(t, md, s, "app", nil) // no .gitmote/workflows
 
 	newDispatcher(md, mz, &stubTrigger{}).Dispatch(ctx, branchEvent(r, head))
 
@@ -207,12 +207,30 @@ func TestDispatchNoWorkflowsNoRun(t *testing.T) {
 	}
 }
 
+// TestDispatchGitHubWorkflowsIgnored: a repo whose workflows live in
+// .github/workflows (a GitHub-mirrored repo, or gitmote's own repo) triggers no
+// gitmote run — gitmote reads .gitmote/workflows, so the directory declares the
+// forge and there is no double-run.
+func TestDispatchGitHubWorkflowsIgnored(t *testing.T) {
+	ctx := context.Background()
+	md, s, mz := newFixture(t)
+	r, head := seedRepo(t, md, s, "app", map[string]string{
+		".github/workflows/ci.yml": "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
+	})
+
+	newDispatcher(md, mz, &stubTrigger{}).Dispatch(ctx, branchEvent(r, head))
+
+	if runs, _ := md.ListRuns(ctx, r.ID, 0); len(runs) != 0 {
+		t.Errorf("runs = %d, want 0 (.github/workflows is GitHub's, not gitmote's)", len(runs))
+	}
+}
+
 func TestDispatchMalformedWorkflowFailsRun(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
 	r, head := seedRepo(t, md, s, "app", map[string]string{
-		".github/workflows/good.yml": "name: Good\non: push\n",
-		".github/workflows/bad.yml":  "name: Bad\n  : : not: valid: yaml\n\t- broken\n",
+		".gitmote/workflows/good.yml": "name: Good\non: push\n",
+		".gitmote/workflows/bad.yml":  "name: Bad\n  : : not: valid: yaml\n\t- broken\n",
 	})
 
 	// Must not panic; the push (simulated by the event) is unaffected.
@@ -236,7 +254,7 @@ func TestDispatchIgnoresTagsAndDeletes(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
 	r, head := seedRepo(t, md, s, "app", map[string]string{
-		".github/workflows/ci.yml": "name: CI\non: push\n",
+		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
 	})
 	d := newDispatcher(md, mz, &stubTrigger{})
 
@@ -258,7 +276,7 @@ func TestDispatchAllTriggersFailMarksRunError(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
 	r, head := seedRepo(t, md, s, "app", map[string]string{
-		".github/workflows/ci.yml": "name: CI\non: push\n",
+		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
 	tr := &stubTrigger{err: errors.New("scaleway down")}
@@ -278,8 +296,8 @@ func TestDispatchOneTriggerFailsOthersProceed(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
 	r, head := seedRepo(t, md, s, "app", map[string]string{
-		".github/workflows/a.yml": "name: A\non: push\n",
-		".github/workflows/b.yml": "name: B\non: push\n",
+		".gitmote/workflows/a.yml": "name: A\non: push\n",
+		".gitmote/workflows/b.yml": "name: B\non: push\n",
 	})
 
 	// Fail the first trigger, succeed the rest — one failure must not abort others.
@@ -334,7 +352,7 @@ func TestDispatchMintsScopedCloneToken(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
 	r, head := seedRepo(t, md, s, "app", map[string]string{
-		".github/workflows/ci.yml": "name: CI\non: push\n",
+		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
 	tr := &stubTrigger{}
@@ -372,7 +390,7 @@ func TestDispatchMintFailureLeavesRunUsable(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
 	r, head := seedRepo(t, md, s, "app", map[string]string{
-		".github/workflows/ci.yml": "name: CI\non: push\n",
+		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
 	// A mint failure is non-fatal: the run and job still record and trigger, with
@@ -407,7 +425,7 @@ func TestDispatchInjectsSecrets(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
 	r, head := seedRepo(t, md, s, "app", map[string]string{
-		".github/workflows/ci.yml": "name: CI\non: push\n",
+		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
 	tr := &stubTrigger{}
@@ -436,7 +454,7 @@ func TestDispatchSecretsFailureRunsWithout(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
 	r, head := seedRepo(t, md, s, "app", map[string]string{
-		".github/workflows/ci.yml": "name: CI\non: push\n",
+		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
 	// A secrets error is non-fatal: the job still triggers, just without secrets.

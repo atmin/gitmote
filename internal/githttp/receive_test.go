@@ -265,10 +265,10 @@ func initWorkflowCommit(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(src, ".github", "workflows"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(src, ".gitmote", "workflows"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(src, ".github", "workflows", "ci.yml"),
+	if err := os.WriteFile(filepath.Join(src, ".gitmote", "workflows", "ci.yml"),
 		[]byte("name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,7 @@ func TestAfterCommitEnqueuesRun(t *testing.T) {
 }
 
 // TestAfterCommitNoWorkflowNoRun confirms the discovery gate end-to-end: a real
-// push of a repo without .github/workflows records no run.
+// push of a repo without .gitmote/workflows records no run.
 func TestAfterCommitNoWorkflowNoRun(t *testing.T) {
 	ctx := context.Background()
 	srv, m, s, writer := newWriteServer(t)

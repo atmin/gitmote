@@ -19,6 +19,6 @@
 </table>
 {{if .More}}<p>Showing the most recent {{len .Runs}} runs; older runs exist.</p>{{end}}
 {{else}}
-<p>No CI runs yet for {{.Repo}}. Push a commit with <code>.github/workflows</code>.</p>
+<p>No CI runs yet for {{.Repo}}. Push a commit with <code>.gitmote/workflows</code>.</p>
 {{end}}
 {{template "bottom" .}}{{end}}

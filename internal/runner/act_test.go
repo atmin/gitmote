@@ -7,7 +7,7 @@ import (
 )
 
 func TestActArgsForwardsSecrets(t *testing.T) {
-	args, extra := actArgs(".github/workflows", []string{
+	args, extra := actArgs(".gitmote/workflows", []string{
 		"PATH=/usr/bin",
 		"GITMOTE_CI_SECRET_API_TOKEN=s3cr3t",
 		"GITMOTE_URL=http://x", // not a secret; must be ignored
@@ -25,7 +25,7 @@ func TestActArgsForwardsSecrets(t *testing.T) {
 }
 
 func TestActArgsPlatforms(t *testing.T) {
-	args, _ := actArgs(".github/workflows", []string{
+	args, _ := actArgs(".gitmote/workflows", []string{
 		"GITMOTE_ACT_PLATFORMS=ubuntu-latest=-self-hosted, ubuntu-22.04=-self-hosted",
 	})
 	if !hasFlag(args, "-P", "ubuntu-latest=-self-hosted") ||
@@ -35,7 +35,7 @@ func TestActArgsPlatforms(t *testing.T) {
 }
 
 func TestActArgsDefaultsNoOverrides(t *testing.T) {
-	args, extra := actArgs(".github/workflows", []string{"HOME=/root"})
+	args, extra := actArgs(".gitmote/workflows", []string{"HOME=/root"})
 	if len(extra) != 0 {
 		t.Errorf("extraEnv = %v, want none", extra)
 	}

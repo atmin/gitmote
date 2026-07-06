@@ -1,6 +1,6 @@
 // Package runner is the CI job runner: the code that claims a queued job from
 // gitmote's internal report API, checks out the repo at the pushed SHA, runs the
-// workflow engine over .github/workflows, and reports the combined log +
+// workflow engine over .gitmote/workflows, and reports the combined log +
 // pass/fail back. It is deliberately substrate-agnostic — the same code runs as
 // a local process (LocalTrigger, dev) and, later, inside a Scaleway Serverless
 // Job container (cloud). It never touches s3lite or S3: the leader writes the

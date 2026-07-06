@@ -1,15 +1,25 @@
 # gitmote — CI
 
-Run a repo's `.github/workflows` on push: on a successful ref advance, execute
+Run a repo's `.gitmote/workflows` on push: on a successful ref advance, execute
 the workflow in an isolated container, keep logs, report pass/fail, surface
 status in the UI. Deliberately **limited but real** — the ~80% of personal CI
 that is "on push, run steps in a container, pass/fail, keep logs." No matrix
 builds, marketplace, service containers, or caching.
 
 The engine is **[`act`](https://github.com/nektos/act)**: it runs
-GitHub-Actions YAML, so the *same* workflow runs on gitmote's runner and on the
-GitHub mirror. Actions-compat is load-bearing (the mirror is break-glass), not a
-preference.
+GitHub-Actions YAML, so a workflow authored for Actions runs unmodified under
+gitmote's runner. Actions-compat is load-bearing (the GitHub mirror is
+break-glass — move the same YAML to `.github/workflows` and GitHub runs it), not
+a preference.
+
+**Why `.gitmote/workflows`, not `.github/workflows`.** GitHub only ever reads
+`.github`, so the directory a workflow lives in *declares which forge runs it*: a
+repo mirrored to GitHub puts CI in `.gitmote` to run only here, in `.github` to
+run only on GitHub, and so never double-runs on both. (gitmote's own repo keeps
+its deploy pipeline in `.github` and therefore never CI's on gitmote — the
+concrete case that motivated this.) `act` reads the directory via `--workflows`;
+the YAML is byte-identical to GitHub's, so moving a file between the two
+directories is the whole switch.
 
 ## Pipeline
 

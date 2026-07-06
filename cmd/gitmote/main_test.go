@@ -559,7 +559,7 @@ func seedWorkflowRepo(t *testing.T, md *meta.Metadata, s store.Store) (*meta.Rep
 		}
 	}
 	git("init", "-b", "main", ".")
-	wf := filepath.Join(src, ".github", "workflows")
+	wf := filepath.Join(src, ".gitmote", "workflows")
 	if err := os.MkdirAll(wf, 0o755); err != nil {
 		t.Fatal(err)
 	}

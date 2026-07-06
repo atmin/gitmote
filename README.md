@@ -72,12 +72,14 @@ make dev-reset  # wipe MinIO + data/ for a clean slate
 Sign in to the UI at <http://localhost:8080/> by pasting the token, or
 clone/push straight away with the printed URL. Requires Docker + Docker Compose.
 
-**CI works locally too.** Push a repo with `.github/workflows/*.yml` and gitmote
+**CI works locally too.** Push a repo with `.gitmote/workflows/*.yml` and gitmote
 records a run and executes it on the spot — it spawns `gitmote-runner` as a local
 process (the *same* runner code the cloud path runs on Scaleway, just a local
 substrate) which runs the workflow with [`act`](https://github.com/nektos/act).
 Install act (`brew install act`); it uses the same Docker/podman daemon MinIO
-does. Watch runs in the UI.
+does. Watch runs in the UI. gitmote reads `.gitmote/workflows` (GitHub-workflow
+syntax, run by act) — **not** `.github/workflows`, so a repo mirrored to GitHub
+chooses its forge by where the workflow lives and never double-runs.
 
 ## Run it locally
 

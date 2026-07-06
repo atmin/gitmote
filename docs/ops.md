@@ -156,7 +156,7 @@ from the env at startup** (one runner, three substrates — see
    instead of a cloud job (this is what `make dev` uses).
 3. else → **disabled**: runs and jobs are recorded, but nothing executes.
 
-**Prerequisite for both executing substrates:** the runner runs `.github/workflows`
+**Prerequisite for both executing substrates:** the runner runs `.gitmote/workflows`
 with [`act`](https://github.com/nektos/act), which needs a reachable **Docker or
 podman daemon** — in the cloud that's the Serverless Job image; locally it's the
 daemon on the host (the same one MinIO uses under `make dev`). A leader-only ticker

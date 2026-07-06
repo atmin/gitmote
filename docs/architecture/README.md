@@ -45,7 +45,7 @@ The rest of the architecture is split by concern:
 | [request-flows.md](request-flows.md) | The read path (clone/fetch) and the write path (push, and the compare-and-swap that makes it safe). |
 | [safety.md](safety.md) | The concurrency & safety model — single writer, the content-before-pointer ordering invariant, and the accepted write-loss window. |
 | [auth.md](auth.md) | Authentication and transport — smart HTTP + personal access tokens today, SSH deferred. |
-| [ci.md](ci.md) | CI — running `.github/workflows` on push: the dispatch seam, the one-runner-three-substrates model, `act` self-hosted vs. nested, secrets, and the no-in-Job-image-builds limitation. |
+| [ci.md](ci.md) | CI — running `.gitmote/workflows` on push: the dispatch seam, the one-runner-three-substrates model, `act` self-hosted vs. nested, secrets, and the no-in-Job-image-builds limitation. |
 | [alternatives.md](alternatives.md) | Approaches considered and rejected or deferred, with the reasoning. |
 | [open-questions.md](open-questions.md) | Unsettled decisions — the superset that links into [`../notes/`](../notes/). |
 

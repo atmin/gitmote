@@ -1,6 +1,6 @@
 // Package ci is the continuous-integration dispatch seam. On a successful push
 // the write path hands each updated ref to Dispatcher.Dispatch, which reads the
-// pushed commit's .github/workflows/ directory and — when there is work —
+// pushed commit's .gitmote/workflows/ directory and — when there is work —
 // records a run with one job per workflow file. It is fire-and-forget: dispatch
 // must never block or fail a push (a missed run is a missed deploy, not a failed
 // push — the content-before-pointer discipline applied to CI; see
@@ -25,8 +25,14 @@ const (
 	// branchPrefix is the ref namespace CI reacts to; tags and other refs are
 	// ignored.
 	branchPrefix = "refs/heads/"
-	// workflowDir is the fixed, traversal-safe location engine (act) reads.
-	workflowDir = ".github/workflows"
+	// workflowDir is the fixed, traversal-safe location the engine (act) reads.
+	// gitmote deliberately reads .gitmote/workflows, NOT .github/workflows: GitHub
+	// only ever sees .github, so which directory a workflow lives in *declares*
+	// which forge runs it — a repo mirrored to GitHub puts CI in .gitmote to run
+	// only here, in .github to run only there, and gets no double-run. (This is
+	// also why gitmote's own repo, which has only .github, never CI's on gitmote.)
+	// act reads it via `--workflows` (see internal/runner); the YAML is unchanged.
+	workflowDir = ".gitmote/workflows"
 	// cloneTokenTTL bounds the per-run clone credential: a run's max duration
 	// plus margin. The token is read-only and repo-scoped, so it grants no more
 	// than a fetch of the one repo, and expires long before it could be reused.
@@ -131,7 +137,7 @@ func NewDispatcher(cfg Config) *Dispatcher {
 
 // Dispatch reads the pushed commit's workflows and records a run for a branch
 // create/update that has any. Tag pushes and branch deletions do nothing; a repo
-// with no .github/workflows creates no run. Everything here is non-fatal: the
+// with no .gitmote/workflows creates no run. Everything here is non-fatal: the
 // push has already committed, so errors are logged, never returned.
 func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) {
 	if !strings.HasPrefix(ev.Ref, branchPrefix) {
@@ -154,7 +160,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) {
 	entries, err := repo.Tree(ctx, dir, ev.NewSHA, workflowDir)
 	if errors.Is(err, repo.ErrNotFound) {
 		d.logger.Debug("ci: no workflows", "repo", ev.RepoName, "ref", ev.Ref)
-		return // no .github/workflows → no run
+		return // no .gitmote/workflows → no run
 	}
 	if err != nil {
 		d.logger.Error("ci: read workflows failed",

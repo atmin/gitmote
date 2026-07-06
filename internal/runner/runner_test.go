@@ -14,7 +14,7 @@ const testSecret = "worker-secret"
 
 var testSpec = spec{
 	JobID: 5, RunID: 1, Repo: "atmin/app", SHA: "deadbeef",
-	Ref: "refs/heads/main", WorkflowDir: ".github/workflows",
+	Ref: "refs/heads/main", WorkflowDir: ".gitmote/workflows",
 }
 
 // capture records the completion the runner posts.
