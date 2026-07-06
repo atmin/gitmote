@@ -125,14 +125,16 @@ wake, or a redeploy) the DB is restored from the derived replica and repos
 re-materialize from the bucket. This path is proven locally by `make e2e-restore`
 (wipes the data volume, confirms the repo still clones).
 
-Resources: **250 mVCPU / 512 MB / 2 GB ephemeral** (`cpu-limit=250`,
-`memory-limit-bytes=512MB` — the CLI requires a `G`/`GB`/`MB` unit). Observed
+Resources: **1000 mVCPU / 1024 MB / 8 GB ephemeral** (`cpu-limit=1000`,
+`memory-limit-bytes=1024MB` — the CLI requires a `G`/`GB`/`MB` unit). Observed
 usage sits well under these; 256 MB was already plenty for `git index-pack` /
-`receive-pack`. Memory is set to 512 MB only to unlock the larger ephemeral
-scratch tier (2 GB `/tmp`), not for RAM headroom. Tune from logs.
+`receive-pack`. The CPU is set high to shorten cold start — the litestream
+restore and the first git operation run unthrottled instead of at a fraction of
+a core — and 1024 MB unlocks the larger ephemeral scratch tier (8 GB `/tmp`),
+not for RAM headroom. Tune from logs.
 
 Scale: **`min-scale = 0`** (idle to zero). A remote pushed to occasionally is idle
-almost always, and even at 512 MB always-on exceeds Scaleway's free tier
+almost always, and even at 1024 MB always-on exceeds Scaleway's free tier
 (~2.6M GB-s/mo vs 400k), so scale-to-zero is the cheaper default. The cost is a few seconds of
 cold start on the first request after idle (restore + materialize, the path above);
 scale-down is a graceful SIGTERM, so the shutdown `Close` durably flushes the WAL
@@ -213,15 +215,15 @@ docker push   ghcr.io/atmin/gitmote-runner:master
 #    memory-limit-bytes, and key-based (secret-)environment-variables.KEY=value.
 #    Only the credentials are secret; the rest are plain environment-variables. The
 #    cookie key and worker secret are NOT set — they auto-generate and persist. The
-#    ephemeral /tmp scratch tier is coupled to the memory tier — 512 MB unlocks 2 GB
-#    scratch (set in the console).
+#    ephemeral /tmp scratch tier is coupled to the memory tier — 1024 MB unlocks
+#    8 GB scratch (set in the console).
 scw container container create \
   namespace-id=<NAMESPACE_ID> \
   name=gitmote \
   image=ghcr.io/atmin/gitmote:master \
   min-scale=0 max-scale=1 \
-  cpu-limit=250 \
-  memory-limit-bytes=512MB \
+  cpu-limit=1000 \
+  memory-limit-bytes=1024MB \
   port=8080 \
   environment-variables.GITMOTE_S3_BUCKET=gitmote \
   environment-variables.GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud \
