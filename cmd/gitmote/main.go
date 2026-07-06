@@ -343,6 +343,15 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		logger.Warn("lost the writer lease; now read-only", "error", err)
 	})
 
+	// Fail fast on the refs-without-objects split (typically a wrong or removed
+	// GITMOTE_S3_PREFIX): the metadata restored, so refs would be advertised, but
+	// the objects are unreachable in the store. A loud crash at startup beats
+	// silently serving clones/pushes/browses that cannot succeed.
+	if err := verifyObjectStore(ctx, md, objs); err != nil {
+		_ = md.Close()
+		return nil, nil, nil, nil, noop, fmt.Errorf("object store consistency: %w", err)
+	}
+
 	// First-run auto-bootstrap: a fresh empty-bucket instance is usable without a
 	// second command. Runs before anything serves; non-fatal (logged, not returned).
 	maybeAutoBootstrap(ctx, md, logger)
@@ -470,6 +479,48 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		return nil, nil, nil, nil, noop, err
 	}
 	return handler, ui, reportAPI, md.IsLeader, cleanup, nil
+}
+
+// verifyObjectStore fails fast on the "refs without objects" split: the
+// metadata restored (so refs will be advertised) but the object store holds no
+// objects for a repo that has refs. Serving in that state advertises refs it
+// cannot fulfil — clones get upload-pack "not our ref", pushes fail with
+// "unpacker error", browses 404. The usual cause is a wrong or removed
+// GITMOTE_S3_PREFIX: object keys are {prefix}/{repo}/objects/…, but the metadata
+// replica is prefix-independent, so a bad prefix strands every object while refs
+// still restore. A fresh instance (no repo has refs yet) passes — absent objects
+// are correct there.
+func verifyObjectStore(ctx context.Context, md *meta.Metadata, objs store.Store) error {
+	repos, err := md.ListRepos(ctx)
+	if err != nil {
+		return fmt.Errorf("list repos: %w", err)
+	}
+	for _, r := range repos {
+		refs, err := md.ListRefs(ctx, r.ID)
+		if err != nil {
+			return fmt.Errorf("list refs for %q: %w", r.Name, err)
+		}
+		if len(refs) == 0 {
+			continue // no history yet — the store is correctly empty for this repo
+		}
+		// This repo has refs, so a correctly-addressed store holds at least one
+		// object for it. One repo suffices: the object prefix is global, so an
+		// empty result here means every repo's objects are unreachable.
+		keys, err := objs.List(ctx, r.Name+"/objects/")
+		if err != nil {
+			return fmt.Errorf("list objects for %q: %w", r.Name, err)
+		}
+		if len(keys) == 0 {
+			return fmt.Errorf("repo %q has %d ref(s) in metadata but no objects in the store "+
+				"under %q/objects/ — the objects are unreachable at the current "+
+				"GITMOTE_S3_PREFIX (object keys are {prefix}/{repo}/objects/…; the meta replica "+
+				"is prefix-independent, so refs restored while objects did not). Verify "+
+				"GITMOTE_S3_PREFIX matches the prefix the objects were written under",
+				r.Name, len(refs), r.Name)
+		}
+		return nil // a repo with refs has objects — the store is reachable
+	}
+	return nil // no repo has refs yet — fresh instance, nothing to verify
 }
 
 // buildUI constructs the management UI (always on). Its session cookie key is

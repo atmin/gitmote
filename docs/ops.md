@@ -115,7 +115,7 @@ one of these turns a trigger on — see [CI substrate](#ci-substrate)).
 | `GITMOTE_DATA` | base dir for the db (`meta.sqlite3`), cache, and socket; **preset to `/data` in the image** — mount a volume there to keep the cache across restarts. Ephemeral by design (restored from S3 on cold start) |
 | `GITMOTE_DB_REPLICA` | override the derived `s3://{bucket}/meta` replica target |
 | `GITMOTE_DB` / `GITMOTE_CACHE` / `GITMOTE_SOCK` | override the individual paths that otherwise derive from `GITMOTE_DATA` |
-| `GITMOTE_S3_PREFIX` | key prefix for git objects inside the bucket (does **not** affect the `meta` replica path) |
+| `GITMOTE_S3_PREFIX` | key prefix for git objects inside the bucket (does **not** affect the `meta` replica path). The code default is empty (objects at `{repo}/objects/…`), which is valid for a *fresh* bucket — but **prod set `objects`** to get the `objects/` + `meta/` [one-bucket layout](#infrastructure), so every object was written under keys like `objects/{repo}/objects/…`. ⚠️ **This is a data-address, not a preference: once objects exist under it, the prefix is load-bearing — never remove or change it on a running instance.** Reverting to the default doesn't move the data, it just makes the server look at the wrong (empty) keys. Because the `meta` replica is prefix-independent, refs still restore — so the instance comes up advertising refs it cannot serve (clone → `not our ref`, push → `unpacker error`, browse → 404) |
 | `GITMOTE_HOOK` / `GITMOTE_RUNNER` | hook / CI-runner binary paths (default beside the server) |
 | `GITMOTE_ADMIN_HANDLE` | first-run auto-bootstrap admin handle (default `admin`) |
 
@@ -227,6 +227,7 @@ scw container container create \
   port=8080 \
   environment-variables.GITMOTE_S3_BUCKET=gitmote \
   environment-variables.GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud \
+  environment-variables.GITMOTE_S3_PREFIX=objects \
   environment-variables.GITMOTE_DATA=/tmp/gitmote \
   environment-variables.AWS_REGION=fr-par \
   secret-environment-variables.AWS_ACCESS_KEY_ID=<KEY> \
