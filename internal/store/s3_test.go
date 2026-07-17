@@ -25,6 +25,25 @@ func TestS3Conformance(t *testing.T) {
 
 // newTestS3 builds an S3 store scoped to a unique prefix so concurrent test
 // runs can share a bucket, and deletes everything under it on cleanup.
+func TestParseBucket(t *testing.T) {
+	tests := []struct {
+		raw, bucket, prefix string
+	}{
+		{"gitmote", "gitmote", ""},
+		{"shared/gitmote", "shared", "gitmote"},
+		{"shared/a/b", "shared", "a/b"},
+		{"/gitmote/", "gitmote", ""},
+		{"shared/gitmote/", "shared", "gitmote"},
+		{"", "", ""},
+	}
+	for _, tt := range tests {
+		b, p := ParseBucket(tt.raw)
+		if b != tt.bucket || p != tt.prefix {
+			t.Errorf("ParseBucket(%q) = (%q, %q), want (%q, %q)", tt.raw, b, p, tt.bucket, tt.prefix)
+		}
+	}
+}
+
 func newTestS3(t *testing.T) Store {
 	t.Helper()
 	ctx := context.Background()
@@ -33,7 +52,10 @@ func newTestS3(t *testing.T) Store {
 	if _, err := rand.Read(suffix[:]); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	t.Setenv("GITMOTE_S3_PREFIX", fmt.Sprintf("conformance/%s/%s", t.Name(), hex.EncodeToString(suffix[:])))
+	// Scope this run to a unique sub-path of the operator's bucket by extending the
+	// storage-root spec — concurrent runs share a bucket without colliding.
+	base := os.Getenv("GITMOTE_S3_BUCKET")
+	t.Setenv("GITMOTE_S3_BUCKET", fmt.Sprintf("%s/conformance/%s/%s", base, t.Name(), hex.EncodeToString(suffix[:])))
 
 	s, err := NewS3FromEnv(ctx)
 	if err != nil {

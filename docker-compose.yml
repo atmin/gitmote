@@ -35,13 +35,8 @@ services:
     image: gitmote:e2e
     depends_on: [minio]
     environment:
-      GITMOTE_S3_BUCKET: gitmote
+      GITMOTE_S3_BUCKET: gitmote        # storage root; derives the replica (s3://gitmote/meta)
       GITMOTE_S3_ENDPOINT: http://minio:9000
-      GITMOTE_DATA: /data               # db, cache, and socket all live here
-      # A bucket alone derives the replica (s3://gitmote/meta), so replication is
-      # on by default. e2e-restore.sh sets this explicitly to the same value while
-      # it wipes the volume, exercising the restore-from-S3 cold-start path.
-      GITMOTE_DB_REPLICA: ${GITMOTE_DB_REPLICA:-}
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin

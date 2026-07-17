@@ -11,8 +11,8 @@ ROOT="$(git rev-parse --show-toplevel)"
 BRANCH="$(git -C "$ROOT" symbolic-ref --quiet --short HEAD || echo master)"
 PUSHED="$(git -C "$ROOT" rev-parse HEAD)"
 
-# Turn on replication for this run (docker-compose.yml reads it; empty otherwise).
-export GITMOTE_DB_REPLICA="s3://gitmote/meta"
+# Replication is on whenever a bucket is set (the root derives the replica), so
+# there is nothing to turn on here — just the volume to wipe mid-run.
 DB_VOLUME="gitmote-e2e_gitmote-data"
 
 export GIT_TERMINAL_PROMPT=0

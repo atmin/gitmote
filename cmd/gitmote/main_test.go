@@ -210,8 +210,7 @@ func TestRunShutsDownOnCancel(t *testing.T) {
 }
 
 func TestRunBootstrap(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "meta.sqlite3")
-	t.Setenv("GITMOTE_DB", dbPath)
+	t.Setenv("GITMOTE_DATA", t.TempDir())
 
 	var out bytes.Buffer
 	args := []string{"-handle", "atmin", "-repo", "gitmote"}
@@ -233,9 +232,9 @@ func TestRunBootstrap(t *testing.T) {
 }
 
 func TestRunBootstrapDefaultsHandleAndReissues(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "meta.sqlite3")
-	t.Setenv("GITMOTE_DB", dbPath)
-	t.Setenv("GITMOTE_ADMIN_HANDLE", "")
+	dataDir := t.TempDir()
+	t.Setenv("GITMOTE_DATA", dataDir)
+	dbPath := filepath.Join(dataDir, "meta.sqlite3")
 
 	// No handle, no repo: the admin defaults to "admin" and a token is printed.
 	var out bytes.Buffer
@@ -274,7 +273,6 @@ func TestRunBootstrapDefaultsHandleAndReissues(t *testing.T) {
 
 func TestMaybeAutoBootstrapCreatesAdminOnceOnFreshLeader(t *testing.T) {
 	ctx := context.Background()
-	t.Setenv("GITMOTE_ADMIN_HANDLE", "")
 	md := openMeta(t) // local-only → RoleOff → always leader
 	logger := slog.New(slog.DiscardHandler)
 
@@ -318,26 +316,21 @@ func extractToken(t *testing.T, s string) string {
 }
 
 func TestReplicaTarget(t *testing.T) {
-	// A bucket alone derives s3://{bucket}/meta; the object prefix must NOT leak
-	// into the replica path (that would orphan the existing sibling replica). An
-	// explicit GITMOTE_DB_REPLICA overrides the derivation.
+	// The replica lives at {root}/meta, under the same storage root as the objects
+	// — so a "bucket/base" spec scopes the replica too (they share fate).
 	tests := []struct {
-		name    string
-		replica string
-		bucket  string
-		prefix  string
-		want    string
+		name   string
+		bucket string
+		want   string
 	}{
-		{"derived from bucket", "", "gitmote", "", "s3://gitmote/meta"},
-		{"prefix does not leak", "", "gitmote", "objects/", "s3://gitmote/meta"},
-		{"explicit replica overrides", "s3://other/wal", "gitmote", "objects/", "s3://other/wal"},
-		{"no bucket, no replica", "", "", "", ""},
+		{"bucket only", "gitmote", "s3://gitmote/meta"},
+		{"bucket with base", "shared/gitmote", "s3://shared/gitmote/meta"},
+		{"nested base", "shared/a/b", "s3://shared/a/b/meta"},
+		{"no bucket", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("GITMOTE_DB_REPLICA", tt.replica)
 			t.Setenv("GITMOTE_S3_BUCKET", tt.bucket)
-			t.Setenv("GITMOTE_S3_PREFIX", tt.prefix)
 			if got := replicaTarget(); got != tt.want {
 				t.Errorf("replicaTarget() = %q, want %q", got, tt.want)
 			}
@@ -346,26 +339,24 @@ func TestReplicaTarget(t *testing.T) {
 }
 
 func TestMetaConfigDerivesReplicaAndRole(t *testing.T) {
-	// With a bucket set, metaConfigFromEnv derives the replica and applies the
-	// leased role — a bucket always means durability + the single-writer lease.
-	t.Setenv("GITMOTE_DB_REPLICA", "")
-	t.Setenv("GITMOTE_S3_BUCKET", "gitmote")
-	t.Setenv("GITMOTE_S3_PREFIX", "objects/")
+	// With a storage root set, metaConfigFromEnv derives the replica under it and
+	// applies the leased role — a root always means durability + the single-writer
+	// lease, and the base scopes the replica.
+	t.Setenv("GITMOTE_S3_BUCKET", "shared/gitmote")
 	t.Setenv("GITMOTE_DATA", t.TempDir())
 
 	cfg := metaConfigFromEnv(nil, s3lite.RoleAuto)
-	if cfg.RestoreFrom != "s3://gitmote/meta" || cfg.BackupTo != "s3://gitmote/meta" {
-		t.Errorf("replica = %q / %q, want s3://gitmote/meta (prefix must not leak)", cfg.RestoreFrom, cfg.BackupTo)
+	if cfg.RestoreFrom != "s3://shared/gitmote/meta" || cfg.BackupTo != "s3://shared/gitmote/meta" {
+		t.Errorf("replica = %q / %q, want s3://shared/gitmote/meta (base scopes the replica)", cfg.RestoreFrom, cfg.BackupTo)
 	}
 	if cfg.Role != s3lite.RoleAuto {
-		t.Errorf("Role = %v, want RoleAuto (a bucket must yield the lease)", cfg.Role)
+		t.Errorf("Role = %v, want RoleAuto (a root must yield the lease)", cfg.Role)
 	}
 }
 
 func TestMetaConfigNoBucketStaysRoleOff(t *testing.T) {
-	// No bucket and no replica: nothing to coordinate on, so the database stays
-	// local-only and RoleOff (always writer) — tests and ephemeral runs unchanged.
-	t.Setenv("GITMOTE_DB_REPLICA", "")
+	// No bucket: nothing to coordinate on, so the database stays local-only and
+	// RoleOff (always writer) — tests and ephemeral runs unchanged.
 	t.Setenv("GITMOTE_S3_BUCKET", "")
 
 	cfg := metaConfigFromEnv(nil, s3lite.RoleAuto)
@@ -378,12 +369,9 @@ func TestMetaConfigNoBucketStaysRoleOff(t *testing.T) {
 }
 
 func TestDataPathsUnderGitmoteData(t *testing.T) {
-	// GITMOTE_DATA alone places the db, cache, and socket under it.
+	// GITMOTE_DATA places the db, cache, and socket under it.
 	dir := t.TempDir()
 	t.Setenv("GITMOTE_DATA", dir)
-	t.Setenv("GITMOTE_DB", "")
-	t.Setenv("GITMOTE_CACHE", "")
-	t.Setenv("GITMOTE_SOCK", "")
 
 	if got, want := dbPath(), filepath.Join(dir, "meta.sqlite3"); got != want {
 		t.Errorf("dbPath() = %q, want %q", got, want)
@@ -393,15 +381,6 @@ func TestDataPathsUnderGitmoteData(t *testing.T) {
 	}
 	if got, want := sockPath(), filepath.Join(dir, "gitmote.sock"); got != want {
 		t.Errorf("sockPath() = %q, want %q", got, want)
-	}
-}
-
-func TestDataPathOverride(t *testing.T) {
-	// The explicit per-path vars still override the GITMOTE_DATA derivation.
-	t.Setenv("GITMOTE_DATA", "/data")
-	t.Setenv("GITMOTE_DB", "/custom/db.sqlite3")
-	if got, want := dbPath(), "/custom/db.sqlite3"; got != want {
-		t.Errorf("dbPath() = %q, want the GITMOTE_DB override %q", got, want)
 	}
 }
 
@@ -623,8 +602,9 @@ func TestRunFailsOnBadAddr(t *testing.T) {
 }
 
 // TestVerifyObjectStore covers the startup guard against the refs-without-objects
-// split (the wrong/removed GITMOTE_S3_PREFIX regression): a fresh instance and a
-// healthy store pass, but refs whose objects are unreachable fail loud.
+// split: a fresh instance and a healthy store pass, but refs whose objects are
+// unreachable fail loud. (The prefix cause is now prevented — the bucket records
+// its own object prefix — so the guard points at the object store itself.)
 func TestVerifyObjectStore(t *testing.T) {
 	ctx := context.Background()
 	const repoName = "gitmote"
@@ -681,8 +661,9 @@ func TestVerifyObjectStore(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected an error for refs-without-objects, got nil")
 		}
-		if !strings.Contains(err.Error(), "GITMOTE_S3_PREFIX") {
-			t.Errorf("error must name the likely cause GITMOTE_S3_PREFIX; got: %v", err)
+		if !strings.Contains(err.Error(), "no objects in the store") ||
+			!strings.Contains(err.Error(), "GITMOTE_S3_BUCKET") {
+			t.Errorf("error must name the split and point at the object store/bucket; got: %v", err)
 		}
 	})
 }

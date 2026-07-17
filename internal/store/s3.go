@@ -42,21 +42,32 @@ func NewS3(client *s3.Client, bucket, prefix string) *S3 {
 	}
 }
 
+// ParseBucket splits the storage-root spec "bucket[/base/path]" into the S3
+// bucket name and an optional key prefix. S3 bucket names cannot contain "/", so
+// the first segment is the bucket and the remainder is a prefix prepended to
+// every key — scoping a whole forge (objects, CI logs, and, via the caller, the
+// metadata replica) under one root of a bucket it may share.
+func ParseBucket(raw string) (bucket, prefix string) {
+	raw = strings.Trim(raw, "/")
+	bucket, prefix, _ = strings.Cut(raw, "/")
+	return bucket, prefix
+}
+
 // NewS3FromEnv builds an S3 store from the environment:
 //
-//   - GITMOTE_S3_BUCKET   — bucket name (required)
+//   - GITMOTE_S3_BUCKET   — storage root, "bucket" or "bucket/base/path" (required)
 //   - GITMOTE_S3_ENDPOINT — custom endpoint, e.g. a local MinIO (optional;
 //     implies path-style addressing)
-//   - GITMOTE_S3_PREFIX   — key prefix inside the bucket (optional)
 //
 // Region and credentials come from the standard AWS environment
-// (AWS_REGION, AWS_ACCESS_KEY_ID, …) and config files.
+// (AWS_REGION, AWS_ACCESS_KEY_ID, …) and config files; the region defaults to
+// us-east-1 when unset (ignored by most S3-compatible stores).
 func NewS3FromEnv(ctx context.Context) (*S3, error) {
-	bucket := os.Getenv("GITMOTE_S3_BUCKET")
+	bucket, prefix := ParseBucket(os.Getenv("GITMOTE_S3_BUCKET"))
 	if bucket == "" {
 		return nil, errors.New("store: GITMOTE_S3_BUCKET is not set")
 	}
-	cfg, err := config.LoadDefaultConfig(ctx)
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithDefaultRegion("us-east-1"))
 	if err != nil {
 		return nil, fmt.Errorf("store: load aws config: %w", err)
 	}
@@ -68,7 +79,7 @@ func NewS3FromEnv(ctx context.Context) (*S3, error) {
 			o.UsePathStyle = true
 		}
 	})
-	return NewS3(client, bucket, os.Getenv("GITMOTE_S3_PREFIX")), nil
+	return NewS3(client, bucket, prefix), nil
 }
 
 // Put implements Store. The uploader streams r, switching to multipart for

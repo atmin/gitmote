@@ -42,13 +42,16 @@
 
 ### S3 (immutable — _content before pointer_)
 
-Mirrors the on-disk bare repo's immutable directories, per repo prefix. Refs are
-deliberately **excluded** — they live in s3lite.
+Mirrors the on-disk bare repo's immutable directories, under the storage root
+(the whole bucket, or a `bucket/base` sub-path — see [ops.md](../ops.md)). Refs
+are deliberately **excluded** — they live in s3lite (also under the root, at
+`meta/`, so objects and metadata share fate). Keys below are relative to the root.
 
-| Prefix                                   | Contents                                         |
+| Key                                      | Contents                                         |
 | ---------------------------------------- | ------------------------------------------------ |
 | `{repo}/objects/…`                       | Loose git objects (git's own `ab/cdef…` fan-out) |
 | `{repo}/objects/pack/pack-*.pack` `.idx` | Packfiles + indexes                              |
+| `ci/{repo}/{run}/{job}.log`              | CI run logs (append-only)                        |
 | `lfs/{repo}/{oid}`                       | Large-file blobs (deferred — see [open questions](open-questions.md)) |
 
 Sync is done with the S3 SDK directly (single static binary, no external

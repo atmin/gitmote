@@ -73,7 +73,7 @@ and `act` keeps its default nested-container behavior.
 
 Three leader-only, litestream-replicated tables in
 [`internal/meta`](../../internal/meta): `ci_runs`, `ci_jobs`, `ci_secrets`. Logs
-are append-only blobs under a top-level `ci/` key space
+are append-only blobs under a `ci/` key space within the storage root
 (`ci/{repoID}/{runID}/{jobID}.log`), PUT before the `ci_jobs` pointer is
 recorded, with a size cap (explicit truncation marker, never silent).
 

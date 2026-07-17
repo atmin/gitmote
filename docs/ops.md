@@ -18,9 +18,11 @@ Containers like atmin.net, but that is incidental and may change.
 Reachable at **`gitmote.atmin.net`** (CNAME → the container endpoint). EU-resident
 infrastructure, consistent with atmin.net's stance.
 
-One bucket, two prefixes: `objects/` (immutable git objects/packs) and `meta/`
-(the litestream WAL of the metadata SQLite). Refs are the source of truth and
-live in the metadata DB; objects live under `objects/`.
+Everything lives under one **storage root** — the whole bucket, or a `bucket/base`
+sub-path when sharing a bucket (see `GITMOTE_S3_BUCKET`). Under the root:
+`{repo}/objects/` (immutable git objects/packs), `ci/` (run logs), and `meta/`
+(the litestream WAL of the metadata SQLite). Refs are the source of truth and live
+in the metadata DB; objects live beside it, all under the same root.
 
 ## ⚠️ Single writer is a correctness invariant
 
@@ -32,8 +34,8 @@ in-process-race concern: it is a data-integrity precondition.
 The invariant is enforced **by a lease, not by procedure.** The server opens
 its metadata in s3lite `RoleAuto`: it becomes the writer only while it holds a
 lease (litestream's `s3.Leaser` — an `If-None-Match`/`If-Match` conditional-write
-CAS on `lock.json` in the same bucket), and runs as a read-only follower
-otherwise. This makes **atomic conditional writes a hard requirement on the S3
+CAS on `lock.json` beside the metadata replica, at `{root}/meta/lock.json`), and
+runs as a read-only follower otherwise. This makes **atomic conditional writes a hard requirement on the S3
 provider**: the lease — and therefore the single-writer correctness invariant —
 holds only if the backend supports the compare-and-swap primitive (`If-None-Match`
 to acquire, `If-Match` to renew/release). Most do (AWS S3, Scaleway, …); one that
@@ -80,13 +82,13 @@ Setting these on the container does nothing for CI, and vice versa.
 > `update`.** Plain `environment-variables` are a separate map, unaffected. The CI
 > deploy's `update` sets no env vars, so it preserves both maps.
 
-**Required — the whole core.** A bucket plus its credentials is a complete forge.
+**Required — the whole core.** A storage root plus its credentials is a complete forge.
 
 | Variable | Value / meaning |
 |----------|-----------------|
-| `GITMOTE_S3_BUCKET` | `gitmote` — a bucket alone derives the metadata replica (`s3://gitmote/meta`) and the single-writer lease |
+| `GITMOTE_S3_BUCKET` | the **storage root**: `gitmote` (a whole bucket) or `bucket/base` to scope the forge under one sub-path of a shared bucket. Derives the metadata replica (`{root}/meta`) and the single-writer lease |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | secret — S3 key pair; covers both the object store and the litestream replica (Scaleway API key on prod) |
-| `AWS_REGION` | `fr-par` (any valid region for non-AWS S3) |
+| `AWS_REGION` | region; defaults to `us-east-1` (ignored by most S3-compatible stores). **Set it for real AWS S3** (e.g. `fr-par` on Scaleway) |
 | `GITMOTE_S3_ENDPOINT` | `https://s3.fr-par.scw.cloud` — the S3 endpoint; **omit for real AWS S3** |
 
 **Auto-managed — leave unset; generated and persisted in meta on first run (an
@@ -114,11 +116,6 @@ one of these turns a trigger on — see [CI substrate](#ci-substrate)).
 | Variable | Value / meaning |
 |----------|-----------------|
 | `GITMOTE_DATA` | base dir for the db (`meta.sqlite3`), cache, and socket; **preset to `/data` in the image** — mount a volume there to keep the cache across restarts. Ephemeral by design (restored from S3 on cold start) |
-| `GITMOTE_DB_REPLICA` | override the derived `s3://{bucket}/meta` replica target |
-| `GITMOTE_DB` / `GITMOTE_CACHE` / `GITMOTE_SOCK` | override the individual paths that otherwise derive from `GITMOTE_DATA` |
-| `GITMOTE_S3_PREFIX` | key prefix for git objects inside the bucket (does **not** affect the `meta` replica path). The code default is empty (objects at `{repo}/objects/…`), which is valid for a *fresh* bucket — but **prod set `objects`** to get the `objects/` + `meta/` [one-bucket layout](#infrastructure), so every object was written under keys like `objects/{repo}/objects/…`. ⚠️ **This is a data-address, not a preference: once objects exist under it, the prefix is load-bearing — never remove or change it on a running instance.** Reverting to the default doesn't move the data, it just makes the server look at the wrong (empty) keys. Because the `meta` replica is prefix-independent, refs still restore — so the instance comes up advertising refs it cannot serve (clone → `not our ref`, push → `unpacker error`, browse → 404) |
-| `GITMOTE_HOOK` / `GITMOTE_RUNNER` | hook / CI-runner binary paths (default beside the server) |
-| `GITMOTE_ADMIN_HANDLE` | first-run auto-bootstrap admin handle (default `admin`) |
 
 `GITMOTE_DATA` is ephemeral on purpose: the object store + litestream replica are
 the durable state, and the local disk is a cache. On a cold start (scale-to-zero →
@@ -242,7 +239,6 @@ scw container container create \
   port=8080 \
   environment-variables.GITMOTE_S3_BUCKET=gitmote \
   environment-variables.GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud \
-  environment-variables.GITMOTE_S3_PREFIX=objects \
   environment-variables.GITMOTE_DATA=/tmp/gitmote \
   environment-variables.AWS_REGION=fr-par \
   secret-environment-variables.AWS_ACCESS_KEY_ID=<KEY> \
@@ -276,9 +272,9 @@ scw jobs definition update <JOB_DEFINITION_ID> image-uri=ghcr.io/atmin/gitmote-r
 
 An empty instance has no admin/token. **On first start the server auto-bootstraps
 itself**: when it is the writer and no admin exists, it creates the admin (handle
-from `GITMOTE_ADMIN_HANDLE`, default `admin`), mints a token, and prints it once
-to the logs behind an unmissable banner. So a fresh `docker run` against an empty
-bucket is usable without a second command — just grab the token from the logs.
+`admin`), mints a token, and prints it once to the logs behind an unmissable
+banner. So a fresh `docker run` against an empty bucket is usable without a second
+command — just grab the token from the logs.
 
 The token **transits the logs**, which are operator-visible (same trust boundary
 as the env and bucket). Treat it as a one-time credential: after first sign-in,

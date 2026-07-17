@@ -77,7 +77,7 @@ func main() {
 // S3 for the server to restore.
 func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
-	handle := fs.String("handle", os.Getenv("GITMOTE_ADMIN_HANDLE"), "admin user handle (default admin, or GITMOTE_ADMIN_HANDLE)")
+	handle := fs.String("handle", bootstrap.DefaultAdminHandle, "admin user handle")
 	repoName := fs.String("repo", "", "optional initial repository, e.g. gitmote (repos are otherwise made in the UI)")
 	branch := fs.String("default-branch", "main", "default branch for the initial repo")
 	reissue := fs.Bool("reissue", false, "mint a fresh token for the existing admin (recover a lost token)")
@@ -166,7 +166,7 @@ func maybeAutoBootstrap(ctx context.Context, md *meta.Metadata, logger *slog.Log
 	if exists {
 		return
 	}
-	res, err := bootstrap.Run(ctx, md, bootstrap.Options{AdminHandle: os.Getenv("GITMOTE_ADMIN_HANDLE")})
+	res, err := bootstrap.Run(ctx, md, bootstrap.Options{AdminHandle: bootstrap.DefaultAdminHandle})
 	if err != nil {
 		logger.Error("auto-bootstrap failed; bootstrap by hand", "error", err)
 		return
@@ -312,20 +312,14 @@ func alwaysServable(p string) bool {
 // meta. It shares this metadata handle, so it runs alongside the git server.
 //
 // The db, cache, and socket derive from GITMOTE_DATA (see dataDir); metadata
-// replicates to a bucket-derived replica (see replicaTarget). The push path
-// installs the pre-receive hook binary at GITMOTE_HOOK (default gitmote-hook
-// alongside this binary).
+// replicates to a root-derived replica (see replicaTarget). The push path
+// installs the pre-receive hook binary (gitmote-hook, beside this binary).
 func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *webui.Handler, *ci.ReportAPI, func() bool, func() error, error) {
 	noop := func() error { return nil }
 
 	if os.Getenv("GITMOTE_S3_BUCKET") == "" {
 		logger.Warn("GITMOTE_S3_BUCKET unset; git endpoints disabled (health/version only)")
 		return nil, nil, nil, nil, noop, nil
-	}
-
-	objs, err := store.NewS3FromEnv(ctx)
-	if err != nil {
-		return nil, nil, nil, nil, noop, fmt.Errorf("object store: %w", err)
 	}
 
 	// RoleAuto: this instance becomes the writer when it can acquire the lease,
@@ -344,10 +338,20 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		logger.Warn("lost the writer lease; now read-only", "error", err)
 	})
 
-	// Fail fast on the refs-without-objects split (typically a wrong or removed
-	// GITMOTE_S3_PREFIX): the metadata restored, so refs would be advertised, but
-	// the objects are unreachable in the store. A loud crash at startup beats
-	// silently serving clones/pushes/browses that cannot succeed.
+	// Objects, CI logs, and the metadata replica all live under the storage root
+	// (GITMOTE_S3_BUCKET, "bucket" or "bucket/base"), so they share fate: point at
+	// the wrong root and nothing restores (a clean, empty instance), never the
+	// half-restored refs-without-objects state.
+	objs, err := store.NewS3FromEnv(ctx)
+	if err != nil {
+		_ = md.Close()
+		return nil, nil, nil, nil, noop, fmt.Errorf("object store: %w", err)
+	}
+
+	// Fail fast on the refs-without-objects split: the metadata restored, so refs
+	// would be advertised, but the objects are unreachable in the store (genuine
+	// object-store loss under an otherwise-correct root). A loud crash at startup
+	// beats silently serving clones/pushes/browses that cannot succeed.
 	if err := verifyObjectStore(ctx, md, objs); err != nil {
 		_ = md.Close()
 		return nil, nil, nil, nil, noop, fmt.Errorf("object store consistency: %w", err)
@@ -489,11 +493,11 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 // metadata restored (so refs will be advertised) but the object store holds no
 // objects for a repo that has refs. Serving in that state advertises refs it
 // cannot fulfil — clones get upload-pack "not our ref", pushes fail with
-// "unpacker error", browses 404. The usual cause is a wrong or removed
-// GITMOTE_S3_PREFIX: object keys are {prefix}/{repo}/objects/…, but the metadata
-// replica is prefix-independent, so a bad prefix strands every object while refs
-// still restore. A fresh instance (no repo has refs yet) passes — absent objects
-// are correct there.
+// "unpacker error", browses 404. Objects and metadata share one storage root, so
+// a wrong root restores neither (a clean empty instance) rather than tripping
+// this; a failure here therefore means genuine object-store loss under an
+// otherwise-correct root. A fresh instance (no repo has refs yet) passes — absent
+// objects are correct there.
 func verifyObjectStore(ctx context.Context, md *meta.Metadata, objs store.Store) error {
 	repos, err := md.ListRepos(ctx)
 	if err != nil {
@@ -508,7 +512,7 @@ func verifyObjectStore(ctx context.Context, md *meta.Metadata, objs store.Store)
 			continue // no history yet — the store is correctly empty for this repo
 		}
 		// This repo has refs, so a correctly-addressed store holds at least one
-		// object for it. One repo suffices: the object prefix is global, so an
+		// object for it. One repo suffices: the storage root is global, so an
 		// empty result here means every repo's objects are unreachable.
 		keys, err := objs.List(ctx, r.Name+"/objects/")
 		if err != nil {
@@ -516,10 +520,9 @@ func verifyObjectStore(ctx context.Context, md *meta.Metadata, objs store.Store)
 		}
 		if len(keys) == 0 {
 			return fmt.Errorf("repo %q has %d ref(s) in metadata but no objects in the store "+
-				"under %q/objects/ — the objects are unreachable at the current "+
-				"GITMOTE_S3_PREFIX (object keys are {prefix}/{repo}/objects/…; the meta replica "+
-				"is prefix-independent, so refs restored while objects did not). Verify "+
-				"GITMOTE_S3_PREFIX matches the prefix the objects were written under",
+				"under %q/objects/ — refs restored but their objects did not. Objects and "+
+				"metadata share one storage root, so this means object-store loss: verify "+
+				"GITMOTE_S3_BUCKET and GITMOTE_S3_ENDPOINT address the root these refs belong to",
 				r.Name, len(refs), r.Name)
 		}
 		return nil // a repo with refs has objects — the store is reachable
@@ -579,28 +582,18 @@ func genSecret() ([]byte, error) {
 	return enc, nil
 }
 
-// hookBinaryPath resolves the pre-receive hook executable: GITMOTE_HOOK if set,
-// otherwise gitmote-hook next to this binary.
-func hookBinaryPath() string {
-	if p := os.Getenv("GITMOTE_HOOK"); p != "" {
-		return p
-	}
-	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), "gitmote-hook")
-	}
-	return "gitmote-hook"
-}
+// hookBinaryPath is the pre-receive hook executable, gitmote-hook beside this
+// binary. runnerBinaryPath is the CI runner the local trigger spawns.
+func hookBinaryPath() string   { return besideExe("gitmote-hook") }
+func runnerBinaryPath() string { return besideExe("gitmote-runner") }
 
-// runnerBinaryPath resolves the CI runner executable the local trigger spawns:
-// GITMOTE_RUNNER if set, otherwise gitmote-runner next to this binary.
-func runnerBinaryPath() string {
-	if p := os.Getenv("GITMOTE_RUNNER"); p != "" {
-		return p
-	}
+// besideExe resolves a sibling binary next to this executable, falling back to a
+// bare name (found on PATH) when the executable path can't be determined.
+func besideExe(name string) string {
 	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), "gitmote-runner")
+		return filepath.Join(filepath.Dir(exe), name)
 	}
-	return "gitmote-runner"
+	return name
 }
 
 // metaConfigFromEnv builds the metadata database config from the environment.
@@ -629,37 +622,36 @@ func metaConfigFromEnv(logger *slog.Logger, role s3lite.Role) meta.Config {
 	return cfg
 }
 
-// replicaTarget resolves the metadata replica URL. An explicit GITMOTE_DB_REPLICA
-// wins as an override; otherwise, whenever a bucket is set, the replica is derived
-// as s3://{bucket}/meta — a sibling of the git objects. A bucket alone therefore
-// yields durability and the single-writer lease with no second env.
-//
-// Derive from the bucket only, never bucket+prefix: s3://{bucket}/{prefix}meta
-// would be a different path and orphan the existing sibling replica. The sibling
-// layout (objects/ + meta) is deliberate.
+// replicaTarget derives the metadata replica URL from the storage root: the
+// metadata lives at {root}/meta, a sibling of the git objects under the same
+// root, so a bucket alone yields durability and the single-writer lease with no
+// second env. Placing it under the base (not the bare bucket) is deliberate: refs
+// and objects then share fate, so a wrong root restores nothing rather than
+// stranding objects behind refs that still advertise.
 func replicaTarget() string {
-	if replica := os.Getenv("GITMOTE_DB_REPLICA"); replica != "" {
-		return replica
+	bucket, prefix := store.ParseBucket(os.Getenv("GITMOTE_S3_BUCKET"))
+	if bucket == "" {
+		return ""
 	}
-	if bucket := os.Getenv("GITMOTE_S3_BUCKET"); bucket != "" {
-		return "s3://" + bucket + "/meta"
+	root := bucket
+	if prefix != "" {
+		root += "/" + prefix
 	}
-	return ""
+	return "s3://" + root + "/meta"
 }
 
 // dataDir is the base directory for gitmote's local, restore-from-S3 state:
-// GITMOTE_DATA, defaulting to a temp dir. The db, cache, and socket derive from
-// it — one -v ./data:/data mounts the lot — each still overridable individually.
+// GITMOTE_DATA, defaulting to a temp dir. The db, cache, and socket all live
+// under it — one -v ./data:/data mounts the lot.
 func dataDir() string {
 	return envOr("GITMOTE_DATA", filepath.Join(os.TempDir(), "gitmote"))
 }
 
-// dbPath, cachePath, and sockPath resolve the metadata DB, materialized-repo
-// cache, and pre-receive hook socket under dataDir, honoring the per-path
-// overrides (GITMOTE_DB / GITMOTE_CACHE / GITMOTE_SOCK) when set.
-func dbPath() string    { return envOr("GITMOTE_DB", filepath.Join(dataDir(), "meta.sqlite3")) }
-func cachePath() string { return envOr("GITMOTE_CACHE", filepath.Join(dataDir(), "cache")) }
-func sockPath() string  { return envOr("GITMOTE_SOCK", filepath.Join(dataDir(), "gitmote.sock")) }
+// dbPath, cachePath, and sockPath are the metadata DB, materialized-repo cache,
+// and pre-receive hook socket under dataDir.
+func dbPath() string    { return filepath.Join(dataDir(), "meta.sqlite3") }
+func cachePath() string { return filepath.Join(dataDir(), "cache") }
+func sockPath() string  { return filepath.Join(dataDir(), "gitmote.sock") }
 
 // envOr returns the value of the environment variable key, or fallback if
 // it is unset or empty.

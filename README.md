@@ -69,7 +69,6 @@ not a running server.
 docker run --rm -p 8080:8080 \
   -e GITMOTE_S3_BUCKET=my-gitmote-bucket \
   -e GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud \  # your provider's endpoint
-  -e GITMOTE_S3_PREFIX=objects \                        # MUST match the bucket's existing prefix
   -e AWS_REGION=fr-par \
   -e AWS_ACCESS_KEY_ID=… -e AWS_SECRET_ACCESS_KEY=… \
   ghcr.io/atmin/gitmote:master
@@ -78,20 +77,18 @@ git remote add gitmote http://admin:<token>@localhost:8080/<repo>
 git push gitmote main
 ```
 
-Two things to get right:
+Point at the same **storage root** (`GITMOTE_S3_BUCKET`), endpoint, and region as
+before. Objects and metadata share that root, so a later instance either finds the
+whole forge or, pointed at the wrong root, sees a clean empty one — never a
+half-restored state.
 
-- **`GITMOTE_S3_PREFIX` is a data address, not a preference.** A local instance
-  pointed at an existing bucket must use the **same** prefix (and endpoint/region)
-  that bucket was written with, or gitmote comes up advertising refs whose objects
-  it can't find and aborts startup. If you created the bucket with this same
-  quickstart, match whatever you used then.
-- **Use your existing token.** A populated bucket already has an admin; don't
-  re-bootstrap it — sign in with the token you saved (or `bootstrap -reissue` to
-  mint a fresh one).
+**Use your existing token.** A populated bucket already has an admin; don't
+re-bootstrap it — sign in with the token you saved (or `bootstrap -reissue` to
+mint a fresh one).
 
 **Only one writer at a time — and that's enforced, not your job.** gitmote takes a
-single-writer *lease* on the bucket, so running a second instance (or a stray cloud
-container) can't corrupt anything: whoever holds the lease writes, the other serves
+single-writer *lease* on the storage root, so running a second instance (or a stray
+cloud container) can't corrupt anything: whoever holds the lease writes, the other serves
 reads and returns a retryable `503` on push. So a local on-demand forge is safe
 even if you also run gitmote in the cloud — no coordination, no harm. Details in
 [docs/ops.md](docs/ops.md) (“Single writer is a correctness invariant”).
@@ -143,8 +140,8 @@ no daemon. Deployment — Scaleway Serverless Containers, single writer,
 
 An empty instance has no users, so token auth would be a chicken-and-egg — so the
 server **auto-bootstraps on first run**: when it is the writer and no admin
-exists, it creates the admin (`GITMOTE_ADMIN_HANDLE`, default `admin`) and prints
-a one-time token to the logs (see the Quickstart). No second command.
+exists, it creates the `admin` user and prints a one-time token to the logs (see
+the Quickstart). No second command.
 
 You can still bootstrap by hand against the bucket **before** the server is live
 (`gitmote bootstrap [-handle …] [-repo …]`), and recover a lost token with

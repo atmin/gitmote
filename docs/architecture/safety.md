@@ -10,8 +10,8 @@
    into one writer. **The one rule: never two writers on the same WAL** — and this
    is enforced by a **lease**, not by procedure. The server opens s3lite in
    `RoleAuto`: it writes only while it holds the lease (litestream's `s3.Leaser`,
-   a conditional-write CAS on `lock.json` in the replica bucket) and otherwise runs
-   as a read-only follower. This makes the S3 backend's support for **atomic
+   a conditional-write CAS on `lock.json` beside the replica, at `{root}/meta/lock.json`)
+   and otherwise runs as a read-only follower. This makes the S3 backend's support for **atomic
    conditional writes** (compare-and-swap: `If-None-Match`/`If-Match`) a correctness
    requirement — the lease can't be enforced without it, so a provider lacking the
    primitive cannot safely back gitmote. gitmote gates **all metadata-derived requests** on

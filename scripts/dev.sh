@@ -18,8 +18,6 @@ export AWS_REGION="us-east-1"
 export AWS_ACCESS_KEY_ID="minioadmin"
 export AWS_SECRET_ACCESS_KEY="minioadmin"
 export GITMOTE_DATA="$ROOT/data"
-export GITMOTE_HOOK="$ROOT/bin/gitmote-hook"
-export GITMOTE_RUNNER="$ROOT/bin/gitmote-runner"
 export GITMOTE_COOKIE_KEY="dev-cookie-key-not-for-production"
 
 # Enable local CI: on a push, gitmote records a run and spawns the runner
