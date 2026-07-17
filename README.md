@@ -56,6 +56,46 @@ Nothing else is required: the session cookie key and CI worker secret are
 generated and persisted on first run. See [docs/ops.md](docs/ops.md) for the full
 env surface, CI, and the Scaleway deployment.
 
+### Remote bucket, local on-demand forge
+
+Because the bucket *is* the forge, you don't need any always-on compute. Keep the
+bucket in the cloud, run gitmote **locally only when you want to push or pull**,
+and stop it afterwards — your git remote is `localhost`, but the durable state
+lives in S3. This is the cheapest way to self-host: you pay for object storage,
+not a running server.
+
+```sh
+# Start the forge against your CLOUD bucket, then push/pull, then Ctrl-C.
+docker run --rm -p 8080:8080 \
+  -e GITMOTE_S3_BUCKET=my-gitmote-bucket \
+  -e GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud \  # your provider's endpoint
+  -e GITMOTE_S3_PREFIX=objects \                        # MUST match the bucket's existing prefix
+  -e AWS_REGION=fr-par \
+  -e AWS_ACCESS_KEY_ID=… -e AWS_SECRET_ACCESS_KEY=… \
+  ghcr.io/atmin/gitmote:master
+
+git remote add gitmote http://admin:<token>@localhost:8080/<repo>
+git push gitmote main
+```
+
+Two things to get right:
+
+- **`GITMOTE_S3_PREFIX` is a data address, not a preference.** A local instance
+  pointed at an existing bucket must use the **same** prefix (and endpoint/region)
+  that bucket was written with, or gitmote comes up advertising refs whose objects
+  it can't find and aborts startup. If you created the bucket with this same
+  quickstart, match whatever you used then.
+- **Use your existing token.** A populated bucket already has an admin; don't
+  re-bootstrap it — sign in with the token you saved (or `bootstrap -reissue` to
+  mint a fresh one).
+
+**Only one writer at a time — and that's enforced, not your job.** gitmote takes a
+single-writer *lease* on the bucket, so running a second instance (or a stray cloud
+container) can't corrupt anything: whoever holds the lease writes, the other serves
+reads and returns a retryable `503` on push. So a local on-demand forge is safe
+even if you also run gitmote in the cloud — no coordination, no harm. Details in
+[docs/ops.md](docs/ops.md) (“Single writer is a correctness invariant”).
+
 ## Develop locally
 
 `make dev` gives you a running instance in one command: it builds the binaries,
@@ -90,8 +130,14 @@ container — clones again to prove the repo survives on the object store and
 persisted refs (not local disk). Requires Docker + Docker Compose.
 
 `make e2e-restore` additionally exercises the litestream cold-start path (wipes
-the metadata DB and restores it from S3). Deployment — Scaleway Serverless
-Containers, single writer, `gitmote.atmin.net` — lives in [docs/ops.md](docs/ops.md).
+the metadata DB and restores it from S3).
+
+`make e2e-build` proves the `GITMOTE_CI_ALLOW_BUILDS` gate: it runs `act` in a
+privileged docker-in-docker box (a rootful daemon in a box) with the daemon socket
+suppressed (a `docker build` step fails) then mounted (it succeeds), so the safe
+default and the opt-in are both verified against a real build. Skips cleanly with
+no daemon. Deployment — Scaleway Serverless Containers, single writer,
+`gitmote.atmin.net` — lives in [docs/ops.md](docs/ops.md).
 
 ## Bootstrap
 

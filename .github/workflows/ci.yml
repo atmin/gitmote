@@ -17,9 +17,10 @@ jobs:
       - run: make all
 
   # Self-hosting proof: push/clone the real repo against a gitmote container
-  # backed by MinIO (scripts/e2e-local.sh), plus the litestream cold-start restore
-  # (scripts/e2e-restore.sh). Gated — builds an image and runs Docker, so it stays
-  # off the fast per-PR path and runs on master / on demand.
+  # backed by MinIO (scripts/e2e-local.sh), the litestream cold-start restore
+  # (scripts/e2e-restore.sh), and the CI image-build gate (scripts/e2e-build.sh).
+  # Gated — builds an image and runs Docker, so it stays off the fast per-PR path
+  # and runs on master / on demand.
   e2e:
     if: github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -29,9 +30,10 @@ jobs:
           fetch-depth: 0 # push needs the full history, not a shallow clone
       - run: make e2e-local
       - run: make e2e-restore
+      - run: make e2e-build
 
   # Deploy the single writer to Scaleway on every green master push (docs/ops.md).
-  # Safety is by lease now, not procedure: the server runs in s3lite RoleAuto, so a
+  # Safety is by lease, not procedure: the server runs in s3lite RoleAuto, so a
   # rolling deploy's brief old+new overlap is one writer + one read-only follower,
   # never two writers (safety.md §1). max-scale=1 is still asserted (read replicas
   # need fresh followers first — a later step).

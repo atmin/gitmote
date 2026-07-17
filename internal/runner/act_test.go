@@ -39,9 +39,41 @@ func TestActArgsDefaultsNoOverrides(t *testing.T) {
 	if len(extra) != 0 {
 		t.Errorf("extraEnv = %v, want none", extra)
 	}
-	// Just the workflows flag — no -s, no -P (local dev: act's default nesting).
+	// No -s, no -P (local dev: act's default nesting).
 	if hasFlag(args, "-P", "") || slices.Contains(args, "-s") {
-		t.Errorf("args = %v, want only --workflows with no overrides", args)
+		t.Errorf("args = %v, want no secret/platform overrides", args)
+	}
+	// Safe default: nested mode without an opt-in suppresses the daemon-socket
+	// mount so untrusted workflow code can't reach the host daemon.
+	if !hasFlag(args, "--container-daemon-socket", "-") {
+		t.Errorf("args = %v, want --container-daemon-socket - by default", args)
+	}
+}
+
+func TestActArgsAllowBuildsKeepsSocket(t *testing.T) {
+	args, _ := actArgs(".gitmote/workflows", []string{"GITMOTE_CI_ALLOW_BUILDS=1"})
+	// Opted in: leave act's default socket mount so `docker build` reaches the
+	// host daemon.
+	if slices.Contains(args, "--container-daemon-socket") {
+		t.Errorf("args = %v, want no socket override when builds are allowed", args)
+	}
+}
+
+func TestActArgsAllowBuildsFalseSuppressesSocket(t *testing.T) {
+	args, _ := actArgs(".gitmote/workflows", []string{"GITMOTE_CI_ALLOW_BUILDS=false"})
+	if !hasFlag(args, "--container-daemon-socket", "-") {
+		t.Errorf("args = %v, want the socket suppressed when builds are explicitly false", args)
+	}
+}
+
+func TestActArgsSelfHostedOmitsSocketFlag(t *testing.T) {
+	// Self-hosted has no job container to mount into, so the socket flag is moot
+	// and must not be emitted (it would be meaningless / could error).
+	args, _ := actArgs(".gitmote/workflows", []string{
+		"GITMOTE_ACT_PLATFORMS=ubuntu-latest=-self-hosted",
+	})
+	if slices.Contains(args, "--container-daemon-socket") {
+		t.Errorf("args = %v, want no socket flag in self-hosted mode", args)
 	}
 }
 

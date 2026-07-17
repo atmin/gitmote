@@ -2,11 +2,14 @@
 
 > **Status: largely realized — see [architecture/ci.md](../architecture/ci.md).**
 > CI (run `.gitmote/workflows` on push, `act` self-hosted on Scaleway Jobs, logs,
-> status UI, encrypted secrets) has landed. The one part **dropped**: the
-> self-deploy loop below — the Serverless Job sandbox can't build container
-> images (no user namespaces / privileged mode), so gitmote does not rebuild its
-> own image; deployment stays on GitHub Actions. This note is kept for the
-> original reasoning; don't cite it as a spec.
+> status UI, encrypted secrets) has landed. **Container image builds work on a
+> daemon-backed local/VPS runner** behind the `GITMOTE_CI_ALLOW_BUILDS` opt-in
+> (off by default; it grants CI host-daemon/root access — trusted repos only), so
+> a VPS-hosted gitmote *can* build its own image. Still **not built**: the full
+> self-deploy loop below (build → push → redeploy with a latest-wins guard). The
+> Scaleway substrate still can't build (no daemon / no user namespaces), so cloud
+> deployment stays on GitHub Actions. This note is kept for the original reasoning;
+> don't cite it as a spec.
 
 ## The idea
 
@@ -20,7 +23,7 @@ stops being a downgrade.
 The loop then closes on itself: a push runs CI **and redeploys gitmote** —
 gitmote hosting, building, and shipping its own next version. That used to be the
 scary case (an instance replacing itself mid-write is the two-writer hazard), but
-the **leased writer** ([reader-writer-split](reader-writer-split.md), now shipped)
+the **leased writer** ([reader-writer-split](reader-writer-split.md), shipped)
 makes it safe by construction: the new image boots as a follower, the old releases
 the lease on SIGTERM, the new promotes — the ouroboros never has two writers. The
 GitHub mirror then earns a second job: **break-glass.** If a bad push ever wedges

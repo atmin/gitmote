@@ -113,20 +113,43 @@ branch (`checkout -B`) so `github.ref` resolves.
 - **Fire-and-forget** — dispatch and trigger never fail or block a push.
 - **Single writer holds** — only the leader dispatches and writes run state.
 
+## Container image builds
+
+Image builds are **substrate-dependent**, and off by default:
+
+- **Scaleway (cloud) cannot build.** The Serverless Job sandbox has no user
+  namespaces and drops the capabilities image builders need — `docker build`,
+  `buildah`, `podman build`, and kaniko-as-a-step all fail. On the cloud runner CI
+  can compile, test, lint, and produce file artifacts in any language, but
+  **cannot** build an OCI image; such a step must run on the GitHub mirror (a real
+  builder), or use registry-API assembly (`ko`/`crane`) for the static-binary case.
+- **Local/VPS *can* build, behind an opt-in.** On a daemon-backed host `act` runs
+  in nested mode, and it mounts the host Docker socket into each job container by
+  default — so `docker build` reaches the daemon. Because that hands **untrusted
+  workflow code the daemon (host root)**, gitmote suppresses the mount
+  (`act --container-daemon-socket -`) unless **`GITMOTE_CI_ALLOW_BUILDS`** is
+  truthy. Turn it on only for **trusted repos** on a host you control. With it on,
+  gitmote builds container images — including its own — locally or on a VPS.
+  Runtime is selected by `DOCKER_HOST`: Docker works out of the box; podman needs
+  its API socket service running (`podman system service`) and `DOCKER_HOST`
+  pointed at it — a truly daemonless podman can't back `act` at all. See
+  [ops.md](../ops.md).
+
+  > **No daemon → every run fails visibly.** `act` needs a reachable Docker/podman
+  > daemon to spawn job containers. On a host without one each CI job is still
+  > dispatched and recorded, but fails at act's "Set up job" step — the log reads
+  > `failed to connect to the docker API … check if … the daemon is running`, and
+  > the run is marked failed (`ActEngine.Run` → `passed=false`). No workflow step,
+  > and no build, executes. The build opt-in only matters where a daemon exists.
+
 ## Limitations
 
-- **No container builds in CI.** The Serverless Job sandbox has no user
-  namespaces and drops the capabilities image builders need — `docker build`,
-  `buildah`, `podman build`, and kaniko-as-a-step all fail. CI can compile, test,
-  lint, and produce file artifacts in any language (node, rust, go, …); it
-  **cannot** build an OCI image. A workflow that builds+pushes an image must do
-  that step on the GitHub mirror (a real builder), or use registry-API assembly
-  (`ko`/`crane`) for the rare static-binary case. Making arbitrary image builds
-  work in-CI would need a build-capable substrate (a VM with a daemon), a
-  separate effort.
-- **gitmote does not deploy itself.** The self-deploy loop (a green `master` run
-  rebuilding gitmote's own image in-Job) was evaluated and **dropped** — it runs
-  straight into the limitation above. Deployment stays on **GitHub Actions**
+- **gitmote does not deploy itself (on Scaleway).** The self-deploy loop (a green
+  `master` run rebuilding gitmote's own image in-Job) was evaluated and **dropped**
+  for the cloud deployment — the Serverless Job can't build (above). A VPS with
+  `GITMOTE_CI_ALLOW_BUILDS` on *can* rebuild the image, but wiring build → push →
+  redeploy (latest-wins guard, restart) is a deferred follow-up, not yet built.
+  Production deployment stays on **GitHub Actions**
   ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)): build+push the
   public image to GHCR (`ghcr.io/atmin/gitmote`), then `scw container update` to
   pull it; the leased writer keeps the swap safe (see [ops.md](../ops.md)). The

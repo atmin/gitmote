@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -413,6 +414,9 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	case gitmoteURL != "":
 		trigger = ci.NewLocalTrigger(runnerBinaryPath(), logger)
 		logger.Info("CI trigger: local runner", "runner", runnerBinaryPath(), "url", gitmoteURL)
+		if allow, _ := strconv.ParseBool(os.Getenv("GITMOTE_CI_ALLOW_BUILDS")); allow {
+			logger.Warn("GITMOTE_CI_ALLOW_BUILDS is on: CI can reach the host Docker daemon (host root) — trusted repos only")
+		}
 	default:
 		logger.Warn("CI trigger disabled; runs record but do not execute " +
 			"(set GITMOTE_URL for local, or SCW_CI_JOB_DEFINITION_ID + GITMOTE_URL for cloud)")

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -21,6 +22,15 @@ const secretEnvPrefix = "GITMOTE_CI_SECRET_"
 // daemon for act to nest into. Unset (local dev, where a real daemon exists) →
 // act's default nested-container behavior, unchanged.
 const actPlatformsEnv = "GITMOTE_ACT_PLATFORMS"
+
+// allowBuildsEnv opts a nested-mode runner into container image builds. In
+// nested mode act bind-mounts the host Docker socket into every job container by
+// default, so untrusted workflow code can reach the daemon — i.e. host root.
+// Unless this is truthy (strconv.ParseBool) we pass `--container-daemon-socket -`
+// to suppress that mount; set it only for trusted repos on a daemon-backed
+// local/VPS host that must run `docker build`. In self-hosted mode there is no
+// job container to mount into, so the knob is moot.
+const allowBuildsEnv = "GITMOTE_CI_ALLOW_BUILDS"
 
 // ActEngine runs the repo's workflows with nektos/act — the locked engine
 // (tasks/16-ci.md Stage 0 #1). act runs each job in a container via the local
@@ -73,6 +83,7 @@ func (ActEngine) Run(ctx context.Context, repoDir, workflowDir string) ([]byte, 
 // Pure, so it is unit-testable without act on PATH.
 func actArgs(workflowDir string, environ []string) (args, extraEnv []string) {
 	args = []string{"--workflows", workflowDir}
+	var selfHosted, allowBuilds bool
 	for _, kv := range environ {
 		name, val, _ := strings.Cut(kv, "=")
 		switch name {
@@ -80,14 +91,24 @@ func actArgs(workflowDir string, environ []string) (args, extraEnv []string) {
 			for _, p := range strings.Split(val, ",") {
 				if p = strings.TrimSpace(p); p != "" {
 					args = append(args, "-P", p)
+					selfHosted = true
 				}
 			}
+		case allowBuildsEnv:
+			allowBuilds, _ = strconv.ParseBool(strings.TrimSpace(val))
 		default:
 			if secret, ok := strings.CutPrefix(name, secretEnvPrefix); ok && secret != "" {
 				extraEnv = append(extraEnv, secret+"="+val)
 				args = append(args, "-s", secret)
 			}
 		}
+	}
+	// Nested mode mounts the host Docker socket into each job container by
+	// default, handing untrusted workflow code the daemon (host root). Suppress
+	// that unless builds are explicitly opted in. Self-hosted mode has no job
+	// container to mount into, so the flag would be meaningless there.
+	if !selfHosted && !allowBuilds {
+		args = append(args, "--container-daemon-socket", "-")
 	}
 	return args, extraEnv
 }

@@ -8,7 +8,7 @@
    exactly one writer instance; that's a deployment fact, not a limit on
    collaborators. A few invited users and the web UI's service commits all funnel
    into one writer. **The one rule: never two writers on the same WAL** — and this
-   is now enforced by a **lease**, not by procedure. The server opens s3lite in
+   is enforced by a **lease**, not by procedure. The server opens s3lite in
    `RoleAuto`: it writes only while it holds the lease (litestream's `s3.Leaser`,
    a conditional-write CAS on `lock.json` in the replica bucket) and otherwise runs
    as a read-only follower. This makes the S3 backend's support for **atomic
@@ -26,7 +26,7 @@
    boots as a follower, the old releases the lease on its graceful SIGTERM `Close`,
    and the new promotes on its next lease poll. **Overlap is safe by construction**,
    so there is no stop-first drain. This is the writer half of
-   [reader-writer-split](../evolution/reader-writer-split.md), now shipped; the
+   [reader-writer-split](../evolution/reader-writer-split.md), shipped; the
    remaining half — *fresh* followers that scale reads out (a follower serves only
    a restored snapshot today) — is why the container still pins `max-scale = 1`.
 
@@ -82,3 +82,36 @@
    every repo's secrets, so a replica leak must never expose it. An explicit env
    still wins for both, and generation is get-or-create on the leader (a follower's
    DB is read-only), so restarts and rolling deploys reuse the one restored value.
+
+7. **Container image builds are an opt-in privilege escalation — off by default.**
+   Workflow code is attacker-controlled; the isolation boundary is the job
+   container. Building an image needs a container builder, and the pragmatic path
+   (`act` nested mode) mounts the **host Docker socket** into the job container —
+   which is equivalent to handing that untrusted code **root on the host** (a
+   trivial container escape). So gitmote's default **suppresses** the mount
+   (`act --container-daemon-socket -`, in [`internal/runner/act.go`](../../internal/runner/act.go)),
+   and only restores it when **`GITMOTE_CI_ALLOW_BUILDS`** is set. This is
+   deliberately not per-repo: it is a host-level trust decision the operator makes
+   for a machine running only repos they trust (a personal/VPS forge building its
+   own code). It has no effect on the Scaleway substrate (self-hosted mode, no
+   daemon, no socket to mount — and it can't build anyway). The server logs a loud
+   warning at startup when the opt-in is on.
+
+   **Why not just always use Docker-in-Docker (DinD) and drop the knob?** Because
+   DinD does not remove the escape — it relocates it. A nested daemon requires a
+   `--privileged` container (all capabilities, host devices, unmasked `/proc`/`/sys`,
+   no seccomp), which is itself host-root-equivalent; and untrusted workflow code is
+   exactly what drives the builder, so it inherits that reach. DooD vs DinD is a
+   choice about build *state isolation* (own daemon/cache vs the host's), **not**
+   about safety against untrusted code. The axis that actually bounds untrusted
+   builds is **rootless vs rootful**: on a rootful daemon anything the build reaches
+   is real host root, whereas a rootless engine caps the whole container tree —
+   privileged nesting included — at the invoking unprivileged user. So "always DinD
+   where supported" would be *more* machinery (provision/wire/lifecycle a privileged
+   daemon, detect support — and Scaleway can't do privileged, leaving the same
+   local/VPS set), still couldn't drop the operator-consent gate (auto-enabling
+   builds for any pushed repo is a host-root grant by default), and buys no safety.
+   A genuine "solve it from the root" is a **rootless builder** (rootless
+   BuildKit/kaniko/buildah — an escape lands as an unprivileged user) or a
+   **per-job VM boundary** (Kata/Firecracker); both are additions, tracked as
+   future work, and the consent gate stays until one exists.

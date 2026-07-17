@@ -22,7 +22,7 @@ PORT ?= 8080
 # joins this project's network so the container reaches MinIO at minio:9000.
 DEV_COMPOSE := docker compose -p gitmote-dev -f docker-compose.dev.yml
 
-.PHONY: all fmt lint test build dev dev-reset e2e-local e2e-restore image prod publish
+.PHONY: all fmt lint test build dev dev-reset e2e-local e2e-restore e2e-build image prod publish
 
 all: lint test build
 
@@ -63,6 +63,13 @@ e2e-local:
 # production cold-start path locally. Requires docker + docker compose.
 e2e-restore:
 	./scripts/e2e-restore.sh
+
+# Proof that GITMOTE_CI_ALLOW_BUILDS gates real image builds: runs act in a
+# privileged DinD box (a rootful daemon in a box) with the socket suppressed
+# (build fails) then mounted (build succeeds). Skips with no daemon. Requires
+# docker or podman.
+e2e-build:
+	./scripts/e2e-build.sh
 
 # Build the actual server container image (distinct from `make build`, the Go
 # binaries), tagged with VERSION — the exact image CI publishes and `make prod`

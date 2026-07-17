@@ -29,7 +29,7 @@ replicates its metadata SQLite to S3 with litestream; two instances writing the
 same WAL can corrupt the replica. This is stronger than a stateless service's
 in-process-race concern: it is a data-integrity precondition.
 
-The invariant is now enforced **by a lease, not by procedure.** The server opens
+The invariant is enforced **by a lease, not by procedure.** The server opens
 its metadata in s3lite `RoleAuto`: it becomes the writer only while it holds a
 lease (litestream's `s3.Leaser` — an `If-None-Match`/`If-Match` conditional-write
 CAS on `lock.json` in the same bucket), and runs as a read-only follower
@@ -107,6 +107,7 @@ one of these turns a trigger on — see [CI substrate](#ci-substrate)).
 | `SCW_SECRET_KEY` | secret — Scaleway API secret key (UUID) to start the job (the same key also deploys the container from CI) |
 | `SCW_REGION` | region for the job start (falls back to `AWS_REGION`) |
 | `GITMOTE_CI_SECRET_KEY_V<n>` | secret — base64 of 32 bytes; **env-only** master key for per-repo CI secrets, never persisted ([safety.md §5](architecture/safety.md)). Add `_V2`, … to rotate (highest is current; old envelopes still decrypt). Unset → the secrets UI is off and none are injected |
+| `GITMOTE_CI_ALLOW_BUILDS` | `1`/`true` → let workflows build container images on a **daemon-backed local/VPS** runner (leaves `act`'s host-Docker-socket mount in place). ⚠️ **Hands untrusted workflow code the host daemon (host root) — trusted repos only** ([safety.md §7](architecture/safety.md)). Unset/false (default) → the socket mount is suppressed. No effect on the Scaleway substrate (can't build regardless) |
 
 **Advanced overrides — rarely needed** (the defaults are derived).
 
@@ -161,8 +162,22 @@ from the env at startup** (one runner, three substrates — see
 **Prerequisite for both executing substrates:** the runner runs `.gitmote/workflows`
 with [`act`](https://github.com/nektos/act), which needs a reachable **Docker or
 podman daemon** — in the cloud that's the Serverless Job image; locally it's the
-daemon on the host (the same one MinIO uses under `make dev`). A leader-only ticker
+daemon on the host (the same one MinIO uses under `make dev`). **No daemon → every
+CI run fails visibly**: the job is still dispatched and recorded, but act fails at
+its "Set up job" step with a `check if … the daemon is running` error and the run is
+marked failed — no workflow step (and no build) executes. A leader-only ticker
 sweeps jobs stuck `running` past ~1h back to `error`.
+
+**Container image builds (local/VPS only).** With `GITMOTE_CI_ALLOW_BUILDS` set,
+`act`'s default behaviour of mounting the host Docker socket into each job container
+is kept, so a workflow step (`docker build`, `docker/build-push-action`, …) reaches
+the daemon and builds images — including gitmote's own. Off by default because it
+gives untrusted workflow code the daemon, i.e. host root ([safety.md §7](architecture/safety.md));
+turn it on only on a host running trusted repos. The runtime follows `DOCKER_HOST`:
+plain Docker needs nothing extra; **podman** must expose its Docker-API socket
+(`systemctl --user enable --now podman.socket`, then
+`DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock`) — a *daemonless* podman
+cannot back `act`. The Scaleway substrate ignores the flag (self-hosted, no daemon).
 
 ## CI secrets (GitHub Actions)
 
@@ -333,7 +348,7 @@ same path is exercised locally by `make e2e-restore`.
 ```bash
 scw container container get <CONTAINER_ID>      # status, error messages, instance count
 scw container container redeploy <CONTAINER_ID> # re-pull the current image tag
-# Images live in GHCR now — inspect/pull them there:
+# Images live in GHCR — inspect/pull them there:
 docker manifest inspect ghcr.io/atmin/gitmote:master        # server image
 docker manifest inspect ghcr.io/atmin/gitmote-runner:master # CI runner image
 ```
