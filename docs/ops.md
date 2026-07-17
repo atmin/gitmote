@@ -91,13 +91,14 @@ Setting these on the container does nothing for CI, and vice versa.
 | `AWS_REGION` | region; defaults to `us-east-1` (ignored by most S3-compatible stores). **Set it for real AWS S3** (e.g. `fr-par` on Scaleway) |
 | `GITMOTE_S3_ENDPOINT` | `https://s3.fr-par.scw.cloud` — the S3 endpoint; **omit for real AWS S3** |
 
-**Auto-managed — leave unset; generated and persisted in meta on first run (an
-explicit env still wins).** No longer part of the required surface.
+**Auto-managed — leave unset; a sensible default applies and an explicit env still
+wins.** Not part of the required surface.
 
 | Variable | Value / meaning |
 |----------|-----------------|
-| `GITMOTE_COOKIE_KEY` | signs management-UI session cookies; auto-generated + persisted (stable across restart / scale-to-zero) |
-| `WORKER_SECRET` | runner report-back auth; auto-generated + persisted **when a CI trigger is configured** (below) |
+| `GITMOTE_COOKIE_KEY` | signs management-UI session cookies; auto-generated + persisted in meta (stable across restart / scale-to-zero) |
+| `WORKER_SECRET` | runner report-back auth; auto-generated + persisted in meta **when a CI trigger is configured** (below) |
+| `GITMOTE_DATA` | base dir for the db (`meta.sqlite3`), cache, and socket; **preset to `/data` in the image** — mount a volume there to keep the cache across restarts. Ephemeral by design (restored from S3 on cold start) |
 
 **CI — optional, off by default** (runs are still recorded; nothing executes until
 one of these turns a trigger on — see [CI substrate](#ci-substrate)).
@@ -110,12 +111,6 @@ one of these turns a trigger on — see [CI substrate](#ci-substrate)).
 | `SCW_REGION` | region for the job start (falls back to `AWS_REGION`) |
 | `GITMOTE_CI_SECRET_KEY_V<n>` | secret — base64 of 32 bytes; **env-only** master key for per-repo CI secrets, never persisted ([safety.md §5](architecture/safety.md)). Add `_V2`, … to rotate (highest is current; old envelopes still decrypt). Unset → the secrets UI is off and none are injected |
 | `GITMOTE_CI_ALLOW_BUILDS` | `1`/`true` → let workflows build container images on a **daemon-backed local/VPS** runner (leaves `act`'s host-Docker-socket mount in place). ⚠️ **Hands untrusted workflow code the host daemon (host root) — trusted repos only** ([safety.md §7](architecture/safety.md)). Unset/false (default) → the socket mount is suppressed. No effect on the Scaleway substrate (can't build regardless) |
-
-**Advanced overrides — rarely needed** (the defaults are derived).
-
-| Variable | Value / meaning |
-|----------|-----------------|
-| `GITMOTE_DATA` | base dir for the db (`meta.sqlite3`), cache, and socket; **preset to `/data` in the image** — mount a volume there to keep the cache across restarts. Ephemeral by design (restored from S3 on cold start) |
 
 `GITMOTE_DATA` is ephemeral on purpose: the object store + litestream replica are
 the durable state, and the local disk is a cache. On a cold start (scale-to-zero →
