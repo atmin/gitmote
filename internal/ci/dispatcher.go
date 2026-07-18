@@ -96,8 +96,12 @@ type Config struct {
 	Trigger      Trigger
 	Minter       Minter  // mints the per-run clone token; nil leaves it empty
 	Secrets      Secrets // decrypts per-repo CI secrets to inject; nil injects none
-	BaseURL      string  // GITMOTE_URL
-	WorkerSecret string  // WORKER_SECRET
+	// EnvSecrets are operator-supplied per-repo CI secrets read from the process
+	// env (GITMOTE_REPO_SECRET_<REPO>__<NAME>); overlaid on and winning over the
+	// DB secrets. Empty is the common case (no env seeding).
+	EnvSecrets   EnvSecrets
+	BaseURL      string // GITMOTE_URL
+	WorkerSecret string // WORKER_SECRET
 	Logger       *slog.Logger
 }
 
@@ -105,15 +109,16 @@ type Config struct {
 // Only the leader constructs and calls it (it is the only instance that
 // processes receive-pack).
 type Dispatcher struct {
-	runs    Runs
-	mz      Materializer
-	trigger Trigger
-	minter  Minter
-	secrets Secrets
-	baseURL string
-	secret  string
-	logger  *slog.Logger
-	now     func() time.Time // injectable clock for the clone-token expiry
+	runs       Runs
+	mz         Materializer
+	trigger    Trigger
+	minter     Minter
+	secrets    Secrets
+	envSecrets EnvSecrets
+	baseURL    string
+	secret     string
+	logger     *slog.Logger
+	now        func() time.Time // injectable clock for the clone-token expiry
 }
 
 // NewDispatcher returns a Dispatcher from cfg.
@@ -123,15 +128,16 @@ func NewDispatcher(cfg Config) *Dispatcher {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Dispatcher{
-		runs:    cfg.Runs,
-		mz:      cfg.Materializer,
-		trigger: cfg.Trigger,
-		minter:  cfg.Minter,
-		secrets: cfg.Secrets,
-		baseURL: cfg.BaseURL,
-		secret:  cfg.WorkerSecret,
-		logger:  logger,
-		now:     time.Now,
+		runs:       cfg.Runs,
+		mz:         cfg.Materializer,
+		trigger:    cfg.Trigger,
+		minter:     cfg.Minter,
+		secrets:    cfg.Secrets,
+		envSecrets: cfg.EnvSecrets,
+		baseURL:    cfg.BaseURL,
+		secret:     cfg.WorkerSecret,
+		logger:     logger,
+		now:        time.Now,
 	}
 }
 
@@ -265,19 +271,32 @@ func (d *Dispatcher) jobEnv(ev Event, runID, jobID int64, cloneToken string, sec
 	return env
 }
 
-// repoSecrets decrypts the repo's CI secrets for injection. It returns nil (and
-// logs) when no service is configured or decryption fails — running without
-// secrets is preferable to failing the fire-and-forget dispatch; the workflow
-// surfaces the missing value itself.
+// repoSecrets assembles the repo's CI secrets for injection: the encrypted,
+// DB-stored secrets (when a service is configured) overlaid with any
+// operator-supplied env secrets (GITMOTE_REPO_SECRET_*), which win on a name
+// collision and need no master key. It never fails the fire-and-forget dispatch —
+// a decrypt error drops the DB secrets (logged) but env secrets still apply, and
+// the workflow surfaces any value it is missing. Returns nil when there are none.
 func (d *Dispatcher) repoSecrets(ctx context.Context, ev Event) map[string]string {
-	if d.secrets == nil {
-		return nil
+	var m map[string]string
+	if d.secrets != nil {
+		db, err := d.secrets.Secrets(ctx, ev.RepoID)
+		if err != nil {
+			d.logger.Error("ci: load secrets failed; running without them",
+				"repo", ev.RepoName, "error", err)
+		} else {
+			m = db
+		}
 	}
-	m, err := d.secrets.Secrets(ctx, ev.RepoID)
-	if err != nil {
-		d.logger.Error("ci: load secrets failed; running without them",
-			"repo", ev.RepoName, "error", err)
-		return nil
+	env := d.envSecrets.For(ev.RepoName)
+	if len(env) == 0 {
+		return m
+	}
+	if m == nil {
+		m = make(map[string]string, len(env))
+	}
+	for name, val := range env {
+		m[name] = val // env overrides DB on collision
 	}
 	return m
 }

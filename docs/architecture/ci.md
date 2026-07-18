@@ -98,6 +98,15 @@ reads the value from its env — so the value never touches the `act` argv and t
 workflow sees `${{ secrets.NAME }}` as on GitHub. Values are write-only in the UI
 (only names shown) and never logged.
 
+**Env-seeded secrets (a second source).** Beside the encrypted UI/DB secrets, the
+dispatcher overlays any per-repo secrets supplied in the server's own environment
+as `GITMOTE_REPO_SECRET_<REPO>__<NAME>` (repo uppercased, `-`→`_`). These are
+plain operator config — never stored, never encrypted, and needing **no master
+key** — so they're invisible to the UI and win over a same-named DB secret. The
+host env is already the CI trust boundary ([safety.md §7](safety.md)), so this
+adds no exposure; it exists so the automated self-deploy (`make self-deploy`) can
+carry its Scaleway/GHCR secrets in a gitignored `.env` instead of the UI.
+
 ## Clone auth
 
 The runner clones over ordinary git-HTTPS with a **per-run, read-only,
@@ -132,8 +141,12 @@ Image builds are **substrate-dependent**, and off by default:
   gitmote builds container images — including its own — locally or on a VPS.
   Runtime is selected by `DOCKER_HOST`: Docker works out of the box; podman needs
   its API socket service running (`podman system service`) and `DOCKER_HOST`
-  pointed at it — a truly daemonless podman can't back `act` at all. See
-  [ops.md](../ops.md).
+  pointed at it — a truly daemonless podman can't back `act` at all. When builds
+  are on, gitmote mounts the **daemon-side** socket path (`/var/run/docker.sock`,
+  override `GITMOTE_ACT_DAEMON_SOCKET`) rather than let `act` derive the mount from
+  `DOCKER_HOST` — for a **VM-backed daemon** (colima, Docker Desktop on macOS)
+  `DOCKER_HOST` is a host path the in-VM daemon can't resolve, so the socket mount
+  would fail. See [ops.md](../ops.md).
 
   > **No daemon → every run fails visibly.** `act` needs a reachable Docker/podman
   > daemon to spawn job containers. On a host without one each CI job is still
@@ -144,16 +157,27 @@ Image builds are **substrate-dependent**, and off by default:
 
 ## Limitations
 
-- **gitmote does not deploy itself (on Scaleway).** The self-deploy loop (a green
-  `master` run rebuilding gitmote's own image in-Job) was evaluated and **dropped**
-  for the cloud deployment — the Serverless Job can't build (above). A VPS with
-  `GITMOTE_CI_ALLOW_BUILDS` on *can* rebuild the image, but wiring build → push →
-  redeploy (latest-wins guard, restart) is a deferred follow-up, not yet built.
+- **gitmote does not deploy itself on Scaleway; it *can* locally (break-glass).**
+  The cloud self-deploy loop (a green `master` run rebuilding gitmote's own image
+  in-Job) was evaluated and **dropped** — the Serverless Job can't build (above).
   Production deployment stays on **GitHub Actions**
   ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)): build+push the
   public image to GHCR (`ghcr.io/atmin/gitmote`), then `scw container update` to
   pull it; the leased writer keeps the swap safe (see [ops.md](../ops.md)). The
-  GitHub mirror is deployer and break-glass both.
+  GitHub mirror is the everyday deployer.
+
+  A **local** instance, though, is a real builder, so gitmote now closes the loop
+  as a **break-glass fallback**, automated by `make self-deploy`: it runs a
+  throwaway instance with `GITMOTE_CI_ALLOW_BUILDS` on, seeds the deploy secrets
+  from a gitignored `.env` (per-repo, via `GITMOTE_REPO_SECRET_<REPO>__<NAME>` —
+  never stored, no master key needed), and pushes `HEAD` to `self-deploy`. That
+  triggers [`.gitmote/workflows/deploy.yml`](../../.gitmote/workflows/deploy.yml) —
+  the GitHub deploy job, gated on `self-deploy` instead of `master` — to build the
+  amd64 image, push it to GHCR, and run the same `scw container update`. Confined to
+  the `self-deploy` branch, it never overlaps the GitHub path (no double-deploy),
+  and the same writer lease makes its rolling swap safe. It is a fallback for when
+  the GitHub deployer is unavailable, not the primary route. See
+  [ops.md](../ops.md).
 - **The runner image is built by CI**, not by hand: a change to
   [`Dockerfile.runner`](../../Dockerfile.runner) or the runner source on `master`
   (or a release) publishes `ghcr.io/atmin/gitmote-runner` publicly via

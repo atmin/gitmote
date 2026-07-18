@@ -474,6 +474,60 @@ func TestDispatchSecretsFailureRunsWithout(t *testing.T) {
 	}
 }
 
+func TestDispatchInjectsEnvSecrets(t *testing.T) {
+	ctx := context.Background()
+	md, s, mz := newFixture(t)
+	r, head := seedRepo(t, md, s, "app", map[string]string{
+		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
+	})
+
+	// No DB Secrets service configured at all — env secrets alone must inject,
+	// since they need no master key (the fully-automated .env path).
+	tr := &stubTrigger{}
+	NewDispatcher(Config{
+		Runs: md, Materializer: mz, Trigger: tr,
+		EnvSecrets:   LoadEnvSecrets([]string{"GITMOTE_REPO_SECRET_APP__DEPLOY_KEY=k3y"}),
+		BaseURL:      "https://gitmote.test",
+		WorkerSecret: "worker-secret",
+	}).Dispatch(ctx, branchEvent(r, head))
+
+	if len(tr.calls) != 1 {
+		t.Fatalf("trigger calls = %d, want 1", len(tr.calls))
+	}
+	if got := tr.calls[0]["GITMOTE_CI_SECRET_DEPLOY_KEY"]; got != "k3y" {
+		t.Errorf("GITMOTE_CI_SECRET_DEPLOY_KEY = %q, want the env-seeded value", got)
+	}
+}
+
+func TestDispatchEnvSecretsOverrideDBSecrets(t *testing.T) {
+	ctx := context.Background()
+	md, s, mz := newFixture(t)
+	r, head := seedRepo(t, md, s, "app", map[string]string{
+		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
+	})
+
+	// On a name collision the env value wins; a DB-only secret still comes through.
+	tr := &stubTrigger{}
+	NewDispatcher(Config{
+		Runs: md, Materializer: mz, Trigger: tr,
+		Secrets:      stubSecrets{env: map[string]string{"TOKEN": "from-db", "DB_ONLY": "keep"}},
+		EnvSecrets:   LoadEnvSecrets([]string{"GITMOTE_REPO_SECRET_APP__TOKEN=from-env"}),
+		BaseURL:      "https://gitmote.test",
+		WorkerSecret: "worker-secret",
+	}).Dispatch(ctx, branchEvent(r, head))
+
+	if len(tr.calls) != 1 {
+		t.Fatalf("trigger calls = %d, want 1", len(tr.calls))
+	}
+	env := tr.calls[0]
+	if env["GITMOTE_CI_SECRET_TOKEN"] != "from-env" {
+		t.Errorf("collision: TOKEN = %q, want env to win (from-env)", env["GITMOTE_CI_SECRET_TOKEN"])
+	}
+	if env["GITMOTE_CI_SECRET_DB_ONLY"] != "keep" {
+		t.Errorf("DB_ONLY = %q, want the DB secret preserved", env["GITMOTE_CI_SECRET_DB_ONLY"])
+	}
+}
+
 // failNthTrigger fails the Nth (1-based) trigger call and succeeds the others.
 type failNthTrigger struct {
 	failOn int

@@ -22,7 +22,7 @@ PORT ?= 8080
 # joins this project's network so the container reaches MinIO at minio:9000.
 DEV_COMPOSE := docker compose -p gitmote-dev -f docker-compose.dev.yml
 
-.PHONY: all fmt lint test build dev dev-reset e2e-local e2e-restore e2e-build image prod publish
+.PHONY: all fmt lint test build dev dev-reset self-deploy self-deploy-reset e2e-local e2e-restore e2e-build image prod publish
 
 all: lint test build
 
@@ -52,6 +52,20 @@ dev: build
 dev-reset:
 	docker compose -p gitmote-dev -f docker-compose.dev.yml down -v 2>/dev/null || true
 	rm -rf data
+
+# Break-glass self-deploy: build+deploy gitmote to gitmote.atmin.net through its
+# own local runner, secrets seeded from a gitignored .env (no Secrets UI). Runs a
+# throwaway instance on :8081 with its own MinIO (:9200) and pushes HEAD to the
+# `self-deploy` branch. GitHub Actions stays the everyday deployer. Requires act +
+# docker; the deploy workflow needs GITMOTE_CI_ALLOW_BUILDS (the script sets it).
+# See docs/ops.md. Copy .env.example → .env and fill it in first.
+self-deploy: build
+	./scripts/self-deploy.sh
+
+# Wipe the throwaway self-deploy state (its MinIO volume and data dir).
+self-deploy-reset:
+	docker compose -p gitmote-selfdeploy -f docker-compose.selfdeploy.yml down -v 2>/dev/null || true
+	rm -rf data-selfdeploy
 
 # End-to-end: gitmote hosts itself against MinIO in Docker (CONTRIBUTING.md —
 # integration tests drive real git). Requires docker + docker compose.

@@ -37,9 +37,18 @@ var version = "dev"
 
 const shutdownTimeout = 10 * time.Second
 
-// listenAddr is the fixed bind address. Ports are mapped at the container, so
-// there is no reason to make this a knob.
-const listenAddr = ":8080"
+// defaultListenAddr is the bind address in the container, where ports are mapped
+// externally. GITMOTE_LISTEN_ADDR overrides it — for running a second native
+// instance beside `make dev` (e.g. the break-glass self-deploy on :8081).
+const defaultListenAddr = ":8080"
+
+// listenAddrFromEnv returns GITMOTE_LISTEN_ADDR when set, else defaultListenAddr.
+func listenAddrFromEnv() string {
+	if v := os.Getenv("GITMOTE_LISTEN_ADDR"); v != "" {
+		return v
+	}
+	return defaultListenAddr
+}
 
 const (
 	// reconcileInterval is how often the leader sweeps abandoned CI jobs.
@@ -63,7 +72,7 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
-	if err := run(context.Background(), logger, listenAddr); err != nil {
+	if err := run(context.Background(), logger, listenAddrFromEnv()); err != nil {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)
 	}
@@ -420,12 +429,20 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	// A successful, branch-advancing push discovers its workflows, records a run,
 	// and triggers a runner per job — fire-and-forget, so dispatch never fails the
 	// push (tasks/16-ci.md).
+	// Operator-supplied per-repo CI secrets from the process env
+	// (GITMOTE_REPO_SECRET_<REPO>__<NAME>): never stored, no master key needed —
+	// the automated self-deploy seeds them from a gitignored .env (docs/ops.md).
+	envSecrets := ci.LoadEnvSecrets(os.Environ())
+	if red := envSecrets.Redacted(); len(red) > 0 {
+		logger.Info("env CI secrets loaded (never persisted)", "repos", red)
+	}
 	dispatcher := ci.NewDispatcher(ci.Config{
 		Runs:         md,
 		Materializer: materializer,
 		Trigger:      trigger,
 		Minter:       guard,
 		Secrets:      secretsSvc,
+		EnvSecrets:   envSecrets,
 		BaseURL:      gitmoteURL,
 		WorkerSecret: workerSecret,
 		Logger:       logger,

@@ -321,6 +321,39 @@ a release) via `.github/workflows/publish-runner.yml` →
 git push origin master
 ```
 
+**Break-glass: self-deploy from a local instance (`make self-deploy`).** When
+GitHub is unavailable (or an out-of-band deploy is wanted), a local gitmote
+instance builds and deploys itself via
+[`.gitmote/workflows/deploy.yml`](../.gitmote/workflows/deploy.yml) — the GitHub
+deploy job gated on the `self-deploy` branch instead of `master`. It runs only on a
+local instance (Scaleway can't build).
+
+`make self-deploy` automates it end to end: copy [`.env.example`](../.env.example)
+to `.env` (gitignored) and fill in the deploy secrets, then run it. The target
+starts a throwaway instance on `:8081` with its own MinIO (`:9200`, separate from
+`make dev`), `GITMOTE_CI_ALLOW_BUILDS=1`, and the `.env` secrets seeded per-repo via
+`GITMOTE_REPO_SECRET_GITMOTE__<NAME>` — then pushes `HEAD` to `self-deploy`, which
+triggers the workflow. These env secrets are **never stored and need no
+`GITMOTE_CI_SECRET_KEY`** (that key only guards the UI/DB secrets path): the host
+env is the trust boundary ([safety.md §7](architecture/safety.md)). Requires `act`
+and a running Docker daemon — the script resolves the socket into `DOCKER_HOST`
+from the active docker context (so colima and Docker Desktop both work) and fails
+with setup steps if none is up. On Apple Silicon, `colima start --vm-type vz
+--vz-rosetta` gives Rosetta-accelerated `linux/amd64` builds.
+
+The secrets to put in `.env` are the same Scaleway five the GitHub pipeline uses
+(below) **plus** `GHCR_USER`/`GHCR_TOKEN` (a GHCR PAT with `write:packages` — there
+is no built-in `GITHUB_TOKEN` off GitHub). The build is `linux/amd64` only
+(Scaleway's arch; emulated on an arm64 dev host, so the first build is slow); it
+tags `:self-deploy` + `:<sha>` and deploys the SHA tag — never `:master`, which the
+GitHub deployer owns. Confined to `self-deploy`, it never double-deploys with the
+`master` path, and the writer lease keeps its rolling swap safe exactly as the
+GitHub deploy's. The instance is disposable — `make self-deploy` resets its
+throwaway state (the `data-selfdeploy/` dir and its own MinIO volume) at the start
+of every run, so an interrupted prior run can't leave stale litestream state drifted
+from the bucket; the previous run's state survives only until the next run.
+`make self-deploy-reset` wipes it on demand.
+
 ## Verifying it hosts itself
 
 ```bash

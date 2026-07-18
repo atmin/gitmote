@@ -32,6 +32,19 @@ const actPlatformsEnv = "GITMOTE_ACT_PLATFORMS"
 // job container to mount into, so the knob is moot.
 const allowBuildsEnv = "GITMOTE_CI_ALLOW_BUILDS"
 
+// actDaemonSocketEnv overrides the daemon-side Docker socket path act mounts into
+// each job container when builds are enabled. Defaults to defaultActDaemonSocket.
+// The mount source must be the socket path the *daemon* sees, not DOCKER_HOST: for
+// a VM-backed daemon (colima, Docker Desktop on macOS) DOCKER_HOST is a host path
+// the in-VM daemon can't resolve, so letting act derive the mount from it fails
+// with "operation not supported". Override only for an exotic daemon (e.g. rootless
+// docker at $XDG_RUNTIME_DIR/docker.sock).
+const actDaemonSocketEnv = "GITMOTE_ACT_DAEMON_SOCKET"
+
+// defaultActDaemonSocket is the daemon's own socket path for native docker and for
+// VM-backed daemons (colima, Docker Desktop) alike.
+const defaultActDaemonSocket = "/var/run/docker.sock"
+
 // ActEngine runs the repo's workflows with nektos/act — the locked engine
 // (tasks/16-ci.md Stage 0 #1). act runs each job in a container via the local
 // Docker/podman daemon and speaks GitHub-Actions YAML, so a workflow is
@@ -84,6 +97,7 @@ func (ActEngine) Run(ctx context.Context, repoDir, workflowDir string) ([]byte, 
 func actArgs(workflowDir string, environ []string) (args, extraEnv []string) {
 	args = []string{"--workflows", workflowDir}
 	var selfHosted, allowBuilds bool
+	daemonSocket := defaultActDaemonSocket
 	for _, kv := range environ {
 		name, val, _ := strings.Cut(kv, "=")
 		switch name {
@@ -96,6 +110,10 @@ func actArgs(workflowDir string, environ []string) (args, extraEnv []string) {
 			}
 		case allowBuildsEnv:
 			allowBuilds, _ = strconv.ParseBool(strings.TrimSpace(val))
+		case actDaemonSocketEnv:
+			if v := strings.TrimSpace(val); v != "" {
+				daemonSocket = v
+			}
 		default:
 			if secret, ok := strings.CutPrefix(name, secretEnvPrefix); ok && secret != "" {
 				extraEnv = append(extraEnv, secret+"="+val)
@@ -103,12 +121,22 @@ func actArgs(workflowDir string, environ []string) (args, extraEnv []string) {
 			}
 		}
 	}
-	// Nested mode mounts the host Docker socket into each job container by
-	// default, handing untrusted workflow code the daemon (host root). Suppress
-	// that unless builds are explicitly opted in. Self-hosted mode has no job
-	// container to mount into, so the flag would be meaningless there.
-	if !selfHosted && !allowBuilds {
+	// How the job-container Docker socket is mounted:
+	switch {
+	case selfHosted:
+		// No nested job container to mount into — the step runs in the container
+		// directly, so the flag would be meaningless.
+	case !allowBuilds:
+		// Nested mode mounts the host Docker socket into each job container by
+		// default, handing untrusted workflow code the daemon (host root). Suppress
+		// it unless builds are explicitly opted in.
 		args = append(args, "--container-daemon-socket", "-")
+	default:
+		// Builds opted in: mount the daemon's own socket so `docker build` reaches
+		// it. Pin the daemon-side path rather than let act derive the mount source
+		// from DOCKER_HOST — a VM-backed daemon (colima, Docker Desktop on macOS)
+		// can't resolve that host path and the mount fails.
+		args = append(args, "--container-daemon-socket", daemonSocket)
 	}
 	return args, extraEnv
 }

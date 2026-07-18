@@ -50,12 +50,22 @@ func TestActArgsDefaultsNoOverrides(t *testing.T) {
 	}
 }
 
-func TestActArgsAllowBuildsKeepsSocket(t *testing.T) {
+func TestActArgsAllowBuildsMountsDaemonSocket(t *testing.T) {
 	args, _ := actArgs(".gitmote/workflows", []string{"GITMOTE_CI_ALLOW_BUILDS=1"})
-	// Opted in: leave act's default socket mount so `docker build` reaches the
-	// host daemon.
-	if slices.Contains(args, "--container-daemon-socket") {
-		t.Errorf("args = %v, want no socket override when builds are allowed", args)
+	// Opted in: mount the daemon's own socket path (not act's DOCKER_HOST-derived
+	// default, which breaks for a VM-backed daemon) so `docker build` reaches it.
+	if !hasFlag(args, "--container-daemon-socket", "/var/run/docker.sock") {
+		t.Errorf("args = %v, want --container-daemon-socket /var/run/docker.sock when builds are allowed", args)
+	}
+}
+
+func TestActArgsDaemonSocketOverride(t *testing.T) {
+	args, _ := actArgs(".gitmote/workflows", []string{
+		"GITMOTE_CI_ALLOW_BUILDS=1",
+		"GITMOTE_ACT_DAEMON_SOCKET=/run/user/1000/docker.sock",
+	})
+	if !hasFlag(args, "--container-daemon-socket", "/run/user/1000/docker.sock") {
+		t.Errorf("args = %v, want the overridden daemon socket path", args)
 	}
 }
 

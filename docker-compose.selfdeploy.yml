@@ -1,0 +1,33 @@
+# Self-deploy stack: MinIO only, reachable from a natively-run `bin/gitmote`.
+# Driven by `make self-deploy` (scripts/self-deploy.sh). A sibling of
+# docker-compose.dev.yml with a distinct project name, ports (9200/9201, not
+# 9100/9101), and volume, so a break-glass self-deploy can run without touching —
+# or colliding with — a live `make dev`.
+name: gitmote-selfdeploy
+
+services:
+  minio:
+    image: minio/minio
+    command: server /data --console-address :9201
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9200:9000"   # S3 API  → GITMOTE_S3_ENDPOINT=http://localhost:9200
+      - "9201:9201"   # console → http://localhost:9201 (minioadmin/minioadmin)
+    volumes:
+      - minio-data:/data
+
+  # One-shot bucket creation; invoked with `docker compose run --rm mc` (see dev).
+  mc:
+    image: minio/mc
+    profiles: ["setup"]
+    depends_on: [minio]
+    environment:
+      MC_HOST_local: http://minioadmin:minioadmin@minio:9000
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "until mc ls local >/dev/null 2>&1; do echo 'waiting for minio'; sleep 1; done; mc mb --ignore-existing local/gitmote"
+
+volumes:
+  minio-data:

@@ -1,0 +1,81 @@
+name: self-deploy
+
+# Break-glass self-deploy: gitmote building and deploying itself through its own
+# local runner, when the GitHub deployer is unavailable or an out-of-band deploy
+# is wanted. GitHub Actions stays the everyday deployer on `master`
+# (.github/workflows/ci.yml); this path runs only when the `self-deploy` branch is
+# pushed to a *local* gitmote instance — the only substrate that can build (the
+# Scaleway Serverless Job can't; docs/architecture/ci.md). That instance needs
+# GITMOTE_CI_ALLOW_BUILDS=1, a running Docker daemon, and the CI secrets below.
+#
+# Near-identical to ci.yml's `deploy` job — three deliberate differences:
+#   1. gated on `self-deploy`, not `master`, so it never overlaps the GitHub path;
+#   2. GHCR auth uses a PAT (GHCR_USER/GHCR_TOKEN) — there's no built-in
+#      GITHUB_TOKEN off GitHub;
+#   3. builds linux/amd64 only — Scaleway needs amd64, and the arm64 tag GitHub
+#      also pushes is just for local dev, irrelevant to a deploy.
+
+on:
+  push:
+    branches: [self-deploy]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    # Belt-and-braces gate: even if the engine runs this file on another branch,
+    # github.ref (resolved from the runner's `checkout -B <branch>`) keeps the
+    # deploy confined to `self-deploy`. Mirrors ci.yml's job-level `if`.
+    if: github.ref == 'refs/heads/self-deploy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3   # amd64 build on an arm64 dev host runs under emulation
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USER }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      # Tag with the commit SHA (deployed below) and a moving `self-deploy` tag.
+      # Deliberately NOT `:master` — that tag belongs to the GitHub deployer; a
+      # break-glass build must never clobber it.
+      - name: Build & push public image (amd64 for Scaleway)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            VERSION=${{ github.sha }}
+          tags: |
+            ghcr.io/atmin/gitmote:self-deploy
+            ghcr.io/atmin/gitmote:${{ github.sha }}
+
+      - name: Install Scaleway CLI
+        run: |
+          SCW_URL=$(curl -s https://api.github.com/repos/scaleway/scaleway-cli/releases/latest \
+            | grep -o '"browser_download_url": *"[^"]*linux_amd64"' | cut -d'"' -f4)
+          sudo curl -fsSL "$SCW_URL" -o /usr/local/bin/scw
+          sudo chmod +x /usr/local/bin/scw
+
+      # Identical to ci.yml's deploy: point the container at the unique SHA-tagged
+      # image and re-assert the scale pins. The writer lease makes the rolling swap
+      # safe by construction (new boots as follower, old releases on SIGTERM).
+      #
+      # ⚠️ Pass NO secret-environment-variables: `update` REPLACES the whole map, so
+      # setting any here would wipe prod's AWS/litestream keys (docs/ops.md). The
+      # env-less update preserves it.
+      - name: Deploy (single writer)
+        env:
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_ORGANIZATION_ID }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_PROJECT_ID }}
+          SCW_DEFAULT_REGION: fr-par
+        run: |
+          scw container container update ${{ secrets.SCW_CONTAINER_ID }} \
+            image=ghcr.io/atmin/gitmote:${{ github.sha }} \
+            min-scale=0 max-scale=1 --wait
