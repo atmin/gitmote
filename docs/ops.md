@@ -382,3 +382,17 @@ package: flip `gitmote` / `gitmote-runner` to public (see one-time setup step 2)
 
 Logs flow to Scaleway Cockpit (console → Observability → Cockpit → Grafana →
 Explore → Loki). gitmote logs JSON to stderr.
+
+**Grab the bootstrap token from the logs.** The auto-bootstrap and `-reissue`
+print the token once (above); on Scaleway that "print" is a log line. This LogQL
+pulls just the token out — a gitmote PAT is `gmt_<selector>.<secret>`, both halves
+hex ([`internal/auth/token.go`](../internal/auth/token.go)):
+
+```logql
+{resource_type="serverless_container", resource_name=~"atmina71bb4d5-gitmote"} |= "gmt_" | regexp `(?P<token>gmt_[0-9a-f]+\.[0-9a-f]+)` | line_format `{{.token}}`
+```
+
+`|= "gmt_"` filters raw lines first (no `| json` needed — the token appears
+literally in the line); `regexp` captures it; `line_format` collapses each match
+to the bare token. Set the time range to cover the container's last boot (the
+token is minted once at start) and sort newest-first so the top line is current.
