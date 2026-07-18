@@ -284,7 +284,7 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.Report
 // Exceptions that must stay up on a follower: the liveness probes (Scaleway's
 // health check — gating them would deadlock a rolling deploy, since the new
 // instance can't promote until the old one drains) and static assets (no
-// metadata). A nil isLeader (unreplicated dev, RoleOff) means always-leader.
+// metadata). A nil isLeader (unreplicated dev, sole writer) means always-leader.
 func leaderGate(next http.Handler, isLeader func() bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if alwaysServable(r.URL.Path) || isLeader == nil || isLeader() {
@@ -325,8 +325,8 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	// RoleAuto: this instance becomes the writer when it can acquire the lease,
 	// otherwise a read-only follower — so a rolling deploy's brief old+new overlap
 	// is one writer + one follower, never two writers (safety.md §1). With no
-	// replica configured this is RoleOff (always writer): tests and local dev
-	// unchanged.
+	// replica configured the role is moot and the instance is the sole writer:
+	// tests and local dev unchanged.
 	md, err := meta.Open(ctx, metaConfigFromEnv(logger, s3lite.RoleAuto))
 	if err != nil {
 		return nil, nil, nil, nil, noop, fmt.Errorf("metadata: %w", err)
@@ -556,7 +556,9 @@ func besideExe(name string) string {
 //
 // role selects single-writer coordination and is applied only when a replica is
 // configured — there is nothing to coordinate on without a shared WAL, so an
-// unreplicated database stays RoleOff (always writer), keeping tests unchanged.
+// unreplicated database is left unset (RoleAuto) and runs as the sole writer,
+// keeping tests unchanged. Leaving it unset also avoids handing s3lite a
+// coordinating role (e.g. bootstrap's RoleWriter) with no s3:// replica to lease.
 func metaConfigFromEnv(logger *slog.Logger, role s3lite.Role) meta.Config {
 	replica := replicaTarget()
 	cfg := meta.Config{

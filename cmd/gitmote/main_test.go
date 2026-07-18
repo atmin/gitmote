@@ -273,7 +273,7 @@ func TestRunBootstrapDefaultsHandleAndReissues(t *testing.T) {
 
 func TestMaybeAutoBootstrapCreatesAdminOnceOnFreshLeader(t *testing.T) {
 	ctx := context.Background()
-	md := openMeta(t) // local-only → RoleOff → always leader
+	md := openMeta(t) // local-only → sole writer → always leader
 	logger := slog.New(slog.DiscardHandler)
 
 	// Fresh instance: the default admin is created, no repo.
@@ -354,17 +354,18 @@ func TestMetaConfigDerivesReplicaAndRole(t *testing.T) {
 	}
 }
 
-func TestMetaConfigNoBucketStaysRoleOff(t *testing.T) {
-	// No bucket: nothing to coordinate on, so the database stays local-only and
-	// RoleOff (always writer) — tests and ephemeral runs unchanged.
+func TestMetaConfigNoBucketLeavesRoleUnset(t *testing.T) {
+	// No bucket: nothing to coordinate on, so the role is left unset (the zero
+	// value, RoleAuto) even for a coordinating role like RoleWriter — s3lite then
+	// runs the DB local-only as the sole writer, not demanding a lease it can't get.
 	t.Setenv("GITMOTE_S3_BUCKET", "")
 
-	cfg := metaConfigFromEnv(nil, s3lite.RoleAuto)
+	cfg := metaConfigFromEnv(nil, s3lite.RoleWriter)
 	if cfg.RestoreFrom != "" || cfg.BackupTo != "" {
 		t.Errorf("replica = %q / %q, want empty (no bucket)", cfg.RestoreFrom, cfg.BackupTo)
 	}
-	if cfg.Role != s3lite.RoleOff {
-		t.Errorf("Role = %v, want RoleOff", cfg.Role)
+	if cfg.Role != s3lite.RoleAuto {
+		t.Errorf("Role = %v, want RoleAuto (unset zero value — role not applied without a replica)", cfg.Role)
 	}
 }
 

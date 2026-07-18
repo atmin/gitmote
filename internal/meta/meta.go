@@ -37,12 +37,13 @@ type Config struct {
 	BackupTo string
 	// S3 configures s3:// replicas.
 	S3 s3lite.S3Config
-	// Logger receives litestream's log records; nil suppresses INFO.
+	// Logger receives s3lite's lifecycle events; litestream's per-sync chatter is
+	// gated to WARN by s3lite. nil uses a WARN-only stderr logger.
 	Logger *slog.Logger
-	// Role selects single-writer coordination via the s3lite lease. The zero
-	// value (RoleOff) keeps the always-writer behaviour used by tests and local
-	// unreplicated dev; it only makes sense to set a leased role when BackupTo is
-	// a shared replica the instances coordinate on.
+	// Role selects single-writer coordination via the s3lite lease. The zero value
+	// (RoleAuto) coordinates by lease when BackupTo is an s3:// replica and is the
+	// sole writer otherwise (tests, local unreplicated dev). Only set a coordinating
+	// role when BackupTo is an s3:// replica the instances share.
 	Role s3lite.Role
 	// LeaseTTL is the writer-lease duration for leased roles; zero uses s3lite's
 	// default (30s). The holder renews at TTL/3 and stops on any renew failure.
@@ -146,7 +147,7 @@ func (m *Metadata) Close() error { return m.db.Close() }
 func (m *Metadata) CloseContext(ctx context.Context) error { return m.db.CloseContext(ctx) }
 
 // IsLeader reports whether this instance currently holds the writer lease and
-// may serve writes. Always true under RoleOff (sole writer). Gate the write
+// may serve writes. Always true for an unleased sole writer. Gate the write
 // path on it: a follower must refuse pushes (see docs/architecture/safety.md).
 func (m *Metadata) IsLeader() bool { return m.db.IsLeader() }
 
