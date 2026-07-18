@@ -130,16 +130,26 @@ func (h *Handler) browseCommitRoute(w http.ResponseWriter, r *http.Request) {
 	h.renderCommit(w, r, c, r.PathValue("sha"))
 }
 
-// browseRefsRoute serves /{repo}/refs: the repo's branches and tags.
+// browseRefsRoute serves /{repo}/refs: the repo's branches and tags. It resolves
+// no ref of its own — deliberately, since it is the redirect target when the
+// default branch is missing, so it must render even then (and it reads refs from
+// meta, needing no materialization). Calling the redirecting resolve here would
+// loop that redirect back onto itself.
 func (h *Handler) browseRefsRoute(w http.ResponseWriter, r *http.Request) {
 	repoName := r.PathValue("repo")
 	if !h.authorizeRead(w, r, repoName) {
 		return
 	}
-	c, _, ok := h.resolve(w, r, repoName, "")
-	if !ok {
+	rp, err := h.md.GetRepo(r.Context(), repoName)
+	if errors.Is(err, meta.ErrNotFound) {
+		http.NotFound(w, r)
 		return
 	}
+	if err != nil {
+		h.serverError(w, "get repo", err)
+		return
+	}
+	c := browseCtx{repo: rp, ref: rp.DefaultBranch}
 	h.render(w, "browse_refs.html", refsData{
 		browseBase: h.browseHeader(r, c),
 		Refs:       h.refChoices(r, c.repo.ID),
@@ -230,7 +240,9 @@ type browseCtx struct {
 // against the repo's refs — the longest leading prefix of rest that names a real
 // branch or tag (branch beats a tag on a tie); an empty rest selects the default
 // branch. It writes a 404 for an unknown repo, a rest that names no ref, or a
-// ref that fails to resolve (and a 500 for anything else), returning ok=false.
+// ref that fails to resolve (and a 500 for anything else), returning ok=false —
+// except a missing *default* branch (empty rest), which redirects to the repo's
+// ref list rather than dead-ending on a 404.
 func (h *Handler) resolve(w http.ResponseWriter, r *http.Request, repoName, rest string) (browseCtx, string, bool) {
 	ctx := r.Context()
 	rp, err := h.md.GetRepo(ctx, repoName)
@@ -261,6 +273,14 @@ func (h *Handler) resolve(w http.ResponseWriter, r *http.Request, repoName, rest
 	// bare-name precedence favors tags) and an annotated tag peels to its commit.
 	sha, err := repo.ResolveRef(ctx, dir, qualify(ref, branch))
 	if errors.Is(err, repo.ErrNotFound) {
+		if strings.Trim(rest, "/") == "" {
+			// Empty rest selected the configured default branch, but it doesn't
+			// exist (e.g. default "main" while the repo pushed "master") — there is
+			// no landing content, so send the visitor to the ref list to pick a real
+			// branch instead of a dead-end 404.
+			http.Redirect(w, r, "/"+repoName+"/refs", http.StatusFound)
+			return browseCtx{}, "", false
+		}
 		http.NotFound(w, r)
 		return browseCtx{}, "", false
 	}

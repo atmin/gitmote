@@ -450,3 +450,38 @@ func TestBrowseNotFoundAndTraversal(t *testing.T) {
 		})
 	}
 }
+
+// TestBrowseLandingMissingDefaultBranchRedirectsToRefs: when a repo's configured
+// default branch doesn't exist (e.g. default "main" but the repo pushed
+// "master"), the bare /{repo} landing redirects to the ref list instead of 404ing.
+func TestBrowseLandingMissingDefaultBranchRedirectsToRefs(t *testing.T) {
+	x := newHarness(t)
+	x.seedBrowseRepo("app", "master") // real branch: master
+	r, err := x.md.GetRepo(context.Background(), "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Point the default branch at a branch that doesn't exist.
+	if err := x.md.SetDefaultBranch(context.Background(), r.ID, "main"); err != nil {
+		t.Fatalf("SetDefaultBranch: %v", err)
+	}
+	session := x.login(x.mintTokenFor(x.admin.ID))
+
+	rec := x.do(http.MethodGet, "/app", nil, session)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("landing = %d, want 302 redirect (%s)", rec.Code, rec.Body)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/app/refs" {
+		t.Errorf("redirect Location = %q, want /app/refs", loc)
+	}
+
+	// The redirect target must render, not redirect again (else ERR_TOO_MANY_REDIRECTS):
+	// the ref list stands on its own even with the default branch missing.
+	refs := x.do(http.MethodGet, "/app/refs", nil, session)
+	if refs.Code != http.StatusOK {
+		t.Fatalf("refs page = %d, want 200 (a redirect here is the loop bug)", refs.Code)
+	}
+	if !strings.Contains(refs.Body.String(), "master") {
+		t.Errorf("refs page should list the real branch (master): %s", refs.Body)
+	}
+}
