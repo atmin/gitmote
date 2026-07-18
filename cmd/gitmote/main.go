@@ -450,7 +450,10 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	// The runner's authenticated claim/complete API. Only the leader may write
 	// completions (a follower returns a retryable 503), and it authenticates with
 	// the same WORKER_SECRET injected into the runner env.
-	reportAPI := ci.NewReportAPI(md, objs, md.IsLeader, workerSecret, logger)
+	// The in-memory live-log store the runner streams into and the UI tails —
+	// leader-side, ephemeral, shared by the report API (writer) and the UI (reader).
+	liveLogs := ci.NewLiveLogs()
+	reportAPI := ci.NewReportAPI(md, objs, liveLogs, md.IsLeader, workerSecret, logger)
 	writer.AfterCommit = func(ctx context.Context, pusherID int64, commits []githttp.CommitInfo) {
 		for _, c := range commits {
 			dispatcher.Dispatch(ctx, ci.Event{
@@ -489,7 +492,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		return nil, nil, nil, nil, noop, err
 	}
 
-	ui, err := buildUI(ctx, md, materializer, objs, guard, secretsSvc, logger)
+	ui, err := buildUI(ctx, md, materializer, objs, liveLogs, guard, secretsSvc, logger)
 	if err != nil {
 		_ = cleanup()
 		return nil, nil, nil, nil, noop, err
@@ -501,12 +504,12 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 // GITMOTE_COOKIE_KEY when set, else an auto-generated key persisted in meta and
 // restored across restart / scale-to-zero — so a session stays valid through an
 // idle→wake and the UI needs no secret config.
-func buildUI(ctx context.Context, md *meta.Metadata, mz *repo.Materializer, objs store.Store, guard *auth.Guard, secretsSvc *secrets.Service, logger *slog.Logger) (*webui.Handler, error) {
+func buildUI(ctx context.Context, md *meta.Metadata, mz *repo.Materializer, objs store.Store, live webui.LiveLog, guard *auth.Guard, secretsSvc *secrets.Service, logger *slog.Logger) (*webui.Handler, error) {
 	cookieKey, err := resolveCookieKey(ctx, md)
 	if err != nil {
 		return nil, fmt.Errorf("cookie key: %w", err)
 	}
-	return webui.New(md, mz, objs, guard, secretsSvc, cookieKey, logger)
+	return webui.New(md, mz, objs, live, guard, secretsSvc, cookieKey, logger)
 }
 
 // resolveCookieKey returns the session cookie key: GITMOTE_COOKIE_KEY when set,

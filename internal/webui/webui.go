@@ -60,11 +60,19 @@ type SecretsAdmin interface {
 // nameSegment matches a valid owner or repo path segment.
 var nameSegment = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
+// LiveLog reads a job's in-memory live CI log tail (the leader's ephemeral buffer
+// the browser polls while a job runs). *ci.LiveLogs satisfies it. nil disables the
+// live tail — the UI then shows only the durable log once the job completes.
+type LiveLog interface {
+	Read(jobID int64, offset int) (data []byte, next int, done, ok bool)
+}
+
 // Handler serves the management UI.
 type Handler struct {
 	md      *meta.Metadata
 	mz      *repo.Materializer
 	store   store.Store
+	live    LiveLog
 	auth    Authenticator
 	secrets SecretsAdmin
 	sess    *sessions
@@ -75,9 +83,10 @@ type Handler struct {
 
 // New builds the UI handler. cookieKey signs session cookies and must be
 // non-empty; the auth verifier backs the login form; mz materializes repos for
-// the read-only browse pages; objs reads CI log blobs for the run views; secrets
-// (may be nil) backs the CI secrets panel.
-func New(md *meta.Metadata, mz *repo.Materializer, objs store.Store, a Authenticator, secrets SecretsAdmin, cookieKey []byte, logger *slog.Logger) (*Handler, error) {
+// the read-only browse pages; objs reads CI log blobs for the run views; live
+// (may be nil) backs the live log tail of a running job; secrets (may be nil)
+// backs the CI secrets panel.
+func New(md *meta.Metadata, mz *repo.Materializer, objs store.Store, live LiveLog, a Authenticator, secrets SecretsAdmin, cookieKey []byte, logger *slog.Logger) (*Handler, error) {
 	if len(cookieKey) == 0 {
 		return nil, errors.New("webui: empty cookie key")
 	}
@@ -125,6 +134,7 @@ func New(md *meta.Metadata, mz *repo.Materializer, objs store.Store, a Authentic
 		md:      md,
 		mz:      mz,
 		store:   objs,
+		live:    live,
 		auth:    a,
 		secrets: secrets,
 		sess:    &sessions{key: cookieKey},

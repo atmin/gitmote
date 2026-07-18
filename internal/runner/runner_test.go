@@ -17,11 +17,12 @@ var testSpec = spec{
 	Ref: "refs/heads/main", WorkflowDir: ".gitmote/workflows",
 }
 
-// capture records the completion the runner posts.
+// capture records the completion the runner posts, plus any streamed log chunks.
 type capture struct {
 	calls  int
 	status string
 	body   string
+	stream string // concatenated live-log chunks posted to /log
 }
 
 // newTestServer serves the two report endpoints. claimStatus controls the claim
@@ -40,6 +41,15 @@ func newTestServer(t *testing.T, claimStatus int) (*httptest.Server, *capture) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(testSpec)
+	})
+	mux.HandleFunc("POST /internal/ci/jobs/{id}/log", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Worker-Secret") != testSecret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		cap.stream += string(b)
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /internal/ci/jobs/{id}/complete", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Worker-Secret") != testSecret {
@@ -76,8 +86,11 @@ type fakeEngine struct {
 	called bool
 }
 
-func (e *fakeEngine) Run(_ context.Context, _, _ string) ([]byte, bool, error) {
+func (e *fakeEngine) Run(_ context.Context, _, _ string, sink io.Writer) ([]byte, bool, error) {
 	e.called = true
+	if sink != nil && len(e.log) > 0 {
+		_, _ = sink.Write(e.log) // mimic act teeing its output to the live sink
+	}
 	return e.log, e.passed, e.err
 }
 
@@ -171,6 +184,50 @@ func TestRunClaimUnauthorizedFails(t *testing.T) {
 	}
 	if cap.calls != 0 {
 		t.Errorf("completion calls = %d, want 0", cap.calls)
+	}
+}
+
+func TestRunStreamsLiveLog(t *testing.T) {
+	srv, cap := newTestServer(t, http.StatusOK)
+	en := &fakeEngine{log: []byte("live line\n"), passed: true}
+	if err := Run(context.Background(), baseConfig(t, srv.URL, &fakeCloner{}, en)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The engine's output was streamed live (final flush on stop, before complete)...
+	if cap.stream != "live line\n" {
+		t.Errorf("streamed = %q, want the engine output streamed to /log", cap.stream)
+	}
+	// ...and the durable completion still carries the full log.
+	if cap.body != "live line\n" {
+		t.Errorf("completion body = %q, want the full durable log", cap.body)
+	}
+}
+
+func TestRunStreamFailureDoesNotBreakRun(t *testing.T) {
+	// The failure path: a leader that rejects live chunks must not fail the run —
+	// the durable completion still lands. /log 500s, /complete works.
+	cap := &capture{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /internal/ci/jobs/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(testSpec)
+	})
+	mux.HandleFunc("POST /internal/ci/jobs/{id}/log", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("POST /internal/ci/jobs/{id}/complete", func(w http.ResponseWriter, r *http.Request) {
+		cap.calls++
+		cap.status = r.URL.Query().Get("status")
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	en := &fakeEngine{log: []byte("output\n"), passed: true}
+	if err := Run(context.Background(), baseConfig(t, srv.URL, &fakeCloner{}, en)); err != nil {
+		t.Fatalf("Run must succeed despite live-stream failures: %v", err)
+	}
+	if cap.calls != 1 || cap.status != "passed" {
+		t.Errorf("completion calls %d status %q, want 1/passed", cap.calls, cap.status)
 	}
 }
 

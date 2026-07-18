@@ -7,7 +7,34 @@
 </p>
 
 {{if .Note}}<div class="flash err">{{.Note}}</div>{{end}}
-{{if .Plain}}
+{{if .Live}}
+<p><em>Live — streaming while the job runs; the page reloads when it finishes.</em></p>
+<pre id="livelog"></pre>
+<script>
+(function () {
+  var pre = document.getElementById('livelog');
+  var url = "/{{.Repo}}/runs/{{.Run.ID}}/job/{{.Job.ID}}/log/live";
+  var offset = 0, raw = "";
+  // Strip ANSI CSI escapes (colors, cursor moves) for a clean live view; the
+  // durable log shown after reload renders them properly.
+  var ansi = /\x1b\[[0-9;?]*[ -\/]*[@-~]/g;
+  function poll() {
+    fetch(url + "?offset=" + offset).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.bytes) {
+        raw += d.bytes;
+        offset = d.next;
+        var atBottom = (window.innerHeight + window.scrollY) >= document.body.offsetHeight - 40;
+        pre.textContent = raw.replace(ansi, '');
+        if (atBottom) { window.scrollTo(0, document.body.scrollHeight); }
+      }
+      if (d.done) { location.reload(); return; }
+      setTimeout(poll, 1000);
+    }).catch(function () { setTimeout(poll, 2000); });
+  }
+  poll();
+})();
+</script>
+{{else if .Plain}}
 <pre>{{.Plain}}</pre>
 {{else if .Log}}
 <pre>{{.Log}}</pre>

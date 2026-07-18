@@ -110,7 +110,7 @@ func TestUIRoutesDoNotShadowGitEndpoints(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = m.Close() })
 	mz := repo.New(m, store.NewMem(), t.TempDir())
-	ui, err := webui.New(m, mz, store.NewMem(), auth.NewGuard(m), nil, []byte("k"), slog.New(slog.DiscardHandler))
+	ui, err := webui.New(m, mz, store.NewMem(), nil, auth.NewGuard(m), nil, []byte("k"), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("webui.New: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestResolvedWorkerSecretReachesDispatcherAndReportAPI(t *testing.T) {
 
 	// The report API validates that same secret — closing the loop the runner
 	// rides: injected at trigger, checked on report-back.
-	api := ci.NewReportAPI(md, s, nil, secret, nil)
+	api := ci.NewReportAPI(md, s, nil, nil, secret, nil)
 	mux := http.NewServeMux()
 	api.Register(mux)
 	srv := httptest.NewServer(mux)

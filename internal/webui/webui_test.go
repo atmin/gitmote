@@ -51,7 +51,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	svc := secrets.NewService(kr, md)
 
-	h, err := New(md, mz, objs, auth.NewGuard(md), svc, []byte("test-cookie-key"), nil)
+	h, err := New(md, mz, objs, nil, auth.NewGuard(md), svc, []byte("test-cookie-key"), nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

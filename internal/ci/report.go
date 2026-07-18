@@ -24,6 +24,10 @@ const (
 	logCap = 10 << 20 // 10 MiB
 	// logTruncationMarker is appended when a log is truncated at the cap.
 	logTruncationMarker = "\n\n[log truncated: exceeded 10 MiB cap]\n"
+	// liveLogTTL bounds how long a job's in-memory live buffer survives without an
+	// update before Sweep reclaims it — long enough for a browser to catch the
+	// terminal status and switch to the durable log.
+	liveLogTTL = 10 * time.Minute
 )
 
 // ReportMeta is the slice of meta the report API reads and writes. *meta.Metadata
@@ -47,27 +51,33 @@ type ReportMeta interface {
 type ReportAPI struct {
 	meta     ReportMeta
 	store    store.Store
+	live     *LiveLogs
 	isLeader func() bool
 	secret   string
 	logger   *slog.Logger
 }
 
-// NewReportAPI returns a report API. isLeader gates writes (nil means always
+// NewReportAPI returns a report API. live is the in-memory live-log store the
+// browser tails (nil makes a fresh one). isLeader gates writes (nil means always
 // leader, for tests/local). An empty secret rejects every request.
-func NewReportAPI(m ReportMeta, s store.Store, isLeader func() bool, secret string, logger *slog.Logger) *ReportAPI {
+func NewReportAPI(m ReportMeta, s store.Store, live *LiveLogs, isLeader func() bool, secret string, logger *slog.Logger) *ReportAPI {
+	if live == nil {
+		live = NewLiveLogs()
+	}
 	if isLeader == nil {
 		isLeader = func() bool { return true }
 	}
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	return &ReportAPI{meta: m, store: s, isLeader: isLeader, secret: secret, logger: logger}
+	return &ReportAPI{meta: m, store: s, live: live, isLeader: isLeader, secret: secret, logger: logger}
 }
 
 // Register mounts the internal CI routes on mux (not under /ui — these are
 // machine-to-machine, WORKER_SECRET-authenticated).
 func (a *ReportAPI) Register(mux *http.ServeMux) {
 	mux.Handle("GET /internal/ci/jobs/{id}", http.HandlerFunc(a.handleClaim))
+	mux.Handle("POST /internal/ci/jobs/{id}/log", http.HandlerFunc(a.handleLogChunk))
 	mux.Handle("POST /internal/ci/jobs/{id}/complete", http.HandlerFunc(a.handleComplete))
 }
 
@@ -179,8 +189,32 @@ func (a *ReportAPI) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.rollupRun(r.Context(), run.ID)
+	// Flip the live tail to done so a watching browser switches to the durable log.
+	a.live.Finish(id, time.Now())
 
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// handleLogChunk appends a runner's incremental log bytes to the job's in-memory
+// live buffer — the best-effort tail the UI polls while the job runs. It never
+// touches s3lite or S3 (the durable log is written once at completion); a lost
+// chunk is a cosmetic gap, not data loss. Leader-only (the browser reads the same
+// leader's buffer), so a follower's 503 just makes the runner drop the chunk.
+func (a *ReportAPI) handleLogChunk(w http.ResponseWriter, r *http.Request) {
+	if !a.authed(w, r) {
+		return
+	}
+	id, ok := jobID(w, r)
+	if !ok {
+		return
+	}
+	chunk, err := io.ReadAll(io.LimitReader(r.Body, logCap))
+	if err != nil {
+		http.Error(w, "read chunk", http.StatusBadRequest)
+		return
+	}
+	a.live.Append(id, chunk, time.Now())
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // storeLog writes the body under key, enforcing the size cap with an explicit
@@ -219,6 +253,8 @@ func (a *ReportAPI) ReconcileStuck(ctx context.Context, maxAge time.Duration, no
 	if !a.isLeader() {
 		return nil
 	}
+	// Reclaim in-memory live buffers for finished or dead jobs on the same tick.
+	a.live.Sweep(now, liveLogTTL)
 	stuck, err := a.meta.SweepStuckJobs(ctx, now.Add(-maxAge))
 	if err != nil {
 		return err

@@ -80,10 +80,28 @@ recorded, with a size cap (explicit truncation marker, never silent).
 The runner-facing report API lives under `/internal`, apart from the browser UI
 ([`internal/ci/report.go`](../../internal/ci/report.go)):
 `GET /internal/ci/jobs/{id}` claims a job (`queued→running`),
-`POST …/complete` uploads the log and sets a terminal status (idempotent). Both
-do a constant-time `WORKER_SECRET` compare; only the **leader** writes
-completions (a follower returns a retryable 503). A leader-only reconcile ticker
-sweeps jobs stuck in `running` to `error`.
+`POST …/log` appends a live-log chunk (below), `POST …/complete` uploads the log
+and sets a terminal status (idempotent). All do a constant-time `WORKER_SECRET`
+compare; only the **leader** writes completions (a follower returns a retryable
+503). A leader-only reconcile ticker sweeps jobs stuck in `running` to `error`.
+
+## Live logs
+
+The durable log above is shipped once, at completion — so while a job runs there
+is otherwise nothing to watch. A **best-effort live tail** fills that gap without
+touching the durable path. The runner tees `act`'s combined output and, on a ~1 s
+ticker, POSTs the delta to `…/log`; the leader appends it to an **in-memory**,
+per-job buffer ([`LiveLogs`](../../internal/ci/livelogs.go)) capped like the
+durable blob. The UI's job-log page polls
+`GET /{repo}/runs/{id}/job/{jid}/log/live?offset=N` (`{bytes, next, done}`) and,
+on `done`, reloads to the rendered durable log.
+
+It is deliberately **never replicated or persisted**: a lost chunk or a leader
+restart only blips the live view — the runner still ships the whole log at
+completion, so the durable record is unaffected. This is the fire-and-forget
+discipline again: the tail is a UX nicety, never a correctness path. The buffer is
+leader-only (the browser polls the same instance the runner streams to) and swept
+after a short idle TTL on the reconcile tick.
 
 ## Secrets
 

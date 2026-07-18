@@ -38,9 +38,11 @@ type Cloner interface {
 // Engine runs the workflows under workflowDir within repoDir. It returns the
 // combined log and whether the run passed. A non-nil error means the engine
 // could not execute at all (e.g. act missing) — distinct from a workflow that
-// ran and failed (passed=false, err=nil).
+// ran and failed (passed=false, err=nil). It also tees the combined output to
+// sink as it is produced (nil to disable), which the runner uses to stream a live
+// tail; sink is best-effort and never affects the returned log or status.
 type Engine interface {
-	Run(ctx context.Context, repoDir, workflowDir string) (log []byte, passed bool, err error)
+	Run(ctx context.Context, repoDir, workflowDir string, sink io.Writer) (log []byte, passed bool, err error)
 }
 
 // Config wires one runner invocation.
@@ -107,7 +109,14 @@ func Run(ctx context.Context, cfg Config) error {
 		return complete(ctx, cfg, sp.JobID, "error", []byte("clone failed: "+err.Error()+"\n"))
 	}
 
-	log, passed, err := cfg.Engine.Run(ctx, dest, sp.WorkflowDir)
+	// Stream the combined output to the leader's live buffer as it is produced, so
+	// the UI can tail the job. Best-effort: the durable log is still shipped whole
+	// by complete below, so a dropped chunk (or an unreachable leader) is only a
+	// cosmetic gap in the live view.
+	streamer := newLogStreamer(cfg, sp.JobID)
+	streamer.start()
+	log, passed, err := cfg.Engine.Run(ctx, dest, sp.WorkflowDir, streamer)
+	streamer.stop() // final flush before the durable completion below
 	if err != nil {
 		cfg.Logger.Error("ci runner: engine error", "job", sp.JobID, "error", err)
 		body := append(append([]byte{}, log...), []byte("\nengine error: "+err.Error()+"\n")...)

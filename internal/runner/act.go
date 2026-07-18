@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -61,7 +62,7 @@ type ActEngine struct{}
 // as `-s NAME`, which act reads from its environment (so values never touch the
 // argv, and multiline values survive) and exposes to the workflow as
 // `${{ secrets.NAME }}` — exactly as on GitHub.
-func (ActEngine) Run(ctx context.Context, repoDir, workflowDir string) ([]byte, bool, error) {
+func (ActEngine) Run(ctx context.Context, repoDir, workflowDir string, sink io.Writer) ([]byte, bool, error) {
 	if _, err := exec.LookPath("act"); err != nil {
 		return nil, false, fmt.Errorf("act not found on PATH — install nektos/act (https://github.com/nektos/act): %w", err)
 	}
@@ -72,9 +73,15 @@ func (ActEngine) Run(ctx context.Context, repoDir, workflowDir string) ([]byte, 
 	cmd := exec.CommandContext(ctx, "act", args...)
 	cmd.Dir = repoDir
 	cmd.Env = actEnv
+	// Capture the full combined output for the durable log, and tee it to sink for
+	// the live tail (nil sink → capture only).
 	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	var out io.Writer = &buf
+	if sink != nil {
+		out = io.MultiWriter(&buf, sink)
+	}
+	cmd.Stdout = out
+	cmd.Stderr = out
 
 	err := cmd.Run()
 	if err == nil {

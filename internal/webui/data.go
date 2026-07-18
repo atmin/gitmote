@@ -155,4 +155,5 @@ type ciLogData struct {
 	Log   template.HTML // ANSI-rendered log (safe HTML)
 	Plain string        // plain-text fallback for an over-cap log
 	Note  string        // an explanation when there is no rendered log
+	Live  bool          // job still running: the page tails the live buffer
 }

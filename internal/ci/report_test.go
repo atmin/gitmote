@@ -53,7 +53,7 @@ func newReportFixture(t *testing.T, isLeader func() bool) reportFixture {
 		t.Fatalf("CreateJob: %v", err)
 	}
 
-	api := NewReportAPI(md, s, isLeader, workerSecret, nil)
+	api := NewReportAPI(md, s, nil, isLeader, workerSecret, nil)
 	mux := http.NewServeMux()
 	api.Register(mux)
 	srv := httptest.NewServer(mux)
@@ -254,6 +254,51 @@ func TestReconcileStuckSweepsRunningJobs(t *testing.T) {
 	run, _ := f.md.GetRun(ctx, f.runID)
 	if run.Status != meta.RunError {
 		t.Errorf("run status after sweep = %q, want error", run.Status)
+	}
+}
+
+func TestLogChunkAppendsToLiveBuffer(t *testing.T) {
+	f := newReportFixture(t, nil)
+
+	resp := f.do(t, http.MethodPost, "/internal/ci/jobs/"+id(f.jobID)+"/log", workerSecret, "step 1...\n")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("log chunk status = %d, want 204", resp.StatusCode)
+	}
+	f.do(t, http.MethodPost, "/internal/ci/jobs/"+id(f.jobID)+"/log", workerSecret, "step 2...\n").Body.Close()
+
+	data, _, done, ok := f.api.live.Read(f.jobID, 0)
+	if !ok || done {
+		t.Fatalf("live Read = ok %v done %v, want ok=true done=false", ok, done)
+	}
+	if string(data) != "step 1...\nstep 2...\n" {
+		t.Errorf("live buffer = %q, want the two appended chunks", data)
+	}
+}
+
+func TestLogChunkRequiresAuth(t *testing.T) {
+	// The failure path: an unauthenticated chunk is rejected and never buffered.
+	f := newReportFixture(t, nil)
+	resp := f.do(t, http.MethodPost, "/internal/ci/jobs/"+id(f.jobID)+"/log", "", "sneaky\n")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated chunk status = %d, want 401", resp.StatusCode)
+	}
+	if _, _, _, ok := f.api.live.Read(f.jobID, 0); ok {
+		t.Error("rejected chunk must not create a live buffer")
+	}
+}
+
+func TestCompleteFinishesLiveTail(t *testing.T) {
+	f := newReportFixture(t, nil)
+	f.do(t, http.MethodGet, "/internal/ci/jobs/"+id(f.jobID), workerSecret, "").Body.Close()
+	f.do(t, http.MethodPost, "/internal/ci/jobs/"+id(f.jobID)+"/log", workerSecret, "running...\n").Body.Close()
+	f.do(t, http.MethodPost, "/internal/ci/jobs/"+id(f.jobID)+"/complete?status=passed", workerSecret, "running...\ndone\n").Body.Close()
+
+	// Completion flips the live tail to done so a watching browser reloads to the
+	// durable log.
+	if _, _, done, ok := f.api.live.Read(f.jobID, 0); !ok || !done {
+		t.Fatalf("live tail after complete: ok %v done %v, want both true", ok, done)
 	}
 }
 

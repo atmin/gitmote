@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -66,15 +67,21 @@ func (h *Handler) ciRun(w http.ResponseWriter, r *http.Request, repoName, arg st
 		h.ciRunDetail(w, r, rp, run)
 		return
 	}
-	// The only sub-resource is a job's log: "job/{jid}/log".
+	// Sub-resources of a run: "job/{jid}/log" (the log page) and
+	// "job/{jid}/log/live" (the live-tail JSON the page polls while it runs).
 	parts := strings.Split(rest, "/")
-	if len(parts) != 3 || parts[0] != "job" || parts[2] != "log" {
+	live := len(parts) == 4 && parts[3] == "live"
+	if (len(parts) != 3 && !live) || parts[0] != "job" || parts[2] != "log" {
 		http.NotFound(w, r)
 		return
 	}
 	jobID, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
+		return
+	}
+	if live {
+		h.ciJobLogLive(w, r, run, jobID)
 		return
 	}
 	h.ciJobLog(w, r, rp, run, jobID)
@@ -111,12 +118,67 @@ func (h *Handler) ciJobLog(w http.ResponseWriter, r *http.Request, rp *meta.Repo
 		Run:  *run,
 		Job:  *job,
 	}
-	if job.LogKey == "" {
+	switch {
+	case !isTerminalStatus(job.Status):
+		// Still queued/running: the page tails the live buffer and reloads on done.
+		data.Live = true
+	case job.LogKey == "":
 		data.Note = "No log yet — the job hasn't reported."
-	} else {
+	default:
 		h.loadLog(r, job.LogKey, &data)
 	}
 	h.render(w, "ci_log.html", data)
+}
+
+// ciJobLogLive answers the log page's poll for a running job: the live buffer's
+// bytes from offset onward, the next offset, and whether the job has finished (so
+// the page reloads to the durable log). Falls back to done-by-status when there is
+// no live buffer (never started, swept, or the live store is disabled).
+func (h *Handler) ciJobLogLive(w http.ResponseWriter, r *http.Request, run *meta.Run, jobID int64) {
+	job, err := h.md.GetJob(r.Context(), jobID)
+	if errors.Is(err, meta.ErrNotFound) || (err == nil && job.RunID != run.ID) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		h.serverError(w, "get job", err)
+		return
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	resp := liveLogResp{Next: offset}
+	if data, next, done, ok := h.readLive(jobID, offset); ok {
+		resp.Bytes, resp.Next, resp.Done = string(data), next, done
+	} else {
+		resp.Done = isTerminalStatus(job.Status)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// readLive reads the live buffer, returning ok=false when the store is disabled.
+func (h *Handler) readLive(jobID int64, offset int) (data []byte, next int, done, ok bool) {
+	if h.live == nil {
+		return nil, offset, false, false
+	}
+	return h.live.Read(jobID, offset)
+}
+
+// liveLogResp is the JSON the log page polls: new bytes, the next offset to poll
+// from, and whether the job has finished.
+type liveLogResp struct {
+	Bytes string `json:"bytes"`
+	Next  int    `json:"next"`
+	Done  bool   `json:"done"`
+}
+
+// isTerminalStatus reports whether a run/job status is a finished state.
+func isTerminalStatus(s meta.RunStatus) bool {
+	switch s {
+	case meta.RunPassed, meta.RunFailed, meta.RunError, meta.RunSuperseded:
+		return true
+	default:
+		return false
+	}
 }
 
 // loadLog fetches a job's log blob and fills data with either the ANSI-rendered

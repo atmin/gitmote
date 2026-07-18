@@ -3,12 +3,56 @@ package webui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/atmin/gitmote/internal/meta"
 )
+
+// fakeLive is a fixed live-log buffer for exercising the live-tail endpoint.
+type fakeLive struct {
+	data []byte
+	done bool
+	ok   bool
+}
+
+func (f fakeLive) Read(_ int64, offset int) ([]byte, int, bool, bool) {
+	if !f.ok {
+		return nil, offset, false, false
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(f.data) {
+		offset = len(f.data)
+	}
+	return f.data[offset:], len(f.data), f.done, true
+}
+
+// seedQueuedJob creates an ACL-granted repo, a run, and a queued (non-terminal)
+// job with no log yet — the running-job state the live tail serves.
+func (x *harness) seedQueuedJob(repoName, sha string) (runID, jobID int64) {
+	x.t.Helper()
+	ctx := context.Background()
+	r, err := x.md.CreateRepo(ctx, repoName, "main")
+	if err != nil {
+		x.t.Fatalf("CreateRepo: %v", err)
+	}
+	if err := x.md.SetACL(ctx, r.ID, x.admin.ID, meta.PermAdmin); err != nil {
+		x.t.Fatalf("SetACL: %v", err)
+	}
+	run, err := x.md.CreateRun(ctx, r.ID, "refs/heads/main", sha)
+	if err != nil {
+		x.t.Fatalf("CreateRun: %v", err)
+	}
+	job, err := x.md.CreateJob(ctx, run.ID, "ci.yml")
+	if err != nil {
+		x.t.Fatalf("CreateJob: %v", err)
+	}
+	return run.ID, job.ID
+}
 
 // seedRun creates a repo (if repoName is new), a run, and one job with a stored
 // log blob, returning the ids. The log carries ANSI + HTML to exercise rendering.
@@ -132,6 +176,64 @@ func TestCIRunsRequireAdmin(t *testing.T) {
 	// Unauthenticated GET is redirected to login like the rest of browsing.
 	if rec := x.do(http.MethodGet, "/app/runs", nil, nil); rec.Code != http.StatusSeeOther {
 		t.Errorf("unauth runs = %d, want 303 redirect", rec.Code)
+	}
+}
+
+func TestCILiveLogStreamsBytes(t *testing.T) {
+	x := newHarness(t)
+	x.h.live = fakeLive{data: []byte("building...\n"), ok: true}
+	session := x.login(x.mintTokenFor(x.admin.ID))
+	runID, jobID := x.seedQueuedJob("app", "sha1")
+
+	rec := x.do(http.MethodGet, "/app/runs/"+itoa(runID)+"/job/"+itoa(jobID)+"/log/live?offset=0", nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("live poll: %d (%s)", rec.Code, rec.Body)
+	}
+	var resp struct {
+		Bytes string `json:"bytes"`
+		Next  int    `json:"next"`
+		Done  bool   `json:"done"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Bytes != "building...\n" || resp.Next != 12 || resp.Done {
+		t.Errorf("live resp = %+v, want the buffered bytes, next 12, not done", resp)
+	}
+}
+
+func TestCILiveLogDoneWhenNoBufferAndTerminal(t *testing.T) {
+	// The fallback path: no live buffer + a finished job → done=true, so the page
+	// stops polling and reloads to the durable log.
+	x := newHarness(t)
+	x.h.live = fakeLive{ok: false}
+	session := x.login(x.mintTokenFor(x.admin.ID))
+	_, runID, jobID := x.seedRun("app", "sha1", "done\n") // seedRun marks the job passed
+
+	rec := x.do(http.MethodGet, "/app/runs/"+itoa(runID)+"/job/"+itoa(jobID)+"/log/live", nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("live poll: %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"done":true`) {
+		t.Errorf("live resp = %s, want done=true for a finished job with no buffer", rec.Body)
+	}
+}
+
+func TestCIJobLogPageTailsRunningJob(t *testing.T) {
+	x := newHarness(t)
+	x.h.live = fakeLive{data: []byte("x"), ok: true}
+	session := x.login(x.mintTokenFor(x.admin.ID))
+	runID, jobID := x.seedQueuedJob("app", "sha1")
+
+	// A running job's log page renders the live-tail element + poll script instead
+	// of a durable log.
+	rec := x.do(http.MethodGet, "/app/runs/"+itoa(runID)+"/job/"+itoa(jobID)+"/log", nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("log page: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="livelog"`) || !strings.Contains(body, "/log/live") {
+		t.Errorf("running-job log page missing live tail: %s", body)
 	}
 }
 
