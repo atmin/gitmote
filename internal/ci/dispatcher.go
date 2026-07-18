@@ -175,17 +175,38 @@ func (d *Dispatcher) Dispatch(ctx context.Context, ev Event) {
 		return
 	}
 
+	branch := strings.TrimPrefix(ev.Ref, branchPrefix)
 	var files []repo.TreeEntry
 	for _, e := range entries {
-		if e.Type == "blob" && isYAML(e.Name) {
+		if e.Type == "blob" && isYAML(e.Name) && d.triggeredBy(ctx, dir, ev.NewSHA, e.Path, branch) {
 			files = append(files, e)
 		}
 	}
 	if len(files) == 0 {
-		return // a workflows dir with no *.yml|*.yaml → nothing to run
+		// No workflow is configured to run for this branch (none present, or their
+		// `on.push` branch filters all exclude it). Like GitHub, record no run —
+		// a run appears only when something is actually meant to execute.
+		return
 	}
 
 	d.recordRun(ctx, ev, dir, files)
+}
+
+// triggeredBy reports whether the workflow at path should run for a push to
+// branch, per its `on.push` branch filter. A file that can't be read or parsed
+// is kept (returns true) so recordRun still surfaces it as a failed run rather
+// than silently dropping it — only a well-formed workflow that genuinely does
+// not select this branch (or doesn't react to push) is filtered out.
+func (d *Dispatcher) triggeredBy(ctx context.Context, dir, sha, path, branch string) bool {
+	content, _, _, err := repo.Blob(ctx, dir, sha, path)
+	if err != nil {
+		return true
+	}
+	trig, err := parsePushTrigger(content)
+	if err != nil {
+		return true
+	}
+	return trig.matches(branch)
 }
 
 // recordRun creates a queued run and one job per workflow file, then triggers a

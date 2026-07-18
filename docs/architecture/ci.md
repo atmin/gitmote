@@ -46,6 +46,19 @@ The runner ([`internal/runner`](../../internal/runner)) is one linear pass:
 injected secrets, reports over the authenticated API, and **never touches s3lite
 or S3 directly**.
 
+**Branch filters gate dispatch, GitHub-style.** The dispatcher parses each
+workflow's `on.push` and records a run *only* for workflows whose branch filter
+selects the pushed branch — so a push that matches nothing produces **no run at
+all**, exactly as GitHub shows no workflow run when a push triggers nothing (a
+green no-op run, its log full of engine start-up chatter, would otherwise be pure
+noise — the concrete case: gitmote's own `deploy.yml` gated on `self-deploy`,
+which must stay silent on every `master` push). It models the common filter
+subset — `branches` / `branches-ignore` with `*` and `**` globs, the ~80%;
+`paths`, tag filters, and the rarer `?`/`+`/`[]`/`!` patterns are not evaluated
+(a workflow using them is kept, erring toward running). A workflow file that
+can't be read or parsed is also kept, so a malformed workflow surfaces as a
+*failed* run rather than vanishing.
+
 ## One runner, three substrates
 
 The runner code and env contract are identical everywhere; only what *starts* a

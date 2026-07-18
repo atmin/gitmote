@@ -195,6 +195,36 @@ func TestDispatchTwoWorkflowsCreateTwoJobs(t *testing.T) {
 	}
 }
 
+// TestDispatchBranchFilterSkipsNonMatchingPush: a workflow gated on a branch
+// filter (gitmote's own deploy.yml, `on.push.branches: [self-deploy]`) creates no
+// run on a push to any other branch — like GitHub, a run appears only when the
+// push actually triggers something.
+func TestDispatchBranchFilterSkipsNonMatchingPush(t *testing.T) {
+	ctx := context.Background()
+	md, s, mz := newFixture(t)
+	r, head := seedRepo(t, md, s, "app", map[string]string{
+		".gitmote/workflows/deploy.yml": "name: Deploy\non:\n  push:\n    branches: [self-deploy]\n",
+	})
+	d := newDispatcher(md, mz, &stubTrigger{})
+
+	// A push to main matches nothing → no run at all.
+	d.Dispatch(ctx, Event{RepoID: r.ID, RepoName: r.Name, Ref: "refs/heads/main", OldSHA: meta.ZeroSHA, NewSHA: head})
+	if runs, _ := md.ListRuns(ctx, r.ID, 0); len(runs) != 0 {
+		t.Fatalf("main push runs = %d, want 0 (branch filter excludes main)", len(runs))
+	}
+
+	// A push to self-deploy matches → one run with the deploy job.
+	d.Dispatch(ctx, Event{RepoID: r.ID, RepoName: r.Name, Ref: "refs/heads/self-deploy", OldSHA: meta.ZeroSHA, NewSHA: head})
+	runs, _ := md.ListRuns(ctx, r.ID, 0)
+	if len(runs) != 1 {
+		t.Fatalf("self-deploy push runs = %d, want 1", len(runs))
+	}
+	jobs, _ := md.ListJobs(ctx, runs[0].ID)
+	if len(jobs) != 1 || jobs[0].Name != "deploy.yml" {
+		t.Errorf("jobs = %+v, want one deploy.yml job", jobs)
+	}
+}
+
 func TestDispatchNoWorkflowsNoRun(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
