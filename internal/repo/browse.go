@@ -256,6 +256,29 @@ func Show(ctx context.Context, dir, sha string) (Commit, string, error) {
 	return commits[0], strings.TrimLeft(string(diff), "\n"), nil
 }
 
+// Compare returns the commits head adds over base and the unified diff between
+// them. The commit list is the two-dot range base..head (commits reachable from
+// head but not base); the diff is the three-dot base...head (head against the
+// merge base), matching a GitHub compare view. base and head are commit SHAs
+// (or any rev safeRev accepts); an unknown rev surfaces as ErrNotFound.
+func Compare(ctx context.Context, dir, base, head string) (commits []Commit, diff string, err error) {
+	if err := safeRev(base); err != nil {
+		return nil, "", err
+	}
+	if err := safeRev(head); err != nil {
+		return nil, "", err
+	}
+	log, err := runGitOut(ctx, dir, "log", "--format="+commitFormat, "--end-of-options", base+".."+head)
+	if err != nil {
+		return nil, "", err
+	}
+	patch, err := runGitOut(ctx, dir, "diff", "--end-of-options", base+"..."+head)
+	if err != nil {
+		return nil, "", err
+	}
+	return parseCommits(log), strings.TrimLeft(string(patch), "\n"), nil
+}
+
 // parseCommits splits git output framed by commitFormat into commits.
 func parseCommits(out []byte) []Commit {
 	var commits []Commit

@@ -336,6 +336,56 @@ func TestBrowseCommitsAndCommit(t *testing.T) {
 	}
 }
 
+// TestBrowseCompare: /{repo}/compare/{base}...{head} lists the commits head adds
+// over base and renders their combined diff, and the refs page links to it.
+func TestBrowseCompare(t *testing.T) {
+	x := newHarness(t)
+	head, first := x.seedBrowseRepo("app", "main")
+	session := x.login(x.mintTokenFor(x.admin.ID))
+	ctx := context.Background()
+	r, _ := x.md.GetRepo(ctx, "app")
+
+	// A second branch at the first commit, so "old...main" is a real ref-to-ref
+	// compare (main is ahead by the "second" commit).
+	if err := x.md.CASRef(ctx, r.ID, "refs/heads/old", meta.ZeroSHA, first); err != nil {
+		t.Fatalf("CASRef old: %v", err)
+	}
+
+	rec := x.do(http.MethodGet, "/app/compare/old...main", nil, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compare = %d (%s)", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "second") || !strings.Contains(body, "/app/commit/"+head) {
+		t.Fatalf("compare body missing the added commit:\n%s", body)
+	}
+	// The diff renders as a colored diff (the second commit edits hello.go).
+	for _, want := range []string{`class="diff"`, "dl-add", "dl-del"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("compare diff not rendered as a colored diff (missing %q):\n%s", want, body)
+		}
+	}
+
+	// Identical refs: 200 with no commits, no error.
+	rec = x.do(http.MethodGet, "/app/compare/main...main", nil, session)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "no commits") {
+		t.Fatalf("compare main...main = %d, want 200 with an empty range:\n%s", rec.Code, rec.Body)
+	}
+
+	// An unknown ref on either side is a 404, and a spec without "..." is too.
+	for _, target := range []string{"/app/compare/old...ghost", "/app/compare/main"} {
+		if rec := x.do(http.MethodGet, target, nil, session); rec.Code != http.StatusNotFound {
+			t.Errorf("%s = %d, want 404", target, rec.Code)
+		}
+	}
+
+	// The refs page offers a compare link for a non-default ref.
+	rec = x.do(http.MethodGet, "/app/refs", nil, session)
+	if !strings.Contains(rec.Body.String(), "/app/compare/main...old") {
+		t.Errorf("refs page missing compare link:\n%s", rec.Body)
+	}
+}
+
 func TestBrowseHighlightAndMarkdown(t *testing.T) {
 	x := newHarness(t)
 	x.seedBrowseRepo("app", "main")

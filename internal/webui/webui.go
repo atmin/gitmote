@@ -197,6 +197,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{repo}/commits", h.browseCommitsRoute)
 	mux.HandleFunc("GET /{repo}/commits/{rest...}", h.browseCommitsRoute)
 	mux.HandleFunc("GET /{repo}/commit/{sha}", h.browseCommitRoute)
+	mux.HandleFunc("GET /{repo}/compare/{rest...}", h.browseCompareRoute)
 	mux.HandleFunc("GET /{repo}/refs", h.browseRefsRoute)
 	mux.HandleFunc("GET /{repo}/runs", h.ciRunsRoute)
 	mux.HandleFunc("GET /{repo}/runs/{rest...}", h.ciRunsRoute)

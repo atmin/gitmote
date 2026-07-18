@@ -1,0 +1,21 @@
+{{define "browse_compare.html"}}{{template "top" .}}
+{{template "browse_head" .}}
+<h1>Comparing <code>{{.Base}}</code> … <code>{{.Head}}</code></h1>
+<p>{{len .Commits}} commit(s) on <code>{{.Head}}</code> since <code>{{.Base}}</code>.</p>
+<table>
+  <thead><tr><th>Commit</th><th>Subject</th><th>Author</th><th>When</th></tr></thead>
+  <tbody>
+  {{range .Commits}}
+    <tr>
+      <td><a href="/{{$.Repo}}/commit/{{.SHA}}"><code>{{slice .SHA 0 10}}</code></a></td>
+      <td>{{.Subject}}</td>
+      <td>{{.Author}}</td>
+      <td>{{.When.Format "2006-01-02 15:04"}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="4">no commits — these refs match, or the base is ahead</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{.Diff}}
+{{template "bottom" .}}{{end}}

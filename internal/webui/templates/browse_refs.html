@@ -3,10 +3,13 @@
 <h1>Branches &amp; tags</h1>
 {{if .Refs}}
 <table>
-  <thead><tr><th>Ref</th></tr></thead>
+  <thead><tr><th>Ref</th><th></th></tr></thead>
   <tbody>
   {{range .Refs}}
-    <tr><td><a href="/{{$.Repo}}/tree/{{.Ref}}">{{.Name}}</a></td></tr>
+    <tr>
+      <td><a href="/{{$.Repo}}/tree/{{.Ref}}">{{.Name}}</a></td>
+      <td>{{if ne .Ref $.Ref}}<a href="/{{$.Repo}}/compare/{{$.Ref}}...{{.Ref}}">compare</a>{{else}}default{{end}}</td>
+    </tr>
   {{end}}
   </tbody>
 </table>

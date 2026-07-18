@@ -156,6 +156,90 @@ func (h *Handler) browseRefsRoute(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// browseCompareRoute serves /{repo}/compare/{base}...{head}: the commits head
+// adds over base and their combined diff. The two refs live in one path segment
+// split on the literal "..." — git forbids ".." in a ref name, so the separator
+// is unambiguous even when a ref itself contains slashes. Each side resolves as
+// a branch, tag, or raw SHA.
+func (h *Handler) browseCompareRoute(w http.ResponseWriter, r *http.Request) {
+	repoName := r.PathValue("repo")
+	if !h.authorizeRead(w, r, repoName) {
+		return
+	}
+	base, head, ok := strings.Cut(r.PathValue("rest"), "...")
+	if !ok || base == "" || head == "" {
+		http.NotFound(w, r) // not a "base...head" spec
+		return
+	}
+	ctx := r.Context()
+	rp, err := h.md.GetRepo(ctx, repoName)
+	if errors.Is(err, meta.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		h.serverError(w, "get repo", err)
+		return
+	}
+	refs, err := h.md.ListRefs(ctx, rp.ID)
+	if err != nil {
+		h.serverError(w, "list refs", err)
+		return
+	}
+	dir, err := h.mz.Materialize(ctx, repoName)
+	if err != nil {
+		h.serverError(w, "materialize repo", err)
+		return
+	}
+	baseSHA, ok := h.resolveSide(w, r, dir, refs, base)
+	if !ok {
+		return
+	}
+	headSHA, ok := h.resolveSide(w, r, dir, refs, head)
+	if !ok {
+		return
+	}
+	commits, diff, err := repo.Compare(ctx, dir, baseSHA, headSHA)
+	if errors.Is(err, repo.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		h.serverError(w, "compare", err)
+		return
+	}
+	c := browseCtx{repo: rp, dir: dir, ref: head}
+	h.render(w, "browse_compare.html", compareData{
+		browseBase: h.browseHeader(r, c),
+		Base:       base,
+		Head:       head,
+		Commits:    commits,
+		Diff:       render.Diff(diff),
+	})
+}
+
+// resolveSide resolves one side of a compare — a whole branch or tag name, or a
+// raw SHA — to a commit SHA against the materialized dir. A named ref is
+// qualified so a branch beats a same-named tag; anything else is handed to git
+// as a rev. It writes a 404 and returns ok=false when the side resolves to
+// nothing.
+func (h *Handler) resolveSide(w http.ResponseWriter, r *http.Request, dir string, refs []meta.Ref, side string) (string, bool) {
+	rev := side
+	if name, tail, branch, ok := greedyRef(refs, side, ""); ok && name == side && tail == "" {
+		rev = qualify(name, branch)
+	}
+	sha, err := repo.ResolveRef(r.Context(), dir, rev)
+	if errors.Is(err, repo.ErrNotFound) {
+		http.NotFound(w, r)
+		return "", false
+	}
+	if err != nil {
+		h.serverError(w, "resolve ref", err)
+		return "", false
+	}
+	return sha, true
+}
+
 // ciRunsRoute serves /{repo}/runs (the list) and /{repo}/runs/<id>[/job/…] (one
 // run or a job log), sharing the repo-read gate with the other browse verbs.
 func (h *Handler) ciRunsRoute(w http.ResponseWriter, r *http.Request) {

@@ -131,6 +131,16 @@ type commitData struct {
 	Run    *meta.Run     // the latest CI run for this commit's SHA, if any (badge)
 }
 
+type compareData struct {
+	browseBase
+	Path    string  // always empty; present so the shared browse_head renders
+	Crumbs  []crumb // always nil; present so the shared browse_head renders
+	Base    string  // base ref/sha, as given in the URL (display + links)
+	Head    string  // head ref/sha, as given in the URL
+	Commits []repo.Commit
+	Diff    template.HTML // the three-dot diff rendered as a colored diff (render.Diff)
+}
+
 // --- ci status ---
 
 type ciRunsData struct {

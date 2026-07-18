@@ -207,3 +207,34 @@ func TestShow(t *testing.T) {
 		t.Fatalf("Show(first) diff missing initial content:\n%s", diff)
 	}
 }
+
+func TestCompare(t *testing.T) {
+	ctx := context.Background()
+	dir, first, head := browseFixture(t)
+
+	// first..head: the second commit is the one head adds, and its diff adds "world".
+	commits, diff, err := Compare(ctx, dir, first, head)
+	if err != nil {
+		t.Fatalf("Compare(first, head): %v", err)
+	}
+	if len(commits) != 1 || commits[0].SHA != head || commits[0].Subject != "second" {
+		t.Fatalf("Compare(first, head) commits = %+v, want just the second commit", commits)
+	}
+	if !strings.Contains(diff, "+world") {
+		t.Fatalf("Compare(first, head) diff missing added line:\n%s", diff)
+	}
+
+	// Identical revs: no commits, empty diff (not an error).
+	commits, diff, err = Compare(ctx, dir, head, head)
+	if err != nil {
+		t.Fatalf("Compare(head, head): %v", err)
+	}
+	if len(commits) != 0 || diff != "" {
+		t.Fatalf("Compare(head, head) = %d commits, diff %q; want empty", len(commits), diff)
+	}
+
+	// An unknown rev is ErrNotFound, not a launch error.
+	if _, _, err := Compare(ctx, dir, first, "deadbeefdeadbeef"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Compare(unknown head) err = %v, want ErrNotFound", err)
+	}
+}

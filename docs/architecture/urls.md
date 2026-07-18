@@ -30,6 +30,7 @@ verb under the repo or a top-level global route:
 | File (explicit) | `/<repo>/blob/<ref>/<path…>` | read |
 | Raw bytes | `/<repo>/raw/<ref>/<path…>` | read |
 | History / one commit | `/<repo>/commits/<ref>/<path…>`, `/<repo>/commit/<sha>` | read |
+| Compare two refs | `/<repo>/compare/<base>...<head>` | read |
 | Branches / tags | `/<repo>/refs` | read |
 | CI runs / one run | `/<repo>/runs`, `/<repo>/runs/<id>` | read |
 | Settings (default branch, visibility, rename, delete) | `/<repo>/settings` | admin |
@@ -173,7 +174,10 @@ Two non-obvious constraints the flat scheme creates:
   from coexisting (a name can't be both a file and a directory under
   `refs/heads`). The only residual case is a branch and a *tag* sharing a prefix,
   resolved by a fixed precedence (branch wins). Pretty URLs, no `%2F` encoding
-  and its proxy/`net/http` footguns.
+  and its proxy/`net/http` footguns. **Compare** carries *two* slashy refs in one
+  segment (`compare/<base>...<head>`) and splits on the literal `...`; git's ref
+  store forbids `..` in a ref name, so the separator is unambiguous even when
+  either side contains slashes.
 - **Unify + tolerant `blob`.** One content verb means a relative link resolves
   correctly whether the target is a file or a directory, without the link author
   knowing which; `blob`/`tree` tolerance means an imprecise link still lands
