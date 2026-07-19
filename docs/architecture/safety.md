@@ -15,7 +15,8 @@
    conditional writes** (compare-and-swap: `If-None-Match`/`If-Match`) a correctness
    requirement — the lease can't be enforced without it, so a provider lacking the
    primitive cannot safely back gitmote. gitmote gates **all metadata-derived requests** on
-   `IsLeader()` — a follower refuses them with a retryable `503`; only the liveness
+   the writer lease — a follower **promotes on demand** (`s3lite.TryPromote`, the same
+   CAS) and, until it can, refuses them with a retryable `503`; only the liveness
    probes and static assets stay up (gating those would deadlock a rolling deploy,
    since the new instance can't promote until the old drains). Writes are gated for
    *safety*, reads for *freshness*: a follower serves only the snapshot it restored
@@ -24,7 +25,8 @@
    A rolling deploy's
    brief old+new overlap is therefore one writer + one follower: the new instance
    boots as a follower, the old releases the lease on its graceful SIGTERM `Close`,
-   and the new promotes on its next lease poll. **Overlap is safe by construction**,
+   and the new promotes on demand as the first request arrives (or its next lease
+   poll). **Overlap is safe by construction**,
    so there is no stop-first drain. This is the writer half of
    [reader-writer-split](../evolution/reader-writer-split.md), shipped; the
    remaining half — *fresh* followers that scale reads out (a follower serves only

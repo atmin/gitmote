@@ -37,6 +37,11 @@ var version = "dev"
 
 const shutdownTimeout = 10 * time.Second
 
+// promoteTimeout bounds an on-demand lease acquisition on the request path (see
+// the gate in buildGitHandler): a follower blocks at most this long for the
+// restore before falling back to 503, so a slow S3 can't hang a request.
+const promoteTimeout = 10 * time.Second
+
 // defaultListenAddr is the bind address in the container, where ports are mapped
 // externally. GITMOTE_LISTEN_ADDR overrides it — for running a second native
 // instance beside `make dev` (e.g. the break-glass self-deploy on :8081).
@@ -195,7 +200,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	gitHandler, ui, reportAPI, isLeader, closeMeta, err := buildGitHandler(ctx, logger)
+	gitHandler, ui, reportAPI, gate, closeMeta, err := buildGitHandler(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -207,7 +212,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: newHandler(gitHandler, ui, reportAPI, isLeader),
+		Handler: newHandler(gitHandler, ui, reportAPI, gate),
 	}
 
 	if reportAPI != nil {
@@ -261,10 +266,11 @@ func reconcileLoop(ctx context.Context, reportAPI *ci.ReportAPI, logger *slog.Lo
 // git catch-all). gitHandler, when non-nil, serves the git smart-HTTP endpoints
 // at "/"; the exact health/version routes stay more specific.
 //
-// isLeader gates every metadata-derived response on the writer lease (see
+// gate decides whether this instance may answer a metadata-derived request (see
 // leaderGate): a follower — the brief post-deploy window before it promotes —
-// serves a frozen, stale snapshot, so it must not answer with stale refs.
-func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.ReportAPI, isLeader func() bool) http.Handler {
+// serves a frozen, stale snapshot, so it must not answer with stale refs. The
+// gate promotes on demand when it can, else refuses.
+func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.ReportAPI, gate func(context.Context) bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -281,7 +287,7 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.Report
 	if gitHandler != nil {
 		mux.Handle("/", gitHandler)
 	}
-	return leaderGate(mux, isLeader)
+	return leaderGate(mux, gate)
 }
 
 // leaderGate serves stale-free: only the writer (leader) answers requests that
@@ -293,10 +299,16 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.Report
 // Exceptions that must stay up on a follower: the liveness probes (Scaleway's
 // health check — gating them would deadlock a rolling deploy, since the new
 // instance can't promote until the old one drains) and static assets (no
-// metadata). A nil isLeader (unreplicated dev, sole writer) means always-leader.
-func leaderGate(next http.Handler, isLeader func() bool) http.Handler {
+// metadata). A nil gate (unreplicated dev, sole writer) means always-leader.
+//
+// The gate promotes on demand: during a graceful deploy the old writer has
+// released its lease by the time the first request reaches the new instance, so
+// the gate acquires it here — blocking for the restore — and serves, instead of
+// refusing until the background poll. It still returns 503 when the lease is
+// genuinely held elsewhere (e.g. a hard kill, until the old lease expires).
+func leaderGate(next http.Handler, gate func(context.Context) bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if alwaysServable(r.URL.Path) || isLeader == nil || isLeader() {
+		if alwaysServable(r.URL.Path) || gate == nil || gate(r.Context()) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -323,7 +335,7 @@ func alwaysServable(p string) bool {
 // The db, cache, and socket derive from GITMOTE_DATA (see dataDir); metadata
 // replicates to a root-derived replica (see replicaTarget). The push path
 // installs the pre-receive hook binary (gitmote-hook, beside this binary).
-func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *webui.Handler, *ci.ReportAPI, func() bool, func() error, error) {
+func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *webui.Handler, *ci.ReportAPI, func(context.Context) bool, func() error, error) {
 	noop := func() error { return nil }
 
 	if os.Getenv("GITMOTE_S3_BUCKET") == "" {
@@ -346,6 +358,26 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	md.OnDemote(func(err error) {
 		logger.Warn("lost the writer lease; now read-only", "error", err)
 	})
+
+	// gate answers "may this instance serve a metadata request?" — and promotes on
+	// demand when it can. During a graceful deploy the old writer has released its
+	// lease by the time the first request lands here, so TryPromote acquires it
+	// (blocking for the restore) instead of the request waiting out the background
+	// poll; OnPromote above logs the transition. TryPromote's IsLeader fast path
+	// makes the steady-state call free, and it returns false (not an error) while
+	// the lease is still held elsewhere, so a follower under a live writer stays
+	// quiet and 503s. Per-request promotion is safe only because max-scale=1 keeps
+	// this the sole instance outside the deploy window (docs/ops.md). Bounded so a
+	// slow restore falls back to 503 rather than hanging the request.
+	gate := func(reqCtx context.Context) bool {
+		pctx, cancel := context.WithTimeout(reqCtx, promoteTimeout)
+		defer cancel()
+		ok, err := md.TryPromote(pctx)
+		if err != nil {
+			logger.Warn("on-demand promotion failed; refusing request", "error", err)
+		}
+		return ok
+	}
 
 	// Objects, CI logs, and the metadata replica all live under the storage root
 	// (GITMOTE_S3_BUCKET, "bucket" or "bucket/base"), so they share fate: point at
@@ -497,7 +529,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		_ = cleanup()
 		return nil, nil, nil, nil, noop, err
 	}
-	return handler, ui, reportAPI, md.IsLeader, cleanup, nil
+	return handler, ui, reportAPI, gate, cleanup, nil
 }
 
 // buildUI constructs the management UI (always on). Its session cookie key is

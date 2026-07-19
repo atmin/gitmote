@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/alecthomas/chroma/v2 v2.27.0
-	github.com/atmin/s3lite v0.2.0
+	github.com/atmin/s3lite v0.4.0
 	github.com/aws/aws-sdk-go-v2 v1.42.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.27
 	github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager v0.2.13

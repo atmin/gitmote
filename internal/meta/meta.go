@@ -155,6 +155,13 @@ func (m *Metadata) IsLeader() bool { return m.db.IsLeader() }
 // takeover; 0 when no lease is held.
 func (m *Metadata) Generation() int64 { return m.db.Generation() }
 
+// TryPromote attempts to acquire the writer lease immediately instead of waiting
+// for the background lease poll, so a follower that receives a request during a
+// deploy handoff can promote on the spot. Returns true if this instance is (or
+// has just become) the writer, false if the lease is still held elsewhere. It
+// blocks for the restore while promoting, so bound ctx.
+func (m *Metadata) TryPromote(ctx context.Context) (bool, error) { return m.db.TryPromote(ctx) }
+
 // OnPromote registers a callback fired after this instance becomes the writer
 // (acquired the lease and started replicating).
 func (m *Metadata) OnPromote(fn func()) { m.db.OnPromote(fn) }

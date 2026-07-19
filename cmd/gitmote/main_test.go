@@ -156,7 +156,7 @@ func TestLeaderGate(t *testing.T) {
 		w.WriteHeader(http.StatusTeapot)
 	})
 	leader := false
-	srv := httptest.NewServer(newHandler(gitHandler, nil, nil, func() bool { return leader }))
+	srv := httptest.NewServer(newHandler(gitHandler, nil, nil, func(context.Context) bool { return leader }))
 	defer srv.Close()
 
 	get := func(path string) int {

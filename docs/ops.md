@@ -39,19 +39,25 @@ runs as a read-only follower otherwise. This makes **atomic conditional writes a
 provider**: the lease — and therefore the single-writer correctness invariant —
 holds only if the backend supports the compare-and-swap primitive (`If-None-Match`
 to acquire, `If-Match` to renew/release). Most do (AWS S3, Scaleway, …); one that
-doesn't cannot safely back gitmote. gitmote gates receive-pack on `IsLeader()`, so
-a follower refuses pushes with a retryable `503` while still serving clones/fetches.
+doesn't cannot safely back gitmote. gitmote gates every metadata-derived response
+on the writer lease (`leaderGate`): a follower **promotes on demand** — the request
+triggers an immediate acquisition (`s3lite.TryPromote`) and, once it restores the
+latest state, serves — and refuses with a retryable `503` only when the lease is
+still held elsewhere (liveness probes and static assets are always served).
 
 - **Rolling deploys are safe by construction.** A rolling deploy briefly runs a
   second container alongside the old one — two instances live at once — which does
   **not** violate the single-writer invariant. The new instance boots as a
   **follower** (the old still holds the lease); the old releases on its graceful
   SIGTERM (`Close` flushes, then releases the lease last); the new then
-  **promotes** on its next lease poll. Never two writers — no drain step, no
-  `POST /admin/quit`. Brief handoff window: the new instance is up
-  read-only for ≤ ~lease-TTL/3 after the old exits, so a push in that gap gets the
-  retryable `503`; reads are unaffected. (After a *hard* kill the successor waits
-  out the ≤30 s lease TTL before acquiring — a graceful exit releases at once.)
+  **promotes** on demand — the first metadata request to reach it after the old
+  releases acquires the freed lease (`TryPromote` blocks ≤ `promoteTimeout` for the
+  restore, then serves) — or, absent traffic, on its next background lease poll.
+  Never two writers — no drain step, no `POST /admin/quit`. **No handoff `503` on a
+  graceful deploy:** the triggering request blocks briefly for the restore instead
+  of being refused. A `503` remains only when the lease is genuinely held — after a
+  *hard* kill the successor can't acquire until the ≤30 s TTL expires, so requests
+  in that window get the retryable `503`; a graceful exit releases at once.
 - **`max-scale = 1`** still holds, re-asserted on every deploy. Not for the
   writer invariant anymore (the lease covers that) but because a follower serves
   a *restored snapshot* and polls — it is not a continuously-fresh read replica —
