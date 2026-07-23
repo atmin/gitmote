@@ -55,7 +55,7 @@ dev-reset:
 
 # Break-glass self-deploy: build+deploy gitmote to gitmote.atmin.net through its
 # own local runner, secrets seeded from a gitignored .env (no Secrets UI). Runs a
-# throwaway instance on :8081 with its own MinIO (:9200) and pushes HEAD to the
+# throwaway instance on :8081 with its own MinIO (:9300) and pushes HEAD to the
 # `self-deploy` branch. GitHub Actions stays the everyday deployer. Requires act +
 # docker; the deploy workflow needs GITMOTE_CI_ALLOW_BUILDS (the script sets it).
 # See docs/ops.md. Copy .env.example → .env and fill it in first.

@@ -15,7 +15,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 PORT=8081
-S3_PORT=9200
+S3_PORT=9300
 DATA="$ROOT/data-selfdeploy"
 COMPOSE=(docker compose -p gitmote-selfdeploy -f docker-compose.selfdeploy.yml)
 

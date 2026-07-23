@@ -9,11 +9,11 @@ Containers like atmin.net, but that is incidental and may change.
 
 ## Infrastructure
 
-| Component | Provider | Product |
-|-----------|----------|---------|
-| Compute | Scaleway | Serverless Containers (`fr-par`, custom domain via CNAME, auto TLS) |
-| Object storage | Scaleway | Object Storage (S3-compatible), bucket `gitmote` |
-| Registry | GitHub | GHCR — **public** `ghcr.io/atmin/gitmote` (server) + `ghcr.io/atmin/gitmote-runner` (CI). Scaleway pulls both anonymously |
+| Component      | Provider | Product                                                                                                                   |
+| -------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Compute        | Scaleway | Serverless Containers (`fr-par`, custom domain via CNAME, auto TLS)                                                       |
+| Object storage | Scaleway | Object Storage (S3-compatible), bucket `gitmote`                                                                          |
+| Registry       | GitHub   | GHCR — **public** `ghcr.io/atmin/gitmote` (server) + `ghcr.io/atmin/gitmote-runner` (CI). Scaleway pulls both anonymously |
 
 Reachable at **`gitmote.atmin.net`** (CNAME → the container endpoint). EU-resident
 infrastructure, consistent with atmin.net's stance.
@@ -56,11 +56,11 @@ still held elsewhere (liveness probes and static assets are always served).
   Never two writers — no drain step, no `POST /admin/quit`. **No handoff `503` on a
   graceful deploy:** the triggering request blocks briefly for the restore instead
   of being refused. A `503` remains only when the lease is genuinely held — after a
-  *hard* kill the successor can't acquire until the ≤30 s TTL expires, so requests
+  _hard_ kill the successor can't acquire until the ≤30 s TTL expires, so requests
   in that window get the retryable `503`; a graceful exit releases at once.
 - **`max-scale = 1`** still holds, re-asserted on every deploy. Not for the
   writer invariant anymore (the lease covers that) but because a follower serves
-  a *restored snapshot* and polls — it is not a continuously-fresh read replica —
+  a _restored snapshot_ and polls — it is not a continuously-fresh read replica —
   so scaling out for read throughput needs follower-freshness work first. Raising
   it is the tracked follow-up ([reader-writer-split](evolution/reader-writer-split.md));
   until then keep it at 1. `min-scale = 0` (idle to zero) is orthogonal — cost/latency only.
@@ -84,39 +84,39 @@ Setting these on the container does nothing for CI, and vice versa.
 > ⚠️ **`update` replaces the entire `secret-environment-variables` map — it does
 > not merge.** Passing one secret wipes the rest (observed: setting a single
 > secret dropped the AWS keys, so litestream fell back to EC2 IMDS and the server
-> crash-looped on restore). **Always pass *all* secret env vars together on every
+> crash-looped on restore). **Always pass _all_ secret env vars together on every
 > `update`.** Plain `environment-variables` are a separate map, unaffected. The CI
 > deploy's `update` sets no env vars, so it preserves both maps.
 
 **Required — the whole core.** A storage root plus its credentials is a complete forge.
 
-| Variable | Value / meaning |
-|----------|-----------------|
-| `GITMOTE_S3_BUCKET` | the **storage root**: `gitmote` (a whole bucket) or `bucket/base` to scope the forge under one sub-path of a shared bucket. Derives the metadata replica (`{root}/meta`) and the single-writer lease |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | secret — S3 key pair; covers both the object store and the litestream replica (Scaleway API key on prod) |
-| `AWS_REGION` | region; defaults to `us-east-1` (ignored by most S3-compatible stores). **Set it for real AWS S3** (e.g. `fr-par` on Scaleway) |
-| `GITMOTE_S3_ENDPOINT` | `https://s3.fr-par.scw.cloud` — the S3 endpoint; **omit for real AWS S3** |
+| Variable                                      | Value / meaning                                                                                                                                                                                      |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITMOTE_S3_BUCKET`                           | the **storage root**: `gitmote` (a whole bucket) or `bucket/base` to scope the forge under one sub-path of a shared bucket. Derives the metadata replica (`{root}/meta`) and the single-writer lease |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | secret — S3 key pair; covers both the object store and the litestream replica (Scaleway API key on prod)                                                                                             |
+| `AWS_REGION`                                  | region; defaults to `us-east-1` (ignored by most S3-compatible stores). **Set it for real AWS S3** (e.g. `fr-par` on Scaleway)                                                                       |
+| `GITMOTE_S3_ENDPOINT`                         | `https://s3.fr-par.scw.cloud` — the S3 endpoint; **omit for real AWS S3**                                                                                                                            |
 
 **Auto-managed — leave unset; a sensible default applies and an explicit env still
 wins.** Not part of the required surface.
 
-| Variable | Value / meaning |
-|----------|-----------------|
-| `GITMOTE_COOKIE_KEY` | signs management-UI session cookies; auto-generated + persisted in meta (stable across restart / scale-to-zero) |
-| `WORKER_SECRET` | runner report-back auth; auto-generated + persisted in meta **when a CI trigger is configured** (below) |
-| `GITMOTE_DATA` | base dir for the db (`meta.sqlite3`), cache, and socket; **preset to `/data` in the image** — mount a volume there to keep the cache across restarts. Ephemeral by design (restored from S3 on cold start) |
+| Variable             | Value / meaning                                                                                                                                                                                            |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITMOTE_COOKIE_KEY` | signs management-UI session cookies; auto-generated + persisted in meta (stable across restart / scale-to-zero)                                                                                            |
+| `WORKER_SECRET`      | runner report-back auth; auto-generated + persisted in meta **when a CI trigger is configured** (below)                                                                                                    |
+| `GITMOTE_DATA`       | base dir for the db (`meta.sqlite3`), cache, and socket; **preset to `/data` in the image** — mount a volume there to keep the cache across restarts. Ephemeral by design (restored from S3 on cold start) |
 
 **CI — optional, off by default** (runs are still recorded; nothing executes until
 one of these turns a trigger on — see [CI substrate](#ci-substrate)).
 
-| Variable | Value / meaning |
-|----------|-----------------|
-| `SCW_CI_JOB_DEFINITION_ID` | the Scaleway Serverless Job definition. **Set → cloud trigger** (a Scaleway job per CI job); requires `GITMOTE_URL` |
-| `GITMOTE_URL` | public base URL (`https://gitmote.atmin.net`) the runner clones + reports back to; required for any CI. **Set alone → local `act` trigger** |
-| `SCW_SECRET_KEY` | secret — Scaleway API secret key (UUID) to start the job (the same key also deploys the container from CI) |
-| `SCW_REGION` | region for the job start (falls back to `AWS_REGION`) |
-| `GITMOTE_CI_SECRET_KEY_V<n>` | secret — base64 of 32 bytes; **env-only** master key for per-repo CI secrets, never persisted ([safety.md §5](architecture/safety.md)). Add `_V2`, … to rotate (highest is current; old envelopes still decrypt). Unset → the secrets UI is off and none are injected |
-| `GITMOTE_CI_ALLOW_BUILDS` | `1`/`true` → let workflows build container images on a **daemon-backed local/VPS** runner (leaves `act`'s host-Docker-socket mount in place). ⚠️ **Hands untrusted workflow code the host daemon (host root) — trusted repos only** ([safety.md §7](architecture/safety.md)). Unset/false (default) → the socket mount is suppressed. No effect on the Scaleway substrate (can't build regardless) |
+| Variable                     | Value / meaning                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SCW_CI_JOB_DEFINITION_ID`   | the Scaleway Serverless Job definition. **Set → cloud trigger** (a Scaleway job per CI job); requires `GITMOTE_URL`                                                                                                                                                                                                                                                                                |
+| `GITMOTE_URL`                | public base URL (`https://gitmote.atmin.net`) the runner clones + reports back to; required for any CI. **Set alone → local `act` trigger**                                                                                                                                                                                                                                                        |
+| `SCW_SECRET_KEY`             | secret — Scaleway API secret key (UUID) to start the job (the same key also deploys the container from CI)                                                                                                                                                                                                                                                                                         |
+| `SCW_REGION`                 | region for the job start (falls back to `AWS_REGION`)                                                                                                                                                                                                                                                                                                                                              |
+| `GITMOTE_CI_SECRET_KEY_V<n>` | secret — base64 of 32 bytes; **env-only** master key for per-repo CI secrets, never persisted ([safety.md §5](architecture/safety.md)). Add `_V2`, … to rotate (highest is current; old envelopes still decrypt). Unset → the secrets UI is off and none are injected                                                                                                                              |
+| `GITMOTE_CI_ALLOW_BUILDS`    | `1`/`true` → let workflows build container images on a **daemon-backed local/VPS** runner (leaves `act`'s host-Docker-socket mount in place). ⚠️ **Hands untrusted workflow code the host daemon (host root) — trusted repos only** ([safety.md §7](architecture/safety.md)). Unset/false (default) → the socket mount is suppressed. No effect on the Scaleway substrate (can't build regardless) |
 
 `GITMOTE_DATA` is ephemeral on purpose: the object store + litestream replica are
 the durable state, and the local disk is a cache. On a cold start (scale-to-zero →
@@ -153,7 +153,7 @@ from the env at startup** (one runner, three substrates — see
    `WORKER_SECRET` is auto-provisioned. The server refuses to start if the job
    definition is set without `GITMOTE_URL`.
 2. else `GITMOTE_URL` set → **local `act`**: the server spawns `gitmote-runner` as a
-   local process — the *same* runner code and env contract, a local substrate
+   local process — the _same_ runner code and env contract, a local substrate
    instead of a cloud job (this is what `make dev` uses).
 3. else → **disabled**: runs and jobs are recorded, but nothing executes.
 
@@ -174,7 +174,7 @@ gives untrusted workflow code the daemon, i.e. host root ([safety.md §7](archit
 turn it on only on a host running trusted repos. The runtime follows `DOCKER_HOST`:
 plain Docker needs nothing extra; **podman** must expose its Docker-API socket
 (`systemctl --user enable --now podman.socket`, then
-`DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock`) — a *daemonless* podman
+`DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock`) — a _daemonless_ podman
 cannot back `act`. The Scaleway substrate ignores the flag (self-hosted, no daemon).
 
 ## CI secrets (GitHub Actions)
@@ -192,13 +192,13 @@ jobs). A Scaleway API key has two halves — don't swap them: the **access key**
 `SCWXXXXXXXXXXXXXXXXX` (starts with `SCW`), the **secret key** is a UUID
 (`xxxxxxxx-xxxx-…`); both must come from the gitmote Organization/Project.
 
-| Secret | Value |
-|--------|-------|
-| `SCW_SECRET_KEY` | Scaleway API **secret key** — the UUID, not the `SCW…` access key (deploy + start CI job) |
-| `SCW_ACCESS_KEY` | Scaleway **access key** (`SCW…`) |
-| `SCW_ORGANIZATION_ID` | Scaleway organization ID |
-| `SCW_PROJECT_ID` | Scaleway project ID |
-| `SCW_CONTAINER_ID` | the gitmote Serverless Container ID |
+| Secret                | Value                                                                                     |
+| --------------------- | ----------------------------------------------------------------------------------------- |
+| `SCW_SECRET_KEY`      | Scaleway API **secret key** — the UUID, not the `SCW…` access key (deploy + start CI job) |
+| `SCW_ACCESS_KEY`      | Scaleway **access key** (`SCW…`)                                                          |
+| `SCW_ORGANIZATION_ID` | Scaleway organization ID                                                                  |
+| `SCW_PROJECT_ID`      | Scaleway project ID                                                                       |
+| `SCW_CONTAINER_ID`    | the gitmote Serverless Container ID                                                       |
 
 If a secret reads as empty despite being set, check: it's under **Secrets** not
 **Variables**; it's a **Repository** secret (a job with no `environment:` can't see
@@ -286,7 +286,7 @@ No initial repo is created — make repos in the UI in two clicks.
 ### Manual bootstrap / token recovery
 
 Both run **from your machine against the bucket** so you are transiently the
-single writer — do this *before* the container serves traffic (or while it is
+single writer — do this _before_ the container serves traffic (or while it is
 scaled to zero). They open in `RoleWriter`: acquire the writer lease and fail
 loudly if the server already holds it, so they can never race the live writer.
 
@@ -336,7 +336,7 @@ local instance (Scaleway can't build).
 
 `make self-deploy` automates it end to end: copy [`.env.example`](../.env.example)
 to `.env` (gitignored) and fill in the deploy secrets, then run it. The target
-starts a throwaway instance on `:8081` with its own MinIO (`:9200`, separate from
+starts a throwaway instance on `:8081` with its own MinIO (`:9300`, separate from
 `make dev`), `GITMOTE_CI_ALLOW_BUILDS=1`, and the `.env` secrets seeded per-repo via
 `GITMOTE_REPO_SECRET_GITMOTE__<NAME>` — then pushes `HEAD` to `self-deploy`, which
 triggers the workflow. These env secrets are **never stored and need no
