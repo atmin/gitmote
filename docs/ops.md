@@ -45,6 +45,19 @@ triggers an immediate acquisition (`s3lite.TryPromote`) and, once it restores th
 latest state, serves — and refuses with a retryable `503` only when the lease is
 still held elsewhere (liveness probes and static assets are always served).
 
+- **Two live instances take turns.** The holder of the lease keeps it only while
+  busy: once no request has run for 5 s (`idleYieldAfter`) and none is in flight,
+  it yields the lease (`s3lite.YieldLease` — final sync first, then the lock is
+  deleted, so the next writer sees every acknowledged write). Followers promote
+  only on demand (`OnDemandPromotion`), never in a background poll, so the freed
+  lease goes to whichever instance gets the next request. An always-on local
+  container and the cloud instance can therefore share one storage root and both
+  serve. A request that reaches one while the other is busy gets the retryable
+  `503`, until the other has been idle for 5 s. The first request after an idle
+  spell pays the acquisition: a resume in place when nobody else wrote, a restore
+  when someone did. The repo cache rewrites its refs from the metadata DB on every
+  request, so it never serves a ref that the other instance moved or deleted. The
+  CI reconcile sweep takes the lease through the same gate every 5 minutes.
 - **Rolling deploys are safe by construction.** A rolling deploy briefly runs a
   second container alongside the old one — two instances live at once — which does
   **not** violate the single-writer invariant. The new instance boots as a
@@ -52,8 +65,7 @@ still held elsewhere (liveness probes and static assets are always served).
   SIGTERM (`Close` flushes, then releases the lease last); the new then
   **promotes** on demand — the first metadata request to reach it after the old
   releases acquires the freed lease (`TryPromote` blocks ≤ `promoteTimeout` for the
-  restore, then serves) — or, absent traffic, on its next background lease poll.
-  Never two writers — no drain step, no `POST /admin/quit`. **No handoff `503` on a
+  restore, then serves). Never two writers — no drain step, no `POST /admin/quit`. **No handoff `503` on a
   graceful deploy:** the triggering request blocks briefly for the restore instead
   of being refused. A `503` remains only when the lease is genuinely held — after a
   _hard_ kill the successor can't acquire until the ≤30 s TTL expires, so requests
@@ -286,8 +298,9 @@ No initial repo is created — make repos in the UI in two clicks.
 ### Manual bootstrap / token recovery
 
 Both run **from your machine against the bucket** so you are transiently the
-single writer — do this _before_ the container serves traffic (or while it is
-scaled to zero). They open in `RoleWriter`: acquire the writer lease and fail
+single writer — do this while no instance is busy: before the container serves
+traffic, while it is scaled to zero, or once it has been idle for 5 s (an idle
+server yields its lease). They open in `RoleWriter`: acquire the writer lease and fail
 loudly if the server already holds it, so they can never race the live writer.
 
 ```bash

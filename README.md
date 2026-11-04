@@ -88,10 +88,12 @@ mint a fresh one).
 
 **Only one writer at a time — and that's enforced, not your job.** gitmote takes a
 single-writer *lease* on the storage root, so running a second instance (or a stray
-cloud container) can't corrupt anything: whoever holds the lease writes, the other serves
-reads and returns a retryable `503` on push. So a local on-demand forge is safe
-even if you also run gitmote in the cloud — no coordination, no harm. Details in
-[docs/ops.md](docs/ops.md) (“Single writer is a correctness invariant”).
+cloud container) can't corrupt anything. An instance holds the lease only while it
+is busy: after 5 s with no request it hands the lease back, and the next request
+on either instance takes it. So an always-on local container and a cloud instance
+can share one bucket and both serve. A request that reaches one while the other is
+busy gets a retryable `503`. Details in [docs/ops.md](docs/ops.md) (“Single writer
+is a correctness invariant”).
 
 ## Develop locally
 

@@ -31,7 +31,10 @@
 - **s3lite.** Refs and all forge metadata. Source of truth for refs.
 - **Ephemeral local disk.** A working bare repo per accessed repository — a
   **materialization / cache**, never the source of truth. Refs always come from
-  s3lite; objects are hydrated from S3 into the closure an operation needs — a
+  s3lite, and every materialization makes the on-disk refs mirror them exactly
+  (`packed-refs` from the metadata DB, loose refs removed) — so a cache that went
+  stale while another instance held the lease never advertises a ref that moved
+  or no longer exists. Objects are hydrated from S3 into the closure an operation needs — a
   **write** hydrates the target branch's full history (fast-forward and
   connectivity checks demand it), a **read** hydrates the closure it must serve.
   On eviction or cold start the repo is simply rebuilt.

@@ -22,11 +22,18 @@
    *safety*, reads for *freshness*: a follower serves only the snapshot it restored
    at startup and doesn't catch up until it promotes, so serving a read would return
    a stale ref — a just-pushed file appearing missing, a `fetch` missing commits.
-   A rolling deploy's
-   brief old+new overlap is therefore one writer + one follower: the new instance
+   A writer keeps the lease only while busy: after 5 s with no request in flight
+   or ended, it yields (`s3lite.YieldLease`, final sync before the release), and
+   followers promote only on demand (`OnDemandPromotion`). So two long-lived
+   instances on one storage root — an always-on local container and the cloud
+   instance — take turns as the writer, never overlapping. Because the metadata
+   can change under an instance while it is a follower, the repo cache rewrites
+   its refs from the metadata DB before every request (see
+   [storage](storage.md)). A rolling deploy's
+   brief old+new overlap is likewise one writer + one follower: the new instance
    boots as a follower, the old releases the lease on its graceful SIGTERM `Close`,
-   and the new promotes on demand as the first request arrives (or its next lease
-   poll). **Overlap is safe by construction**,
+   and the new promotes on demand as the first request arrives.
+   **Overlap is safe by construction**,
    so there is no stop-first drain. This is the writer half of
    [reader-writer-split](../evolution/reader-writer-split.md), shipped; the
    remaining half — *fresh* followers that scale reads out (a follower serves only
@@ -84,6 +91,9 @@
    every repo's secrets, so a replica leak must never expose it. An explicit env
    still wins for both, and generation is get-or-create on the leader (a follower's
    DB is read-only), so restarts and rolling deploys reuse the one restored value.
+   A follower that finds a secret missing — two instances booting together on a
+   fresh root — catches up from the replica until the secret appears, or takes
+   the lease and creates it; it never writes as a follower.
 
 7. **Container image builds are an opt-in privilege escalation — off by default.**
    Workflow code is attacker-controlled; the isolation boundary is the job

@@ -3,9 +3,10 @@
 > **Status: writer half shipped; read-replica half still speculative.** The
 > **leased single writer** below is now implemented (s3lite `RoleAuto`; gitmote
 > gates pushes on the lease — see [safety.md §1](../architecture/safety.md) and
-> [ops.md](../ops.md)). What remains speculative is the **read-scaling** half:
-> `max-scale > 1` with followers fresh enough to serve clones. Don't cite the
-> read-replica part as a spec.
+> [ops.md](../ops.md)), and an idle writer yields the lease after 5 s, so two
+> long-lived instances take turns as the writer. What remains speculative is the
+> **read-scaling** half: `max-scale > 1` with followers fresh enough to serve
+> clones. Don't cite the read-replica part as a spec.
 
 ## The problem it solved
 
@@ -51,14 +52,16 @@ be the writer?".
 
 ## The read-scaling half — still open
 
-`max-scale` stays **1**. The lease makes running more instances _safe_, but not
-yet _useful_ for reads: an s3lite follower serves a **restored snapshot and
-polls** — it is not a continuously-fresh replica, so it could serve stale refs to
-a clone. Scaling reads out needs follower freshness first (litestream `restore -f`
-follow mode, or VFS read replicas + `PRAGMA litestream_write_enabled` — the latter
-likely needs cgo, incompatible with s3lite's pure-Go `modernc` driver; verify).
-This is what the read-scaling [open question](../architecture/open-questions.md)
-names.
+`max-scale` stays **1**. The lease makes running more instances _safe_, and the
+idle yield lets them take turns, but a follower still serves no reads: gitmote
+gates every metadata request on the lease, because a follower holds only the
+snapshot it restored, so it could serve stale refs to a clone. s3lite now
+provides the freshness this needs — `FollowerRefreshInterval` catches a follower
+up incrementally in the background, and `Refresh` does it on demand, so a follower
+could refresh right before it serves a read. gitmote does not use either yet; it
+would also need the read path to stop writing metadata (the auth guard stamps a
+token's `last_used` on every request). This is what the read-scaling
+[open question](../architecture/open-questions.md) names.
 
 **Trigger to build it:** reads get heavy enough to want replicas, or `max-scale`
 needs to exceed 1 for throughput. Until then, one leased writer at `max-scale = 1`
