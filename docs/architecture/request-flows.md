@@ -1,10 +1,12 @@
 # Request flows
 
-> Part of the [gitmote architecture](README.md).
+This file is part of the [gitmote architecture](README.md). It shows the read
+path and the write path of a git request.
 
-## Clone / fetch (read path)
+## Clone and fetch: the read path
 
-No lock. Refs come from s3lite; the object closure to serve is hydrated from S3.
+A read takes no lock. The refs come from s3lite. gitmote hydrates the object
+closure to serve from S3.
 
 ```mermaid
 sequenceDiagram
@@ -23,14 +25,21 @@ sequenceDiagram
     G-->>C: packfile
 ```
 
-## Push (write path) — the CAS
+## Push: the write path and the CAS
 
-Serialized by a per-repo in-process mutex; the safety-critical ordering is
-**objects durable in S3 first, ref CAS in s3lite second.** The catch that shapes
-everything below: `git receive-pack` updates refs and acknowledges the client
-_itself_, at the end of its run — so the durable commit cannot happen _after_ it
-returns (the ack has already gone out). It must gate _inside_ receive-pack's
-lifecycle, at its one designed seam: the `pre-receive` hook.
+A per-repo mutex in the process serializes pushes. The order of two steps is
+critical for safety:
+
+1. The objects become durable in S3.
+2. Then the ref compare-and-swap (CAS) runs in s3lite.
+
+One fact shapes the whole design. `git receive-pack` itself updates the refs and
+acknowledges the client, at the end of its run. So the durable commit cannot
+happen after receive-pack returns, because the acknowledgement has already gone
+out.
+
+The commit must happen inside the run of receive-pack. receive-pack has one hook
+point designed for this: the `pre-receive` hook.
 
 ```mermaid
 sequenceDiagram
@@ -56,34 +65,57 @@ sequenceDiagram
     G->>G: release lock
 ```
 
-**Why it looks like this:**
+## Why the push works this way
 
-- **`pre-receive` is the transaction boundary.** It fires with every
-  `<old> <new> <ref>` command before any ref changes, while the pushed objects
-  sit in a quarantine dir (`$GIT_QUARANTINE_PATH`). Exit non-zero and git rejects
-  the whole push and throws the quarantine away — so a failed S3 PUT or CAS
-  leaves nothing behind. Quarantine also isolates _exactly_ the new objects, so
-  "PUT the new objects" is simply "PUT the quarantine contents."
-- **The hook can't touch s3lite directly.** It runs as a child of
-  `receive-pack` — a _separate process_ — and s3lite is single-writer SQLite
-  embedded in the parent. Two processes writing it is the one thing s3lite
-  forbids. So the hook RPCs back to the parent over a unix socket; the parent,
-  the sole writer, performs the PUT + CAS and returns a verdict. (This is exactly
-  how GitLab/Gitaly wires its git hooks back to the app.) The channel:
-  - **Installation** — one hook binary (`gitmote-hook`), referenced by
-    `core.hooksPath` (set per spawned `receive-pack` via `GIT_CONFIG_*`), so
-    every materialized repo inherits it with nothing to install per repo.
-  - **Discovery + auth** — the parent exports the socket path (`GITMOTE_SOCK`)
-    and a **single-use nonce** (`GITMOTE_NONCE`) into `receive-pack`'s
-    environment. The nonce is minted per push, bound to the locked operation,
-    and burned on use, so a stray local process can't forge a ref update.
-  - **Fail closed** — any hook-side error (missing env, dial failure, bad
-    verdict) rejects the push.
-- **One SQL transaction = atomic multi-ref push.** All per-ref CAS run inside a
-  single s3lite transaction; all-or-nothing matches `git push --atomic`, and is
-  _stronger_ than loose-file refs.
-- **The local refs are a throwaway.** On an `ok` verdict, receive-pack migrates
-  the quarantine and updates on-disk refs — bookkeeping on disposable disk;
-  durability is S3 + s3lite. Note the fast-forward / ancestry check needs the
-  target branch's history present locally, which is why a _write_ hydrates that
-  history up front (and is the scaling wall for large repos).
+### `pre-receive` is the transaction boundary
+
+The hook runs with every `<old> <new> <ref>` command, before any ref changes. At
+that point, the pushed objects sit in a quarantine directory
+(`$GIT_QUARANTINE_PATH`).
+
+When the hook exits non-zero, git rejects the whole push and discards the
+quarantine. So a failed S3 PUT or CAS leaves nothing behind in the repo on disk.
+At worst, orphan objects stay in S3.
+
+The quarantine also holds exactly the new objects. So to PUT the new objects,
+gitmote PUTs the contents of the quarantine.
+
+### The hook calls back to the parent
+
+The hook cannot touch s3lite directly. It runs as a child of `receive-pack`, in a
+separate process. s3lite is a single-writer SQLite, embedded in the parent. The
+one thing s3lite forbids is two processes that write to it.
+
+So the hook calls the parent back over a unix socket. The parent is the sole
+writer. It runs the PUT and the CAS, and returns a verdict. GitLab, through
+Gitaly, connects its git hooks back to the app in the same way.
+
+The channel has three parts:
+
+- Installation. One hook binary, `gitmote-hook`, serves every repo.
+  `core.hooksPath` refers to it. gitmote sets that value with `GIT_CONFIG_*` for
+  each `receive-pack` it spawns. So every materialized repo has the hook, and no
+  repo needs its own install.
+- Discovery and auth. The parent puts the socket path (`GITMOTE_SOCK`) and a
+  single-use nonce (`GITMOTE_NONCE`) into the environment of `receive-pack`. The
+  parent mints the nonce for each push, and binds it to the locked operation. The
+  nonce works once: its first use deletes it. So a stray local process cannot
+  forge a ref update.
+- Fail closed. Any error on the hook side rejects the push. Examples are a
+  missing env var, a failed dial and a bad verdict.
+
+### One SQL transaction makes a push of many refs atomic
+
+All the per-ref CAS checks run inside one s3lite transaction. So the push
+succeeds or fails as a whole, as with `git push --atomic`. This is stronger than
+refs stored as loose files.
+
+### The local refs are disposable
+
+On an `ok` verdict, receive-pack moves the quarantine into the repo and updates
+the refs on disk. This is only bookkeeping on a disposable disk. S3 and s3lite
+hold the durable state.
+
+The fast-forward check tests ancestry, so it needs the history of the target
+branch on the local disk. So a write hydrates that history first. This is the
+limit on scale for large repos.

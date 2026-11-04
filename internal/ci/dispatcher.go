@@ -29,8 +29,9 @@ const (
 	// gitmote deliberately reads .gitmote/workflows, NOT .github/workflows: GitHub
 	// only ever sees .github, so which directory a workflow lives in *declares*
 	// which forge runs it — a repo mirrored to GitHub puts CI in .gitmote to run
-	// only here, in .github to run only there, and gets no double-run. (This is
-	// also why gitmote's own repo, which has only .github, never CI's on gitmote.)
+	// only here, in .github to run only there, and gets no double-run. (gitmote's
+	// own repo keeps its CI and GitHub deploy in .github; only the self-deploy
+	// workflow lives in .gitmote, so only that one runs on gitmote.)
 	// act reads it via `--workflows` (see internal/runner); the YAML is unchanged.
 	workflowDir = ".gitmote/workflows"
 	// cloneTokenTTL bounds the per-run clone credential: a run's max duration

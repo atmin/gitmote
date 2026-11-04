@@ -1,28 +1,55 @@
-# Auth & transport
+# Auth and transport
 
 > Part of the [gitmote architecture](README.md).
 
-- **Smart HTTP first.** `git http-backend` over HTTPS, authenticated with
-  bearer **personal access tokens** (hashed in `tokens`). Stateless, firewall-
-  friendly, and the natural fit for a scale-to-zero container.
-- **Authorization is per-repo**, read from `acls` on every request. The levels
-  are `read` (spectator), `write` (collaborator), and `admin` (repo management).
-- **Visibility gates reads, not writes.** `repos.visibility` is `private`
-  (default) or `public`. A **public** repo is readable — clone, fetch, and
-  browse — with **no token**; reading a private repo needs an ACL. Writes and
-  management are **never** anonymous: `git-receive-pack` and every management
-  action always require the matching `write`/`admin` ACL. See
-  [urls.md](urls.md) for the flat namespace this sits in.
-- **Force-pushing the default branch is admin-only.** A `write` collaborator may
-  fast-forward any branch and force-push or delete *non-default* branches, but a
-  non-fast-forward or deletion of `repos.default_branch` requires `admin`. It is
-  enforced on the write path (the pre-receive hook, where old→new ancestry is
-  known), not at request authorization — see [safety.md](safety.md).
-- **The management UI reuses the same tokens.** A browser signs in by pasting a
-  PAT once (verified through the identical path); the server then issues an
-  HMAC-signed, stateless session cookie (no sessions table — no new source of
-  truth). The UI is gated on the global-admin role (`users.is_admin`), distinct
-  from per-repo ACLs.
-- **SSH is deferred.** It's the expected forge UX and the `ssh_keys` schema is
-  already there, but an SSH connection is stateful — awkward for a container that
-  sleeps. Revisit once HTTP is solid.
+## Smart HTTP comes first
+
+gitmote serves `git http-backend` over HTTPS. Clients authenticate with bearer
+personal access tokens (PATs). The `tokens` table stores them hashed. Smart HTTP
+is stateless and passes through firewalls easily. So it fits a container that
+scales to zero.
+
+## Authorization is per repo
+
+gitmote reads the authorization from `acls` on every request. There are three
+levels:
+
+| Level | Role |
+| --- | --- |
+| `read` | Spectator |
+| `write` | Collaborator |
+| `admin` | Repo management |
+
+## Visibility gates reads, not writes
+
+`repos.visibility` is `private` by default, or `public`. Anyone can read a public
+repo with no token: clone, fetch and browse. Reading a private repo needs an ACL.
+[urls.md](urls.md) describes the flat namespace that this sits in.
+
+Writes and management are never anonymous. `git-receive-pack` always requires a
+`write` or `admin` ACL. Every management action requires the global-admin role,
+as the section on the management UI states.
+
+## Only an admin can force-push the default branch
+
+A `write` collaborator may fast-forward any branch. A collaborator may also
+force-push or delete branches other than the default. A non-fast-forward push or a
+deletion of `repos.default_branch` requires `admin`.
+
+The pre-receive hook on the write path enforces this rule. The hook knows the
+ancestry from the old tip to the new tip. Request authorization does not check the
+rule. See [safety.md](safety.md).
+
+## The management UI reuses the same tokens
+
+A browser signs in by pasting a PAT once. The server verifies the PAT through the
+same path as git. Then it issues a stateless session cookie, signed with HMAC.
+There is no sessions table, so the UI adds no new source of truth. The management
+UI needs the global-admin role (`users.is_admin`), which is distinct from per-repo
+ACLs.
+
+## SSH is deferred
+
+Forge users expect SSH, and the `ssh_keys` schema is already in place. But an SSH
+connection is stateful, which is awkward for a container that sleeps. SSH waits
+until the HTTP transport is solid.

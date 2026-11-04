@@ -1,32 +1,38 @@
-# gitmote — CI
+# CI
 
-Run a repo's `.gitmote/workflows` on push: on a successful ref advance, execute
-the workflow in an isolated container, keep logs, report pass/fail, surface
-status in the UI. Deliberately **limited but real** — the ~80% of personal CI
-that is "on push, run steps in a container, pass/fail, keep logs." No matrix
-builds, marketplace, service containers, or caching.
+gitmote runs a repo's `.gitmote/workflows` on push. After a successful ref
+advance, it runs each workflow in an isolated container. It keeps the logs,
+reports pass or fail, and shows the status in the UI.
 
-The engine is **[`act`](https://github.com/nektos/act)**: it runs
-GitHub-Actions YAML, so a workflow authored for Actions runs unmodified under
-gitmote's runner. Actions-compat is load-bearing (the GitHub mirror is
-break-glass — move the same YAML to `.github/workflows` and GitHub runs it), not
-a preference.
+CI is deliberately limited but real. It covers about 80% of personal CI: on push,
+run steps in a container, pass or fail, keep logs. It has no matrix builds,
+marketplace, service containers or caching.
 
-**Why `.gitmote/workflows`, not `.github/workflows`.** GitHub only ever reads
-`.github`, so the directory a workflow lives in *declares which forge runs it*: a
-repo mirrored to GitHub puts CI in `.gitmote` to run only here, in `.github` to
-run only on GitHub, and so never double-runs on both. (gitmote's own repo keeps
-its deploy pipeline in `.github` and therefore never CI's on gitmote — the
-concrete case that motivated this.) `act` reads the directory via `--workflows`;
-the YAML is byte-identical to GitHub's, so moving a file between the two
-directories is the whole switch.
+The engine is [`act`](https://github.com/nektos/act). It runs GitHub-Actions YAML,
+so a workflow written for Actions runs unchanged under gitmote's runner. Actions
+compatibility is a requirement, not a preference. When gitmote cannot run CI, the
+GitHub mirror can: move the same YAML to `.github/workflows`, and GitHub runs it.
+
+## Workflow directory
+
+GitHub reads only `.github`. So the directory of a workflow declares which forge
+runs it. A repo mirrored to GitHub uses the two directories this way:
+
+- A workflow in `.gitmote` runs only on gitmote.
+- A workflow in `.github` runs only on GitHub.
+
+So no workflow runs on both forges. gitmote's own repo keeps its GitHub deploy
+pipeline in `.github`, so that pipeline never runs on gitmote.
+
+`act` reads the directory through `--workflows`. The YAML is byte-identical to
+GitHub's, so the switch is only a move of the file between the two directories.
 
 ## Pipeline
 
-The trigger is the **ref CAS commit** ([request-flows.md](request-flows.md)) —
-the one durable "a ref advanced" moment. After it succeeds, an **after-commit**
-callback dispatches, **fire-and-forget**: a dispatch failure is a *missed run,
-not a failed push* (content-before-pointer, generalized).
+The trigger is the ref CAS commit ([request-flows.md](request-flows.md)). It is
+the one durable moment when a ref advances. After it succeeds, an after-commit
+callback dispatches the run, fire-and-forget. So a dispatch failure is a missed
+run, not a failed push. This generalizes the content-before-pointer rule.
 
 ```mermaid
 sequenceDiagram
@@ -41,176 +47,263 @@ sequenceDiagram
     W->>W: PUT log blob, then record pointer (content before pointer)
 ```
 
-The runner ([`internal/runner`](../../internal/runner)) is one linear pass:
-**claim → clone → act → complete**. It holds only a scoped clone token and
-injected secrets, reports over the authenticated API, and **never touches s3lite
-or S3 directly**.
+The runner ([`internal/runner`](../../internal/runner)) makes one linear pass:
+claim, clone, act, complete. It holds only a scoped clone token and the injected
+secrets. It reports over the authenticated API. It never touches s3lite or S3
+directly.
 
-**Branch filters gate dispatch, GitHub-style.** The dispatcher parses each
-workflow's `on.push` and records a run *only* for workflows whose branch filter
-selects the pushed branch — so a push that matches nothing produces **no run at
-all**, exactly as GitHub shows no workflow run when a push triggers nothing (a
-green no-op run, its log full of engine start-up chatter, would otherwise be pure
-noise — the concrete case: gitmote's own `deploy.yml` gated on `self-deploy`,
-which must stay silent on every `master` push). It models the common filter
-subset — `branches` / `branches-ignore` with `*` and `**` globs, the ~80%;
-`paths`, tag filters, and the rarer `?`/`+`/`[]`/`!` patterns are not evaluated
-(a workflow using them is kept, erring toward running). A workflow file that
-can't be read or parsed is also kept, so a malformed workflow surfaces as a
-*failed* run rather than vanishing.
+### Branch filters
+
+Branch filters gate dispatch, as on GitHub. The dispatcher parses the `on.push`
+of each workflow. It records a run only for workflows whose branch filter selects
+the pushed branch. So a push that matches no workflow produces no run at all.
+GitHub also shows no workflow run when a push triggers nothing.
+
+Without this rule, such a push would make a green no-op run. Its log would hold
+only the start-up output of the engine, which is noise. gitmote's own `deploy.yml`
+is the example. It is gated on `self-deploy`, and must stay silent on every
+`master` push.
+
+The dispatcher models the common subset of filters, about 80% of real use. That
+subset is `branches` and `branches-ignore`, with `*` and `**` globs. The
+dispatcher handles other cases this way:
+
+- It ignores `paths` and tag filters. It keeps a workflow that uses them, and so
+  errs toward running it.
+- It does not model the rarer `?`, `+`, `[]` and `!` patterns. Such a pattern
+  matches only its literal form.
+- It keeps a workflow file that it cannot read or parse. So a malformed workflow
+  shows as a failed run, and does not vanish.
 
 ## One runner, three substrates
 
-The runner code and env contract are identical everywhere; only what *starts* a
-job differs, selected at boot ([`cmd/gitmote/main.go`](../../cmd/gitmote/main.go)):
+The runner code and its env contract are the same everywhere. Only what starts a
+job differs. The server selects it at boot
+([`cmd/gitmote/main.go`](../../cmd/gitmote/main.go)):
 
 | Condition | Trigger | Runs where |
 | --- | --- | --- |
-| `SCW_CI_JOB_DEFINITION_ID` set | Scaleway Serverless Jobs ([`internal/scaleway`](../../internal/scaleway)) | Cloud (ephemeral, scale-to-zero Job) |
-| `GITMOTE_URL` + `WORKER_SECRET` set | `LocalTrigger` — execs the runner binary locally | Dev machine (`make dev`) |
-| neither | `NoopTrigger` | Nowhere — runs record in the UI but don't execute |
+| `SCW_CI_JOB_DEFINITION_ID` set | Scaleway Serverless Jobs ([`internal/scaleway`](../../internal/scaleway)) | The cloud, as an ephemeral Job that scales to zero |
+| Otherwise, `GITMOTE_URL` set | `LocalTrigger`, which runs the runner binary locally | A dev machine (`make dev`) |
+| Neither | `NoopTrigger` | Nowhere: runs show in the UI, but do not execute |
 
-So `make dev` exercises the whole path locally — same runner, same API, same
-`act`. Cloud also requires `WORKER_SECRET` + `GITMOTE_URL` or the server refuses
-to start (a trigger the runner can't report back to is a misconfiguration).
+So `make dev` exercises the whole path locally, with the same runner, API and
+`act`.
 
-**`act` runs self-hosted on Scaleway, nested locally.** Serverless Jobs have no
-Docker daemon, so on the cloud runner `act` runs in self-hosted mode
-(`GITMOTE_ACT_PLATFORMS` in [`Dockerfile.runner`](../../Dockerfile.runner)):
-steps execute *directly in the ephemeral Job container* — the Job **is** the
-sandbox, no Docker-in-Docker. Every tool a workflow needs (git, node, bash) must
-live in the runner image. Locally, where a real daemon exists, that var is unset
-and `act` keeps its default nested-container behavior.
+Both executing triggers use `WORKER_SECRET`. It comes from the env, or gitmote
+generates it and keeps it in the metadata database. The cloud trigger needs
+`GITMOTE_URL` too, and the server refuses to start without it. A trigger that the
+runner cannot report back to is a misconfiguration.
+
+### act runs self-hosted on Scaleway, and nested locally
+
+Serverless Jobs have no Docker daemon. So on the cloud runner, `act` runs in
+self-hosted mode (`GITMOTE_ACT_PLATFORMS` in
+[`Dockerfile.runner`](../../Dockerfile.runner)). Steps run directly in the
+ephemeral Job container. The Job is the sandbox, and there is no Docker-in-Docker.
+So the runner image must hold every tool a workflow needs, such as git, node and
+bash.
+
+Locally, a real daemon exists. There, `GITMOTE_ACT_PLATFORMS` is unset, and `act`
+keeps its default behavior of nested containers.
 
 ## Data model
 
-Three leader-only, litestream-replicated tables in
-[`internal/meta`](../../internal/meta): `ci_runs`, `ci_jobs`, `ci_secrets`. Logs
-are append-only blobs under a `ci/` key space within the storage root
-(`ci/{repoID}/{runID}/{jobID}.log`), PUT before the `ci_jobs` pointer is
-recorded, with a size cap (explicit truncation marker, never silent).
+Three tables in [`internal/meta`](../../internal/meta) hold the CI state:
+`ci_runs`, `ci_jobs` and `ci_secrets`. They are leader-only, and litestream
+replicates them.
 
-The runner-facing report API lives under `/internal`, apart from the browser UI
+Logs are append-only blobs under the `ci/` key space of the storage root, at
+`ci/{repoID}/{runID}/{jobID}.log`. gitmote PUTs a log before it records the
+`ci_jobs` pointer. A size cap bounds each log. Over the cap, gitmote truncates the
+log with an explicit marker, never silently.
+
+The runner reports through an API under `/internal`, apart from the browser UI
 ([`internal/ci/report.go`](../../internal/ci/report.go)):
-`GET /internal/ci/jobs/{id}` claims a job (`queued→running`),
-`POST …/log` appends a live-log chunk (below), `POST …/complete` uploads the log
-and sets a terminal status (idempotent). All do a constant-time `WORKER_SECRET`
-compare; only the **leader** writes completions (a follower returns a retryable
-503). A leader-only reconcile ticker sweeps jobs stuck in `running` to `error`.
+
+| Route | Action |
+| --- | --- |
+| `GET /internal/ci/jobs/{id}` | Claims a job (`queued→running`). |
+| `POST …/log` | Appends a chunk of the live log (see Live logs). |
+| `POST …/complete` | Uploads the log and sets a terminal status. It is idempotent. |
+
+Each route compares `WORKER_SECRET` in constant time. Only the leader writes
+completions, and a follower returns a retryable 503. A leader-only reconcile
+ticker sweeps jobs stuck in `running` to `error`.
 
 ## Live logs
 
-The durable log above is shipped once, at completion — so while a job runs there
-is otherwise nothing to watch. A **best-effort live tail** fills that gap without
-touching the durable path. The runner tees `act`'s combined output and, on a ~1 s
-ticker, POSTs the delta to `…/log`; the leader appends it to an **in-memory**,
-per-job buffer ([`LiveLogs`](../../internal/ci/livelogs.go)) capped like the
-durable blob. The UI's job-log page polls
-`GET /{repo}/runs/{id}/job/{jid}/log/live?offset=N` (`{bytes, next, done}`) and,
-on `done`, reloads to the rendered durable log.
+The durable log ships once, at completion. So while a job runs, nothing else
+shows its output. A best-effort live tail fills that gap, and does not touch the
+durable path:
 
-It is deliberately **never replicated or persisted**: a lost chunk or a leader
-restart only blips the live view — the runner still ships the whole log at
-completion, so the durable record is unaffected. This is the fire-and-forget
-discipline again: the tail is a UX nicety, never a correctness path. The buffer is
-leader-only (the browser polls the same instance the runner streams to) and swept
-after a short idle TTL on the reconcile tick.
+1. The runner tees the combined output of `act`. About every 1 s, it POSTs the
+   new output to `…/log`.
+2. The leader appends it to an in-memory buffer for the job
+   ([`LiveLogs`](../../internal/ci/livelogs.go)). A cap bounds the buffer, as for
+   the durable blob.
+3. The job-log page of the UI polls
+   `GET /{repo}/runs/{id}/job/{jid}/log/live?offset=N`, which returns
+   `{bytes, next, done}`.
+4. On `done`, the page reloads to the rendered durable log.
+
+The live tail is deliberately never replicated or persisted. A lost chunk or a
+leader restart only interrupts the live view. The runner still ships the whole
+log at completion, so the durable record is unaffected. This follows the
+fire-and-forget rule: the tail is a convenience, never a correctness path.
+
+The buffer is leader-only, because the browser polls the same instance that the
+runner streams to. The reconcile tick sweeps a buffer after a short idle TTL.
 
 ## Secrets
 
-Per-repo CI secrets, encrypted at rest, decrypted only to inject at trigger. The
-crypto and its **narrow** threat model are in [safety.md §5](safety.md):
-AES-256-GCM under a server-held master key (`GITMOTE_CI_SECRET_KEY_V<n>`), a
-per-repo HKDF subkey, AAD binding `(repoID, name, version)`. It protects against
-a leaked S3 replica / DB snapshot — *not* a compromised running server, which
-must hold the key to decrypt. The dispatcher passes each secret as
-`GITMOTE_CI_SECRET_<NAME>`; the runner forwards it to `act` as `-s <NAME>`, which
-reads the value from its env — so the value never touches the `act` argv and the
-workflow sees `${{ secrets.NAME }}` as on GitHub. Values are write-only in the UI
-(only names shown) and never logged.
+Per-repo CI secrets are encrypted at rest. gitmote decrypts them only to inject
+them at trigger time. [safety.md §5](safety.md) gives the crypto and its narrow
+threat model:
 
-**Env-seeded secrets (a second source).** Beside the encrypted UI/DB secrets, the
-dispatcher overlays any per-repo secrets supplied in the server's own environment
-as `GITMOTE_REPO_SECRET_<REPO>__<NAME>` (repo uppercased, `-`→`_`). These are
-plain operator config — never stored, never encrypted, and needing **no master
-key** — so they're invisible to the UI and win over a same-named DB secret. The
-host env is already the CI trust boundary ([safety.md §7](safety.md)), so this
-adds no exposure; it exists so the automated self-deploy (`make self-deploy`) can
-carry its Scaleway/GHCR secrets in a gitignored `.env` instead of the UI.
+- AES-256-GCM under a master key that the server holds
+  (`GITMOTE_CI_SECRET_KEY_V<n>`)
+- a per-repo HKDF subkey
+- AAD that binds `(repoID, name, version)`
+
+The encryption protects against a leaked S3 replica or DB snapshot. It does not
+protect against a compromised running server, which must hold the key to decrypt.
+
+The dispatcher passes each secret as `GITMOTE_CI_SECRET_<NAME>`. The runner
+forwards it to `act` as `-s <NAME>`, and `act` reads the value from its env. So
+the value never touches the argv of `act`. The workflow sees `${{ secrets.NAME }}`,
+as on GitHub. In the UI, values are write-only: the UI shows only the names.
+gitmote never logs the values.
+
+### Secrets from the env
+
+The dispatcher has a second source of secrets, beside the encrypted secrets of the
+UI and database. It overlays per-repo secrets from the server's own env, named
+`GITMOTE_REPO_SECRET_<REPO>__<NAME>`. In `<REPO>`, the repo name is upper case,
+with each `-` as `_`.
+
+These secrets are plain operator config. gitmote never stores or encrypts them,
+and they need no master key. So the UI does not show them, and they win over a DB
+secret of the same name. The host env is already the CI trust boundary
+([safety.md §5](safety.md)), so they add no exposure.
+
+They exist for the automated self-deploy (`make self-deploy`). It carries its
+Scaleway and GHCR secrets in a gitignored `.env`, not in the UI.
 
 ## Clone auth
 
-The runner clones over ordinary git-HTTPS with a **per-run, read-only,
-repo-scoped, expiring token** minted by the leader at dispatch — the same
-authenticated path as any client, no CI backdoor. It checks the SHA out onto its
-branch (`checkout -B`) so `github.ref` resolves.
+The runner clones over ordinary git-HTTPS, with a token that the leader mints at
+dispatch. The token is read-only, scoped to one run and one repo, and it expires.
+This is the same authenticated path as for any client, with no CI backdoor.
+
+The runner checks the SHA out onto its branch (`checkout -B`), so `github.ref`
+resolves.
 
 ## Safety
 
-- **Untrusted code execution** — repo workflows are attacker-controlled; the
-  **Serverless Job is the isolation boundary**. The writer never runs repo code;
-  the runner can't reach s3lite or S3.
-- **Fire-and-forget** — dispatch and trigger never fail or block a push.
-- **Single writer holds** — only the leader dispatches and writes run state.
+- **Untrusted code execution.** Repo workflows are attacker-controlled. The
+  Serverless Job is the isolation boundary. The writer never runs repo code, and
+  the runner cannot reach s3lite or S3.
+- **Fire-and-forget.** Dispatch and trigger never fail or block a push.
+- **Single writer.** Only the leader dispatches and writes run state.
 
 ## Container image builds
 
-Image builds are **substrate-dependent**, and off by default:
+Image builds depend on the substrate, and they are off by default.
 
-- **Scaleway (cloud) cannot build.** The Serverless Job sandbox has no user
-  namespaces and drops the capabilities image builders need — `docker build`,
-  `buildah`, `podman build`, and kaniko-as-a-step all fail. On the cloud runner CI
-  can compile, test, lint, and produce file artifacts in any language, but
-  **cannot** build an OCI image; such a step must run on the GitHub mirror (a real
-  builder), or use registry-API assembly (`ko`/`crane`) for the static-binary case.
-- **Local/VPS *can* build, behind an opt-in.** On a daemon-backed host `act` runs
-  in nested mode, and it mounts the host Docker socket into each job container by
-  default — so `docker build` reaches the daemon. Because that hands **untrusted
-  workflow code the daemon (host root)**, gitmote suppresses the mount
-  (`act --container-daemon-socket -`) unless **`GITMOTE_CI_ALLOW_BUILDS`** is
-  truthy. Turn it on only for **trusted repos** on a host you control. With it on,
-  gitmote builds container images — including its own — locally or on a VPS.
-  Runtime is selected by `DOCKER_HOST`: Docker works out of the box; podman needs
-  its API socket service running (`podman system service`) and `DOCKER_HOST`
-  pointed at it — a truly daemonless podman can't back `act` at all. When builds
-  are on, gitmote mounts the **daemon-side** socket path (`/var/run/docker.sock`,
-  override `GITMOTE_ACT_DAEMON_SOCKET`) rather than let `act` derive the mount from
-  `DOCKER_HOST` — for a **VM-backed daemon** (colima, Docker Desktop on macOS)
-  `DOCKER_HOST` is a host path the in-VM daemon can't resolve, so the socket mount
-  would fail. See [configuration.md](../configuration.md#image-builds).
+### Scaleway cannot build
 
-  > **No daemon → every run fails visibly.** `act` needs a reachable Docker/podman
-  > daemon to spawn job containers. On a host without one each CI job is still
-  > dispatched and recorded, but fails at act's "Set up job" step — the log reads
-  > `failed to connect to the docker API … check if … the daemon is running`, and
-  > the run is marked failed (`ActEngine.Run` → `passed=false`). No workflow step,
-  > and no build, executes. The build opt-in only matters where a daemon exists.
+The Serverless Job sandbox has no user namespaces. It also drops the capabilities
+that image builders need. So these all fail: `docker build`, `buildah`,
+`podman build`, and kaniko as a step.
+
+On the cloud runner, CI can compile, test, lint and produce file artifacts in any
+language. It cannot build an OCI image. Such a step must run on the GitHub mirror,
+which is a real builder. For the static-binary case, the step can instead assemble
+the image through the registry API, with `ko` or `crane`.
+
+### Local and VPS hosts can build, behind an opt-in
+
+On a host with a daemon, `act` runs in nested mode. By default, it mounts the
+host Docker socket into each job container, so `docker build` reaches the daemon.
+That gives untrusted workflow code the daemon, which is host root. So gitmote
+suppresses the mount (`act --container-daemon-socket -`) unless
+`GITMOTE_CI_ALLOW_BUILDS` is true.
+
+Turn the opt-in on only for trusted repos, on a host you control. With it on,
+gitmote builds container images locally or on a VPS, its own image included.
+
+`DOCKER_HOST` selects the runtime:
+
+- Docker works with no setup.
+- Podman needs its API socket service running (`podman system service`), with
+  `DOCKER_HOST` pointed at it.
+- A podman with no daemon at all cannot back `act`.
+
+When builds are on, gitmote mounts the socket path that the daemon sees. That path
+is `/var/run/docker.sock`, or the value of `GITMOTE_ACT_DAEMON_SOCKET`. gitmote
+does not let `act` derive the mount from `DOCKER_HOST`. For a VM-backed daemon,
+such as colima or Docker Desktop on macOS, `DOCKER_HOST` is a host path. The
+daemon in the VM cannot resolve that path, so the socket mount would fail. See
+[configuration.md](../configuration.md#image-builds).
+
+### Without a daemon, every run fails visibly
+
+`act` needs a reachable Docker or podman daemon to start job containers. On a host
+without one, each CI job is still dispatched and recorded. Then it fails at the
+"Set up job" step of `act`. The log reads
+`failed to connect to the docker API … check if … the daemon is running`.
+
+gitmote marks the run as failed, because `ActEngine.Run` returns `passed=false`.
+No workflow step runs, and no build. The build opt-in matters only where a daemon
+exists.
 
 ## Limitations
 
-- **gitmote does not deploy itself on Scaleway; it *can* locally (break-glass).**
-  The cloud self-deploy loop (a green `master` run rebuilding gitmote's own image
-  in-Job) was evaluated and **dropped** — the Serverless Job can't build (above).
-  Production deployment stays on **GitHub Actions**
-  ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)): build+push the
-  public image to GHCR (`ghcr.io/atmin/gitmote`), then `scw container update` to
-  pull it; the leased writer keeps the swap safe (see [configuration.md](../configuration.md#rolling-deploys)). The
-  GitHub mirror is the everyday deployer.
+### gitmote does not deploy itself on Scaleway
 
-  A **local** instance, though, is a real builder, so gitmote now closes the loop
-  as a **break-glass fallback**, automated by `make self-deploy`: it runs a
-  throwaway instance with `GITMOTE_CI_ALLOW_BUILDS` on, seeds the deploy secrets
-  from a gitignored `.env` (per-repo, via `GITMOTE_REPO_SECRET_<REPO>__<NAME>` —
-  never stored, no master key needed), and pushes `HEAD` to `self-deploy`. That
-  triggers [`.gitmote/workflows/deploy.yml`](../../.gitmote/workflows/deploy.yml) —
-  the GitHub deploy job, gated on `self-deploy` instead of `master` — to build the
-  amd64 image, push it to GHCR, and run the same `scw container update`. Confined to
-  the `self-deploy` branch, it never overlaps the GitHub path (no double-deploy),
-  and the same writer lease makes its rolling swap safe. It is a fallback for when
-  the GitHub deployer is unavailable, not the primary route. See
-  [deploy-scaleway.md](../deploy-scaleway.md#self-deploy-without-github).
-- **The runner image is built by CI**, not by hand: a change to
-  [`Dockerfile.runner`](../../Dockerfile.runner) or the runner source on `master`
-  (or a release) publishes `ghcr.io/atmin/gitmote-runner` publicly via
-  [`.github/workflows/publish-runner.yml`](../../.github/workflows/publish-runner.yml).
-  The Scaleway Job definition references that GHCR image and pulls it anonymously.
+gitmote has no cloud self-deploy loop, in which a green `master` run rebuilds
+gitmote's own image in the Job. The Serverless Job cannot build (see above).
+Production deploys run on GitHub Actions
+([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)):
+
+1. The workflow builds the public image and pushes it to GHCR
+   (`ghcr.io/atmin/gitmote`).
+2. It runs `scw container update`, which pulls the new image.
+
+The leased writer keeps the swap safe (see
+[configuration.md](../configuration.md#rolling-deploys)). The GitHub mirror is the
+everyday deployer.
+
+### A local instance can deploy gitmote
+
+A local instance is a real builder. So it can deploy gitmote as a fallback, and
+`make self-deploy` automates this:
+
+1. It runs a throwaway instance with `GITMOTE_CI_ALLOW_BUILDS` on.
+2. It seeds the deploy secrets from a gitignored `.env`, per repo, through
+   `GITMOTE_REPO_SECRET_<REPO>__<NAME>`. gitmote never stores them, and they need
+   no master key.
+3. It pushes `HEAD` to `self-deploy`.
+
+The push triggers
+[`.gitmote/workflows/deploy.yml`](../../.gitmote/workflows/deploy.yml). This is
+the GitHub deploy job, gated on `self-deploy` instead of `master`. It builds the
+amd64 image, pushes it to GHCR, and runs the same `scw container update`.
+
+The workflow runs only on the `self-deploy` branch. So it never overlaps the
+GitHub path, and nothing deploys twice. The same writer lease makes its rolling
+swap safe.
+
+This path is a fallback for when the GitHub deployer is unavailable. It is not the
+primary route. See
+[deploy-scaleway.md](../deploy-scaleway.md#self-deploy-without-github).
+
+### CI builds the runner image
+
+Nobody builds the runner image by hand. A change on `master` to
+[`Dockerfile.runner`](../../Dockerfile.runner) or to the runner source triggers a
+build, and so does a release.
+[`.github/workflows/publish-runner.yml`](../../.github/workflows/publish-runner.yml)
+then publishes `ghcr.io/atmin/gitmote-runner` publicly. The Scaleway Job
+definition references that GHCR image, and pulls it anonymously.

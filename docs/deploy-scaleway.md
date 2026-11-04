@@ -195,7 +195,7 @@ The target does this:
 - It sets `GITMOTE_CI_ALLOW_BUILDS=1`, and passes the `.env` secrets as
   `GITMOTE_REPO_SECRET_GITMOTE__<NAME>`. These secrets are never stored, and need
   no `GITMOTE_CI_SECRET_KEY`: the host env is the trust boundary
-  ([safety.md §7](architecture/safety.md)).
+  ([safety.md §5](architecture/safety.md)).
 - It pushes `HEAD` to `self-deploy`, which starts the workflow.
 
 The target needs `act` and a running Docker daemon. The script finds the socket

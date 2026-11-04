@@ -1,10 +1,10 @@
 # Design notes
 
-One file per open design question — worked-out context that isn't settled enough
-to be architecture, and isn't broken into tasks yet. Each is meant to feed a
-future task or decision. The architecture's
-[open questions](../architecture/open-questions.md) are the superset and link
-here.
+Each file here holds one open design question. A note has worked-out context.
+Its question is not settled enough to be architecture, and it is not split into
+tasks. Each note feeds a future task or decision. The
+[open questions](../architecture/open-questions.md) of the architecture are a
+superset of these notes, and link here.
 
-- [object-hydration.md](object-hydration.md) — getting the object closure onto
-  local disk before git runs; full-hydrate vs partial-clone.
+- [object-hydration.md](object-hydration.md): read it before you change how git
+  objects reach local disk, or before you pick a hydration strategy.

@@ -1,129 +1,212 @@
-# Concurrency & safety model
+# Concurrency and safety model
 
 > Part of the [gitmote architecture](README.md).
 
-**"Safe" is a hard requirement.** The model rests on these points:
+Safety is a hard requirement. The model rests on these seven points.
 
-1. **Single writer = single _lease-holder_, not single _user_.** s3lite requires
-   exactly one writer instance; that's a deployment fact, not a limit on
-   collaborators. A few invited users and the web UI's service commits all funnel
-   into one writer. **The one rule: never two writers on the same WAL** — and this
-   is enforced by a **lease**, not by procedure. The server opens s3lite in
-   `RoleAuto`: it writes only while it holds the lease (litestream's `s3.Leaser`,
-   a conditional-write CAS on `lock.json` beside the replica, at `{root}/meta/lock.json`)
-   and otherwise runs as a read-only follower. This makes the S3 backend's support for **atomic
-   conditional writes** (compare-and-swap: `If-None-Match`/`If-Match`) a correctness
-   requirement — the lease can't be enforced without it, so a provider lacking the
-   primitive cannot safely back gitmote. gitmote gates **all metadata-derived requests** on
-   the writer lease — a follower **promotes on demand** (`s3lite.TryPromote`, the same
-   CAS) and, until it can, refuses them with a retryable `503`; only the liveness
-   probes and static assets stay up (gating those would deadlock a rolling deploy,
-   since the new instance can't promote until the old drains). Writes are gated for
-   *safety*, reads for *freshness*: a follower serves only the snapshot it restored
-   at startup and doesn't catch up until it promotes, so serving a read would return
-   a stale ref — a just-pushed file appearing missing, a `fetch` missing commits.
-   A writer keeps the lease only while busy: after 5 s with no request in flight
-   or ended, it yields (`s3lite.YieldLease`, final sync before the release), and
-   followers promote only on demand (`OnDemandPromotion`). So two long-lived
-   instances on one storage root — an always-on local container and the cloud
-   instance — take turns as the writer, never overlapping. Because the metadata
-   can change under an instance while it is a follower, the repo cache rewrites
-   its refs from the metadata DB before every request (see
-   [storage](storage.md)). A rolling deploy's
-   brief old+new overlap is likewise one writer + one follower: the new instance
-   boots as a follower, the old releases the lease on its graceful SIGTERM `Close`,
-   and the new promotes on demand as the first request arrives.
-   **Overlap is safe by construction**,
-   so there is no stop-first drain. This is the writer half of
-   [reader-writer-split](../evolution/reader-writer-split.md), shipped; the
-   remaining half — *fresh* followers that scale reads out (a follower serves only
-   a restored snapshot today) — is why the container still pins `max-scale = 1`.
+## 1. A single writer holds the lease
 
-2. **In-process mutex linearizes writes.** Git's own lockfiles can't be trusted
-   across a synced/object backend, so a per-repo mutex in the process does the
-   linearization. At "a few users," contention is ~zero. (This is the
-   "in-process now, shared coordination later" pattern — the mutex is the
-   linearization point today; the SQL CAS below keeps the door open to relax the
-   single-writer assumption later without changing the storage contract.)
+A single writer means a single lease holder, not a single user. s3lite requires
+exactly one writer instance. That is a fact about the deployment, not a limit on
+collaborators. A few invited users and the service commits of the web UI all go
+through one writer.
 
-3. **The ordering invariant — content before pointer.** Objects are made durable
-   in S3 _before_ the ref CAS in s3lite. Get this right and the only failure mode
-   is unreferenced objects in S3 — harmless garbage that `gc` reclaims. Get it
-   backwards and you can get a ref pointing at a missing object, the one true
-   corruption. So: **always PUT objects, then advance the ref.**
+The one rule is that two writers never write to the same WAL. A lease enforces
+this rule, not a procedure. The server opens s3lite in `RoleAuto`. It writes only
+while it holds the lease, and runs as a read-only follower otherwise. The lease is
+litestream's `s3.Leaser`, a compare-and-swap (CAS) by conditional write. It works
+on `lock.json` beside the replica, at `{root}/meta/lock.json`.
 
-4. **s3lite's write-loss window is accepted, and it's benign for git.** litestream
-   replicates the SQLite WAL to S3 _asynchronously_ — a committed ref update can
-   be lost if the container dies within a sub-second window. Because of the
-   ordering above, the loss direction is always objects-without-a-ref (garbage),
-   **never** ref-without-an-object (corruption). To the user it's a lost
-   _acknowledgment_: the client still holds its commits, re-push is cheap (objects
-   already uploaded), and `gc` sweeps the orphans. For git — content-addressed and
-   idempotent — this is self-healing in a way a ledger isn't, so we accept it.
-   (Escape hatch if ever needed: move _refs_ to plain S3 behind a synchronous
-   conditional-PUT CAS, keeping only softer metadata in s3lite.)
+So the S3 backend must support atomic conditional writes: a CAS with
+`If-None-Match` and `If-Match`. This is a correctness requirement, because the
+lease cannot be enforced without it. A provider that lacks this primitive cannot
+safely back gitmote.
 
-5. **CI secrets are encrypted at rest, and the threat model is narrow — say so.**
-   Per-repo CI secrets are sealed with AES-256-GCM under a **server-held** master
-   key (`GITMOTE_CI_SECRET_KEY_V<n>`, a container env var alongside the AWS keys —
-   env-only, never persisted; see §6); a per-repo subkey is derived with
-   HKDF-SHA256, and the envelope's AAD binds `(repoID, name, version)` so a stolen
-   ciphertext can't be replayed under a different repo/name/version. Only the
-   sealed `{v, iv, ct}` lives in s3lite — never the plaintext or the key. So the
-   one property this buys is: **a compromise of the S3 replica / DB snapshot (the
-   litestream WAL, the object bucket) does not leak secret values.** It is
-   explicitly **not** a defense against a compromised *running* server, which
-   holds the master key by necessity — it must decrypt to inject secrets into the
-   runner env at trigger. There is no user-password KDF here (unlike an E2E
-   design): the server is the trust boundary. Rotation is a new key version + bump
-   (old envelopes still decrypt under their own version); values are write-only in
-   the UI (only names are ever shown) and are never logged.
+### Every metadata request needs the lease
 
-6. **Two server secrets are auto-provisioned into the replica — the CI master key
-   is not.** The session cookie key (`GITMOTE_COOKIE_KEY`) and the CI worker
-   secret (`WORKER_SECRET`) are generated on first boot and persisted in
-   `server_secrets` when no env overrides them, so a scale-to-zero container keeps
-   sessions valid and in-flight CI authenticated across an idle→wake (a per-boot
-   key would log everyone out and orphan runs). This is acceptable precisely
-   because the replica already holds users, tokens, and ACLs; sessions are
-   short-lived; and the worker secret only authorizes CI report submission, never
-   decryption. The CI **master key** stays env-only by contrast (§5): it decrypts
-   every repo's secrets, so a replica leak must never expose it. An explicit env
-   still wins for both, and generation is get-or-create on the leader (a follower's
-   DB is read-only), so restarts and rolling deploys reuse the one restored value.
-   A follower that finds a secret missing — two instances booting together on a
-   fresh root — catches up from the replica until the secret appears, or takes
-   the lease and creates it; it never writes as a follower.
+gitmote gates every request that derives from metadata on the writer lease. A
+follower promotes on demand with `s3lite.TryPromote`, which uses the same CAS.
+Until it can promote, the follower refuses these requests with a retryable `503`.
+Only the liveness probes and static assets stay up. Gating them would deadlock a
+rolling deploy, because the new instance cannot promote until the old one drains.
 
-7. **Container image builds are an opt-in privilege escalation — off by default.**
-   Workflow code is attacker-controlled; the isolation boundary is the job
-   container. Building an image needs a container builder, and the pragmatic path
-   (`act` nested mode) mounts the **host Docker socket** into the job container —
-   which is equivalent to handing that untrusted code **root on the host** (a
-   trivial container escape). So gitmote's default **suppresses** the mount
-   (`act --container-daemon-socket -`, in [`internal/runner/act.go`](../../internal/runner/act.go)),
-   and only restores it when **`GITMOTE_CI_ALLOW_BUILDS`** is set. This is
-   deliberately not per-repo: it is a host-level trust decision the operator makes
-   for a machine running only repos they trust (a personal/VPS forge building its
-   own code). It has no effect on the Scaleway substrate (self-hosted mode, no
-   daemon, no socket to mount — and it can't build anyway). The server logs a loud
-   warning at startup when the opt-in is on.
+The lease gates writes for safety, and reads for freshness. A follower serves only
+the snapshot it restored at startup. It does not catch up until it promotes. So a
+read from a follower would return a stale ref. A file just pushed would appear
+missing, and a `fetch` would miss commits.
 
-   **Why not just always use Docker-in-Docker (DinD) and drop the knob?** Because
-   DinD does not remove the escape — it relocates it. A nested daemon requires a
-   `--privileged` container (all capabilities, host devices, unmasked `/proc`/`/sys`,
-   no seccomp), which is itself host-root-equivalent; and untrusted workflow code is
-   exactly what drives the builder, so it inherits that reach. DooD vs DinD is a
-   choice about build *state isolation* (own daemon/cache vs the host's), **not**
-   about safety against untrusted code. The axis that actually bounds untrusted
-   builds is **rootless vs rootful**: on a rootful daemon anything the build reaches
-   is real host root, whereas a rootless engine caps the whole container tree —
-   privileged nesting included — at the invoking unprivileged user. So "always DinD
-   where supported" would be *more* machinery (provision/wire/lifecycle a privileged
-   daemon, detect support — and Scaleway can't do privileged, leaving the same
-   local/VPS set), still couldn't drop the operator-consent gate (auto-enabling
-   builds for any pushed repo is a host-root grant by default), and buys no safety.
-   A genuine "solve it from the root" is a **rootless builder** (rootless
-   BuildKit/kaniko/buildah — an escape lands as an unprivileged user) or a
-   **per-job VM boundary** (Kata/Firecracker); both are additions, tracked as
-   future work, and the consent gate stays until one exists.
+### Two instances take turns
+
+A writer keeps the lease only while it is busy. When no request is in flight and
+none has ended for 5 s, the writer yields the lease. The yield
+(`s3lite.YieldLease`) runs a final sync before it releases the lease. Followers
+promote only on demand (`OnDemandPromotion`). So two long-lived instances on one
+storage root take turns as the writer, and never overlap. An example is an
+always-on local container beside the cloud instance.
+
+The metadata can change under an instance while it is a follower. So the repo
+cache rewrites its refs from the metadata DB before every request (see
+[storage](storage.md)).
+
+### Rolling deploys
+
+A rolling deploy runs the old and the new instance together for a short time. This
+overlap is also one writer and one follower:
+
+1. The new instance boots as a follower.
+2. On a graceful SIGTERM, the old instance releases the lease in `Close`.
+3. The new instance promotes on demand when the first request arrives.
+
+The overlap is safe by construction, so gitmote needs no stop-first drain.
+
+The lease is the writer half of
+[reader-writer-split](../evolution/reader-writer-split.md). The other half is
+followers that stay fresh and scale reads out. A follower serves only a restored
+snapshot, so the container pins `max-scale = 1`.
+
+## 2. An in-process mutex linearizes writes
+
+Git's own lockfiles cannot be trusted across a synced or object backend. So a
+per-repo mutex in the process linearizes the writes. At the scale of "a few
+users", contention is about zero.
+
+This follows the pattern "in-process now, shared coordination later". The mutex is
+the linearization point. The ref CAS in SQL (§3) makes it possible to relax the
+single-writer assumption later. That change would not alter the storage contract.
+
+## 3. Content comes before the pointer
+
+This is the ordering invariant. Objects become durable in S3 before the ref CAS in
+s3lite. With this order, the only failure mode is unreferenced objects in S3. They
+are harmless garbage. gitmote does not delete them;
+[open-questions.md](open-questions.md) covers a cleanup.
+
+With the reverse order, a ref can point at a missing object. That is the one true
+corruption. So gitmote always PUTs the objects first, and advances the ref after.
+
+## 4. The write-loss window of s3lite is accepted
+
+s3lite has a window in which writes can be lost. gitmote accepts it, because it is
+benign for git. litestream replicates the SQLite WAL to S3 asynchronously. So a
+committed ref update can be lost if the container dies within a window of under a
+second.
+
+Because of the order in §3, the loss always leaves objects without a ref, which is
+garbage. It never leaves a ref without an object, which is corruption.
+
+To the user, the loss is a lost acknowledgment. The client still holds its
+commits. A re-push is cheap, because the objects are already uploaded. The orphans
+stay as harmless garbage (§3). Git is content-addressed and idempotent, so it heals itself in a way
+that a ledger does not. So gitmote accepts the window.
+
+An escape hatch exists, if it is ever needed. It would move the refs to plain S3,
+behind a synchronous CAS by conditional PUT. s3lite would keep only the softer
+metadata.
+
+## 5. CI secrets are encrypted at rest, against a narrow threat
+
+gitmote seals each per-repo CI secret with AES-256-GCM, under a master key that the
+server holds. The master key is `GITMOTE_CI_SECRET_KEY_V<n>`, a container env var
+beside the AWS keys. It lives only in the env, and is never persisted (see §6).
+HKDF-SHA256 derives a subkey for each repo. The AAD of each envelope binds
+`(repoID, name, version)`. So a stolen ciphertext cannot be replayed under another
+repo, name or version.
+
+Only the sealed `{v, iv, ct}` lives in s3lite, never the plaintext or the key. This
+buys one property: a compromise of the S3 replica or a DB snapshot does not leak
+secret values. This covers the litestream WAL and the object bucket.
+
+The threat model is narrow. The encryption is explicitly not a defense against a
+compromised running server. That server holds the master key by necessity. It must
+decrypt the secrets to inject them into the runner env at trigger. There is no KDF
+from a user password, unlike in an end-to-end (E2E) design. The server is the trust
+boundary.
+
+To rotate the key, add a new key version and bump the current version to it. Old
+envelopes still decrypt under their own version. Values are write-only in the UI,
+which shows only the names. gitmote never logs the values.
+
+## 6. Two server secrets live in the replica, but not the CI master key
+
+When no env var overrides them, gitmote generates two server secrets on first boot:
+
+- the session cookie key, `GITMOTE_COOKIE_KEY`
+- the CI worker secret, `WORKER_SECRET`
+
+It persists both in `server_secrets`. So a container that scales to zero keeps
+both across an idle period and a wake. Sessions stay valid, and in-flight CI stays
+authenticated. A key per boot would log everyone out and orphan the runs.
+
+This is acceptable for three reasons:
+
+- The replica already holds users, tokens and ACLs.
+- Sessions are short-lived.
+- The worker secret only authorizes CI report submission, never decryption.
+
+By contrast, the CI master key stays env-only (§5). It decrypts the secrets of
+every repo, so a replica leak must never expose it.
+
+An explicit env var still wins for both server secrets. The leader generates each
+one with get-or-create, because the DB of a follower is read-only. So restarts and
+rolling deploys reuse the one restored value.
+
+Two instances can boot together on a fresh root. Then a follower can find a secret
+missing. It catches up from the replica until the secret appears, or it takes the
+lease and creates the secret. It never writes as a follower.
+
+## 7. Container image builds are an opt-in privilege escalation
+
+Image builds are off by default. Workflow code is untrusted, because an attacker
+can control it. The job container is the isolation boundary. Building an image
+needs a container builder. The pragmatic path is the nested mode of `act`, which
+mounts the host Docker socket into the job container. That hands the untrusted
+code root on the host, through a trivial container escape.
+
+So by default, gitmote suppresses the mount with `act --container-daemon-socket -`,
+in [`internal/runner/act.go`](../../internal/runner/act.go). It restores the mount
+only when `GITMOTE_CI_ALLOW_BUILDS` is set. The flag is deliberately not per-repo.
+It is a trust decision at the host level. The operator makes it for a machine that
+runs only repos they trust. An example is a personal or VPS forge that builds its
+own code.
+
+The flag has no effect on the Scaleway substrate. There, jobs run in self-hosted
+mode, with no daemon and no socket to mount. Scaleway cannot build images anyway.
+The server logs a loud warning at startup when the flag is on.
+
+### Why Docker-in-Docker does not replace the flag
+
+Always using Docker-in-Docker (DinD) would not let gitmote drop the flag. DinD does
+not remove the escape. It only moves it. A nested daemon needs a `--privileged`
+container, which has:
+
+- all capabilities
+- the host devices
+- unmasked `/proc` and `/sys`
+- no seccomp
+
+Such a container is itself equal to host root. Untrusted workflow code drives the
+builder, so the code inherits that reach.
+
+DinD gives a build its own daemon and cache. The mounted host socket (DooD) shares
+the daemon and cache of the host. So the choice between them is about build state
+isolation, not about safety against untrusted code. The axis that bounds untrusted
+builds is rootless against rootful. On a rootful daemon, anything the build
+reaches is real host root. A rootless engine caps the whole container tree at the
+invoking unprivileged user, privileged nesting included.
+
+So "always DinD where supported" would add machinery and buy no safety:
+
+- gitmote would have to provision, wire and manage a privileged daemon, and detect
+  support for it.
+- Scaleway cannot run privileged containers, so the same local and VPS set would
+  remain.
+- The operator-consent gate would stay. Builds enabled for any pushed repo grant
+  host root by default.
+
+A real fix at the root needs one of two additions:
+
+- a rootless builder, such as rootless BuildKit, kaniko or buildah, where an
+  escape lands as an unprivileged user
+- a VM boundary for each job, such as Kata or Firecracker
+
+Both are tracked as future work. The consent gate stays until one of them exists.

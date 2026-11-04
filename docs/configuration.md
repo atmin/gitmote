@@ -76,8 +76,9 @@ most 30 s ends. Requests in that window get the retryable `503`.
 
 gitmote writes objects before it moves a ref
 ([safety.md §3](architecture/safety.md)). So even an overlap of two writers could
-only leave orphan objects, which `gc` removes. A ref never points at a missing
-object.
+only leave orphan objects. They take space but do no harm, and gitmote does not
+delete them ([open questions](architecture/open-questions.md)). A ref never points
+at a missing object.
 
 The ref compare-and-swap is a SQL transaction in the metadata database, and needs
 no S3 precondition. The escape hatch in [safety.md §4](architecture/safety.md)
@@ -123,7 +124,7 @@ until one of these variables turns a trigger on (see [CI](#ci)).
 | `SCW_SECRET_KEY` | Secret. The Scaleway API secret key, a UUID, that starts the jobs. The deploy pipeline uses the same key. |
 | `SCW_REGION` | The region where jobs start. The default is `AWS_REGION`. |
 | `GITMOTE_CI_SECRET_KEY_V<n>` | Secret. The master key for per-repo CI secrets: base64 of 32 bytes. It lives only in the env and is never stored ([safety.md §5](architecture/safety.md)). To rotate it, add `_V2` and so on. The highest number is current, and old envelopes still decrypt. Without a key, the secrets UI is off and jobs get no secrets. |
-| `GITMOTE_REPO_SECRET_<REPO>__<NAME>` | A CI secret for one repo, set in the env. gitmote never stores it, and it needs no master key: the host env is already the trust boundary ([safety.md §7](architecture/safety.md)). |
+| `GITMOTE_REPO_SECRET_<REPO>__<NAME>` | A CI secret for one repo, set in the env. gitmote never stores it, and it needs no master key: the host env is already the trust boundary ([safety.md §5](architecture/safety.md)). |
 | `GITMOTE_CI_ALLOW_BUILDS` | `1` or `true` lets workflows build container images on a local or VPS runner with a Docker daemon (see [Image builds](#image-builds)). Use it with trusted repos only ([safety.md §7](architecture/safety.md)). It has no effect on Scaleway. |
 | `GITMOTE_ACT_DAEMON_SOCKET` | The Docker socket path, as the daemon sees it, that jobs mount when builds are on. The default is `/var/run/docker.sock`, which fits native Docker, colima and Docker Desktop. Change it only for another daemon, such as rootless Docker. |
 

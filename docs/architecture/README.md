@@ -1,53 +1,62 @@
-# gitmote — Architecture
+# gitmote architecture
 
-A tiny single-container Go server that speaks git's smart-HTTP protocol, stores
-repositories in S3-compatible object storage, and keeps its mutable metadata
-(refs, users, keys, access) in [s3lite](https://github.com/atmin/s3lite)
-(SQLite with S3-backed durability). The container itself is disposable — all
-durable truth lives in S3 + s3lite — so it runs as a **single writer that scales
-to zero**: it wakes on a request, serves, and idles back down.
+gitmote is a small Go server in a single container. The server:
 
-Built for self-hosting a handful of repos, with the door open to invite a few
-collaborators and to accept commits authored through a web UI. It is explicitly
-**not** trying to be GitHub at scale.
+- speaks git's smart-HTTP protocol
+- stores repositories in S3-compatible object storage
+- keeps its mutable metadata (refs, users, keys, access) in
+  [s3lite](https://github.com/atmin/s3lite), which is SQLite with S3-backed
+  durability
 
-Design priorities, in order: **safe → simple → cheap-to-idle → fast.** Where
-they conflict, the earlier one wins. Pragmatic beats pure.
+The container itself is disposable, because S3 and s3lite hold all durable state.
+So gitmote runs as a single writer that scales to zero. It wakes on a request,
+serves it, and goes idle again.
 
----
+gitmote is for self-hosting a handful of repos. The design leaves room to invite
+a few collaborators, and to accept commits authored in a web UI. gitmote does not
+try to be GitHub at scale.
 
-## The core idea: split git's data by mutability
+The design priorities, in order, are:
 
-"Git on S3" is easy except for one thing — **atomic ref updates under
-concurrent writers**. Everything else is either immutable or single-writer-safe.
-So we split git's storage along the axis that decides which store each half
-wants, and we let _real git_ do the parts that are hard to reimplement:
+1. safe
+2. simple
+3. cheap to idle
+4. fast
 
-| Data                                                                   | Property                                            | Store                                                                 |
-| ---------------------------------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------- |
-| Objects & packs                                                        | Immutable, content-addressed, bulky (~90% of bytes) | **Plain S3** — synchronous PUT, re-PUT of the same hash is idempotent |
-| Refs, users, keys, ACLs, repo registry, web-edit state                 | Small, mutable, need transactional CAS              | **s3lite** — a ref update is one SQL transaction                      |
-| Everything git actually computes (packing, negotiation, merge-base, …) | Hard to reimplement correctly                       | **Stock `git`** on ephemeral local disk                               |
+When two priorities conflict, the earlier one wins. A pragmatic design wins over
+a pure one.
 
-The payoff: the single genuinely-hard problem collapses into a one-line SQL
-compare-and-swap, on a database already trusted in production — plain SQLite (via
-s3lite) — with no database to operate.
+## Split git's data by mutability
 
----
+Git on S3 is easy, except for one thing: atomic ref updates under concurrent
+writers. All other data is immutable, or safe with a single writer. So gitmote
+splits git's storage by mutability, and each kind of data goes to the store that
+fits it. Real git does the parts that are hard to reimplement.
+
+| Data | Property | Store |
+| --- | --- | --- |
+| Objects and packs | Immutable, content-addressed, bulky (~90% of bytes) | Plain S3: a synchronous PUT. A second PUT of the same hash is idempotent. |
+| Refs, users, keys, ACLs, repo registry, web-edit state | Small, mutable, need a transactional CAS | s3lite: a ref update is one SQL transaction. |
+| Everything git computes (packing, negotiation, merge-base, …) | Hard to reimplement correctly | Stock `git` on ephemeral local disk |
+
+This split turns the one hard problem into a one-line SQL compare-and-swap. The
+database is plain SQLite, through s3lite, and SQLite is already trusted in
+production. There is no database to operate.
 
 ## Reading order
 
-The rest of the architecture is split by concern:
+Read the file for the part you are about to change:
 
-| Doc | What's in it |
+| File | Read it when |
 | --- | --- |
-| [storage.md](storage.md) | The components that make up the container, and where each kind of data lives — S3 object layout and the s3lite schema. |
-| [request-flows.md](request-flows.md) | The read path (clone/fetch) and the write path (push, and the compare-and-swap that makes it safe). |
-| [safety.md](safety.md) | The concurrency & safety model — single writer, the content-before-pointer ordering invariant, and the accepted write-loss window. |
-| [auth.md](auth.md) | Authentication and transport — smart HTTP + personal access tokens today, SSH deferred. |
-| [ci.md](ci.md) | CI — running `.gitmote/workflows` on push: the dispatch seam, the one-runner-three-substrates model, `act` self-hosted vs. nested, secrets, and the no-in-Job-image-builds limitation. |
-| [alternatives.md](alternatives.md) | Approaches considered and rejected or deferred, with the reasoning. |
-| [open-questions.md](open-questions.md) | Unsettled decisions — the superset that links into [`../notes/`](../notes/). |
+| [storage.md](storage.md) | Before you change a component of the container, the S3 object layout or the s3lite schema. |
+| [request-flows.md](request-flows.md) | Before you change the read path (clone, fetch) or the write path (push and its compare-and-swap). |
+| [safety.md](safety.md) | Before you change the single writer, the content-before-pointer order or the accepted write-loss window. |
+| [auth.md](auth.md) | Before you change authentication or transport: smart HTTP with personal access tokens, or the deferred SSH. |
+| [urls.md](urls.md) | Before you change a URL route, the repo namespace or repo visibility. |
+| [ci.md](ci.md) | Before you change how a push runs `.gitmote/workflows` with `act`, or to learn why a Scaleway Job cannot build images. |
+| [alternatives.md](alternatives.md) | Before you propose a different storage design, to see what gitmote already rejected or deferred. |
+| [open-questions.md](open-questions.md) | Before you settle an open decision. It links to the notes in [`../notes/`](../notes/). |
 
-Speculative, non-committal future directions live in
-[`../evolution/`](../evolution/) — read them as ideas, not plans.
+Read [`../evolution/`](../evolution/) to see directions the design may take.
+These files are ideas, not plans.

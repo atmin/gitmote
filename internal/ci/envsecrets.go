@@ -10,7 +10,7 @@ import (
 // deliberately distinct from the runner-facing secretEnvPrefix. These values are
 // operator-supplied host config — never persisted, never encrypted, and needing
 // no master key (GITMOTE_CI_SECRET_KEY_V<n>): the host env is already the CI
-// trust boundary (docs/architecture/safety.md §7). This is what lets the
+// trust boundary (docs/architecture/safety.md §5). This is what lets the
 // fully-automated self-deploy keep its secrets in a gitignored .env instead of
 // the Secrets UI (docs/deploy-scaleway.md).
 const envSecretPrefix = "GITMOTE_REPO_SECRET_"

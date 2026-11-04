@@ -2,24 +2,43 @@
 
 > Part of the [gitmote architecture](README.md).
 
-Items with worked-out context live as one-concern notes under
-[`../notes/`](../notes/); the rest stay one-liners until they earn a note.
+An item with worked-out context has its own note in [`../notes/`](../notes/),
+one concern to a note. The other items stay short here until they need a note.
 
-- **Object hydration for reads.** `upload-pack` walks a _local_ object store, so
-  the closure must be present before it runs ("on demand" doesn't apply at the
-  git layer); full-hydrate vs partial-clone/promisor —
-  [../notes/object-hydration.md](../notes/object-hydration.md).
-- **gc / compaction.** Loose objects proliferate; a `cleanup` subcommand
-  (triggered by loose-object count) repacks and prunes orphans. Pruning must not
-  race in-flight reads — a fetch pins a ref snapshot from s3lite and pushes only
-  _add_ objects, so reads are safe against pushes, but _deletion_ is not; the
-  sweep needs a grace window or liveness check.
-- **Git-LFS.** Large blobs via presigned PUT to `lfs/{repo}/{oid}` — schema slot
-  reserved in [storage.md](storage.md).
-- **Web-authored commits.** How the service constructs a commit from a web edit:
-  build the tree/commit objects and drive them through the same
-  `receive-pack → CAS` path, vs. a direct object-write + CAS shortcut.
-- **Closing the litestream window for refs** — only if the accepted lost-ack
-  behaviour ever proves unacceptable (see [safety.md](safety.md) §4).
-- **Read scaling.** One container serves reads and writes today; litestream read
-  replicas are the later answer if reads get heavy.
+## Object hydration for reads
+
+`upload-pack` walks a local object store. So the object closure must be on disk
+before it runs, because git cannot fetch objects on demand. The choice is between
+a full hydrate and a partial clone with a promisor remote. See
+[../notes/object-hydration.md](../notes/object-hydration.md).
+
+## gc and compaction
+
+Loose objects pile up. A `cleanup` subcommand, triggered by the loose-object
+count, would repack and prune orphans. Pruning must not race in-flight reads. A
+fetch pins a ref snapshot from s3lite, and a push only adds objects. So reads are
+safe against pushes, but not against deletion. The sweep needs a grace window or
+a liveness check.
+
+## Git LFS
+
+Large blobs would upload with a presigned PUT to `lfs/{repo}/{oid}`.
+[storage.md](storage.md) reserves this key in the storage layout.
+
+## Web-authored commits
+
+How does the service build a commit from a web edit? There are two options:
+
+1. Build the tree and commit objects, and drive them through the same path as a
+   push: `receive-pack`, then the CAS.
+2. Take a shortcut: write the objects directly, then do the CAS.
+
+## Closing the litestream window for refs
+
+Do this only if the accepted loss of an acknowledgment proves unacceptable. See
+[safety.md](safety.md) §4.
+
+## Read scaling
+
+One container serves both reads and writes. If reads get heavy, litestream read
+replicas are the answer.

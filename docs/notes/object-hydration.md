@@ -1,53 +1,68 @@
 # Object hydration for reads
 
-Getting the right git objects onto local disk for a given operation.
+This note covers how the git objects that an operation needs reach local disk.
 
-**Context.** The local bare repo is a cache; refs come from s3lite, objects from
-S3 (see [architecture → components](../architecture/storage.md)). The open point is
-_how_ the objects arrive.
+## Context
 
-**The problem.** `upload-pack` (serving fetch/clone) and `receive-pack`'s
-fast-forward / connectivity checks walk a _local_ object store. They do **not**
-call back to fetch missing objects mid-operation — so "pull on demand" is not a
-thing at the git layer. The needed closure must be present _before_ git runs.
+The local bare repo is a cache. Refs come from s3lite, and objects come from S3
+(see [the components](../architecture/storage.md) of the architecture). The open
+point is how the objects arrive.
+
+## Problem
+
+Two parts of git walk a local object store:
+
+- `upload-pack`, which serves fetch and clone
+- the fast-forward and connectivity checks of `receive-pack`
+
+Neither one calls back to fetch a missing object during the operation. So git
+cannot pull objects on demand. The closure that an operation needs must be on
+disk before git runs.
 
 ## Options
 
-1. **Full closure up front.** Before running git, hydrate the objects reachable
-   from the refs involved (all refs for a clone; the target branch's history for
-   a push). Simple, correct; cold-start cost ∝ repo size. Fine at the target
-   scale (a handful of small repos).
-2. **Warm cache.** Keep the materialized repo on disk while the container lives;
-   after the first hydrate, only newly-referenced objects are fetched. Cuts
-   repeat cold-start.
-3. **Partial clone / promisor.** Make the local repo a promisor with S3 as the
-   promisor remote plus a fetch helper, so git lazily pulls missing objects. Most
-   scalable, most complex — the escape hatch when repo size becomes the wall.
+1. **Full closure up front.** Before git runs, hydrate the objects reachable from
+   the refs involved. For a clone, that is all refs. For a push, it is the
+   history of the target branch. This option is simple and correct. Its
+   cold-start cost grows with repo size. That is fine at the target scale of a
+   handful of small repos.
+2. **Warm cache.** Keep the materialized repo on disk while the container lives.
+   After the first hydrate, gitmote fetches only newly referenced objects. This
+   cuts the cost of repeat cold starts.
+3. **Partial clone with a promisor.** Make the local repo a promisor, with S3 as
+   the promisor remote and a fetch helper. Then git pulls missing objects lazily.
+   This option scales best, and it is the most complex. It is the escape hatch
+   for when repo size becomes the limit.
 
-## Leaning
+## Preferred options
 
-(1) + (2): full reachable closure on cold start, kept warm for the container's
-life. Revisit (3) only if large repos become real. This is the "scaling wall for
-large repos" the architecture refers to.
+The preferred options are 1 and 2. A cold start hydrates the full reachable
+closure, and the closure stays warm while the container lives. Revisit option 3
+only if large repos become a real need. Hydrating the full closure up front is
+the limit on scale for large repos that the architecture mentions.
 
-## Progress
+## Current state
 
-- **Advertisement needs no objects (being done — `tasks/13`).** The `info/refs`
-  GET only lists refs, which live in s3lite; it can serve from `packed-refs` with
-  zero object hydration (spiked: `git upload-pack --advertise-refs` advertises
-  refs whose objects are absent, branches and annotated tags alike). This carves
-  the most common cold round-trip off the full-hydrate path first.
-- **Bounded closure for the data POSTs is deferred.** The sharp part: computing
-  "objects reachable from ref X" without the objects present needs a precomputed
-  **reachability + pack-location index** (built at push, consumed at hydrate),
-  because stock git can't fetch mid-operation and packs are all-or-nothing. That
-  index is the real design work; parked until it's understood well enough to spec.
+The ref advertisement needs no objects. The `info/refs` GET only lists refs,
+which live in s3lite. So it serves them from `packed-refs`, with zero object
+hydration. A spike confirmed that `git upload-pack --advertise-refs` advertises
+refs whose objects are absent. This holds for branches and annotated tags alike.
+So the most common cold round trip skips the full hydrate.
+
+The data POSTs use the full hydrate, and a bounded closure for them is deferred.
+The hard part is to compute the objects reachable from a ref without those
+objects on disk. That needs a precomputed index of reachability and pack
+location. A push builds the index, and a hydrate reads it. Stock git cannot fetch
+during an operation, and a pack is all or nothing, so the index is necessary.
+This index is the real design work. It waits until it is understood well enough
+to specify.
 
 ## Open sub-points
 
-- The reachability+location index for bounded POST hydration: shape (commit graph
-  + object→pack map in s3lite), how it's kept consistent with content-before-
-  pointer, and its interaction with any future server-side `gc`/repack.
-- Eviction policy for warm repos under disk pressure.
-- Whether a write needs the _full_ history or just enough for the
-  fast-forward / merge-base check (bounded hydration).
+- The reachability and location index for a bounded POST hydrate:
+  - its shape: a commit graph and an object-to-pack map in s3lite
+  - how it stays consistent with content before pointer
+  - how it interacts with a future server-side `gc` or repack
+- The eviction policy for warm repos under disk pressure.
+- Whether a write needs the full history, or just enough for the fast-forward
+  and merge-base check (a bounded hydrate).
