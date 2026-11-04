@@ -24,32 +24,67 @@ production on Scaleway Object Storage at
 
 One container, one bucket. S3 is the single source of truth and the container is
 disposable: kill it and restart — it restores the whole forge from S3 and
-continues. Point it at any S3-compatible bucket with credentials:
+continues. Point it at any S3-compatible bucket.
+
+Keep the bucket's keys in a credentials file, out of your shell history and out
+of `docker inspect`. Create it readable only by you, then open it in an editor:
 
 ```sh
-docker run --rm -p 8080:8080 \
-  -e GITMOTE_S3_BUCKET=my-gitmote-bucket \
-  -e AWS_REGION=us-east-1 \
-  -e AWS_ACCESS_KEY_ID=… -e AWS_SECRET_ACCESS_KEY=… \
-  ghcr.io/atmin/gitmote:master
-# Published tags: :master (latest on master) and :<git-sha>. There is no :latest.
-# Non-AWS S3 (Scaleway, MinIO, R2): add -e GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud
-# Keep the local cache across restarts (optional):  -v gitmote-data:/data
+mkdir -p ~/.config/gitmote && cd ~/.config/gitmote
+touch s3-credentials && chmod 600 s3-credentials
+${EDITOR:-nano} s3-credentials
+```
+
+and paste in the keys, so they never pass through the shell:
+
+```ini
+[default]
+aws_access_key_id = …
+aws_secret_access_key = …
+```
+
+Save this beside it as `compose.yaml`, then run `docker compose up -d`:
+
+```yaml
+services:
+  gitmote:
+    image: ghcr.io/atmin/gitmote:master  # tags: :master and :<git-sha>; there is no :latest
+    restart: unless-stopped
+    ports: ["127.0.0.1:6683:8080"]       # this machine only; 6683 is MOTE on a phone keypad
+    environment:
+      GITMOTE_S3_BUCKET: my-gitmote-bucket
+      GITMOTE_S3_ENDPOINT: https://s3.fr-par.scw.cloud  # non-AWS S3 (Scaleway, MinIO, R2); omit for AWS
+      AWS_REGION: fr-par
+      AWS_SHARED_CREDENTIALS_FILE: /run/secrets/s3
+    secrets: [s3]
+    volumes: [gitmote-data:/data]         # keeps the local cache across restarts
+secrets:
+  s3:
+    file: ./s3-credentials
+volumes:
+  gitmote-data:
 ```
 
 On the **first run** gitmote auto-bootstraps an admin and prints a one-time access
-token to the logs behind a `SAVE IT NOW` banner — grab it there (no setup page).
-Then sign in at <http://localhost:8080/login> by pasting it, and clone/push:
+token to the logs behind a `SAVE IT NOW` banner — grab it with
+`docker compose logs`, or from the Logs tab in Docker Desktop (no setup page). Then
+sign in at <http://localhost:6683/login> by pasting it, create a repo on the
+dashboard (/), and clone it:
 
 ```sh
-git clone http://admin:<token>@localhost:8080/<repo>   # create the repo on the dashboard (/) first
+git clone http://localhost:6683/<repo>   # user: admin, password: the token
 ```
 
-Lost the token? It's never stored (only its hash), so re-mint one — stop the
-container, then:
+Git asks for the token once, and its credential helper (the macOS Keychain, Git
+Credential Manager) keeps it. Don't put the token in the URL: git would store it
+in plain text in `.git/config`.
+
+Lost the token? It's never stored (only its hash), so re-mint one:
 
 ```sh
-docker run --rm -e GITMOTE_S3_BUCKET=… -e AWS_… ghcr.io/atmin/gitmote:master bootstrap -reissue
+docker compose stop
+docker compose run --rm gitmote bootstrap -reissue
+docker compose start
 ```
 
 Nothing else is required: the session cookie key and CI worker secret are
@@ -58,22 +93,19 @@ env surface, CI, and the Scaleway deployment.
 
 ### Remote bucket, local on-demand forge
 
-Because the bucket *is* the forge, you don't need any always-on compute. Keep the
-bucket in the cloud, run gitmote **locally only when you want to push or pull**,
-and stop it afterwards — your git remote is `localhost`, but the durable state
-lives in S3. This is the cheapest way to self-host: you pay for object storage,
-not a running server.
+Because the bucket *is* the forge, you don't need any always-on compute. The
+quickstart above already keeps the bucket in the cloud and runs gitmote
+**locally**: your git remote is `localhost`, but the durable state lives in S3.
+This is the cheapest way to self-host: you pay for object storage, not a running
+server.
+
+Run it only when you push or pull — `docker compose up -d`, then
+`docker compose stop` — or leave it on: `restart: unless-stopped` brings it back
+whenever Docker starts, and Docker Desktop starts at login when you turn that on
+in its settings (General).
 
 ```sh
-# Start the forge against your CLOUD bucket, then push/pull, then Ctrl-C.
-docker run --rm -p 8080:8080 \
-  -e GITMOTE_S3_BUCKET=my-gitmote-bucket \
-  -e GITMOTE_S3_ENDPOINT=https://s3.fr-par.scw.cloud \  # your provider's endpoint
-  -e AWS_REGION=fr-par \
-  -e AWS_ACCESS_KEY_ID=… -e AWS_SECRET_ACCESS_KEY=… \
-  ghcr.io/atmin/gitmote:master
-
-git remote add gitmote http://admin:<token>@localhost:8080/<repo>
+git remote add gitmote http://localhost:6683/<repo>
 git push gitmote main
 ```
 
