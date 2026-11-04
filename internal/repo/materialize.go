@@ -81,8 +81,8 @@ func (mz *Materializer) Materialize(ctx context.Context, name string) (string, e
 //
 // MVP omits annotated-tag ^{} peel lines: git still advertises the tag ref and
 // merely drops the peel hint (a lost negotiation optimization, not a
-// correctness issue). A refs-only packed-refs and a later full Materialize's
-// loose refs coexist on disk — loose refs override, which is correct.
+// correctness issue). Like Materialize, it mirrors the metadata refs exactly
+// (see mirrorRefs), so no loose ref left on disk can override them.
 func (mz *Materializer) MaterializeRefs(ctx context.Context, name string) (string, error) {
 	r, err := mz.meta.GetRepo(ctx, name)
 	if err != nil {
@@ -98,7 +98,7 @@ func (mz *Materializer) MaterializeRefs(ctx context.Context, name string) (strin
 	if err != nil {
 		return "", err
 	}
-	if err := writePackedRefs(dir, refs); err != nil {
+	if err := mirrorRefs(dir, refs); err != nil {
 		return "", err
 	}
 	return dir, setHEAD(ctx, dir, r.DefaultBranch)
@@ -201,20 +201,53 @@ func (mz *Materializer) copyObject(ctx context.Context, key, dst string) error {
 	return nil
 }
 
-// writeRefs makes the on-disk refs match the metadata layer and points HEAD at
-// the repo's default branch. update-ref validates that each target object is
-// present, so hydration must run first.
+// writeRefs makes the on-disk refs mirror the metadata layer (see mirrorRefs)
+// and points HEAD at the repo's default branch. Hydration runs first, so the
+// object behind every ref is on disk.
 func (mz *Materializer) writeRefs(ctx context.Context, dir string, r *meta.Repo) error {
 	refs, err := mz.meta.ListRefs(ctx, r.ID)
 	if err != nil {
 		return err
 	}
-	for _, ref := range refs {
-		if err := runGit(ctx, dir, "update-ref", ref.Name, ref.SHA); err != nil {
-			return err
-		}
+	if err := mirrorRefs(dir, refs); err != nil {
+		return err
 	}
 	return setHEAD(ctx, dir, r.DefaultBranch)
+}
+
+// mirrorRefs makes the on-disk refs equal the metadata layer's: it writes
+// packed-refs from refs, then removes every loose ref. A loose ref overrides
+// packed-refs, and a ref deleted in the metadata layer would otherwise linger —
+// so after a lease handoff, a cache made stale by the other instance's pushes
+// would advertise a ref that has moved or no longer exists. packed-refs goes
+// first, so a concurrent reader sees the old loose value or the new packed one,
+// never neither.
+func mirrorRefs(dir string, refs []meta.Ref) error {
+	if err := writePackedRefs(dir, refs); err != nil {
+		return err
+	}
+	return removeLooseRefs(dir)
+}
+
+// removeLooseRefs deletes every loose ref file under dir/refs. It keeps the
+// directories and any *.lock file, which belongs to a git process at work, and
+// ignores an entry that vanishes during the walk.
+func removeLooseRefs(dir string) error {
+	return filepath.WalkDir(filepath.Join(dir, "refs"), func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || strings.HasSuffix(d.Name(), ".lock") {
+			return nil
+		}
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	})
 }
 
 // writePackedRefs overwrites the repo's packed-refs file from refs, atomically

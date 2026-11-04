@@ -242,6 +242,68 @@ func TestMaterializeRefsNoObjects(t *testing.T) {
 	}
 }
 
+// TestMaterializeMirrorsMetaRefs covers a cache made stale by another instance:
+// after a lease handoff, the other instance moved one branch and deleted another,
+// while this cache still holds the loose refs its own receive-pack wrote. Both the
+// advertisement and the full materialize must show exactly the metadata refs.
+func TestMaterializeMirrorsMetaRefs(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		materialize func(*Materializer, context.Context, string) (string, error)
+	}{
+		{"MaterializeRefs", (*Materializer).MaterializeRefs},
+		{"Materialize", (*Materializer).Materialize},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			m := openMeta(t)
+			s := store.NewMem()
+			const repoName = "dotfiles"
+			branch, head := seedRepo(t, m, s, repoName, false)
+			r, err := m.GetRepo(ctx, repoName)
+			if err != nil {
+				t.Fatalf("GetRepo: %v", err)
+			}
+			const doomed = "refs/heads/doomed"
+			if err := m.CASRef(ctx, r.ID, doomed, meta.ZeroSHA, head); err != nil {
+				t.Fatalf("CASRef doomed: %v", err)
+			}
+
+			// This instance materializes, and its receive-pack leaves loose refs.
+			mz := New(m, s, t.TempDir())
+			dir, err := mz.Materialize(ctx, repoName)
+			if err != nil {
+				t.Fatalf("Materialize: %v", err)
+			}
+			git(t, dir, "update-ref", "refs/heads/"+branch, head)
+			git(t, dir, "update-ref", doomed, head)
+
+			// The other instance moves the branch back one commit and deletes doomed.
+			parent := git(t, dir, "rev-parse", head+"~1")
+			if err := m.CASRef(ctx, r.ID, "refs/heads/"+branch, head, parent); err != nil {
+				t.Fatalf("CASRef move: %v", err)
+			}
+			if err := m.CASRef(ctx, r.ID, doomed, head, meta.ZeroSHA); err != nil {
+				t.Fatalf("CASRef delete: %v", err)
+			}
+
+			if _, err := tc.materialize(mz, ctx, repoName); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got, want := git(t, dir, "for-each-ref", "--format=%(objectname) %(refname)"), parent+" refs/heads/"+branch; got != want {
+				t.Errorf("refs on disk = %q, want exactly %q", got, want)
+			}
+			adv := advertise(t, dir)
+			if !strings.Contains(adv, parent+" refs/heads/"+branch) {
+				t.Errorf("advertisement does not carry the moved branch at %s\n%s", parent, adv)
+			}
+			if strings.Contains(adv, doomed) {
+				t.Errorf("advertisement still carries the deleted %s\n%s", doomed, adv)
+			}
+		})
+	}
+}
+
 func TestMaterializeUnknownRepo(t *testing.T) {
 	mz := New(openMeta(t), store.NewMem(), t.TempDir())
 	if _, err := mz.Materialize(context.Background(), "nope"); !errors.Is(err, meta.ErrNotFound) {
