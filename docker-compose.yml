@@ -38,7 +38,7 @@ services:
       context: .
     image: gitmote:e2e
     depends_on: [minio]
-    environment:
+    environment: &gitmote-env
       GITMOTE_S3_BUCKET: gitmote        # storage root; derives the replica (s3://gitmote/meta)
       GITMOTE_S3_ENDPOINT: http://minio:9000
       AWS_REGION: us-east-1
@@ -49,6 +49,21 @@ services:
     volumes:
       - gitmote-data:/data
 
+  # A second instance on the same storage root, for `make e2e-handoff` only (the
+  # handoff profile, so a plain `up` leaves it alone). The two take turns as the
+  # writer: an idle writer yields the lease, and the next request on either one
+  # takes it (docs/ops.md).
+  gitmote-b:
+    image: gitmote:e2e
+    profiles: ["handoff"]
+    depends_on: [minio]
+    environment: *gitmote-env
+    ports:
+      - "8081:8080"
+    volumes:
+      - gitmote-b-data:/data
+
 volumes:
   minio-data:
   gitmote-data:
+  gitmote-b-data:

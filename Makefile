@@ -22,7 +22,7 @@ PORT ?= 8080
 # joins this project's network so the container reaches MinIO at minio:9000.
 DEV_COMPOSE := docker compose -p gitmote-dev -f docker-compose.dev.yml
 
-.PHONY: all fmt lint test build dev dev-reset self-deploy self-deploy-reset e2e-local e2e-restore e2e-build image prod publish
+.PHONY: all fmt lint test build dev dev-reset self-deploy self-deploy-reset e2e-local e2e-restore e2e-handoff e2e-build image prod publish
 
 all: lint test build
 
@@ -77,6 +77,12 @@ e2e-local:
 # production cold-start path locally. Requires docker + docker compose.
 e2e-restore:
 	./scripts/e2e-restore.sh
+
+# Two live instances on one storage root take turns as the writer: each yields
+# the lease when idle, the other serves its pushes, and a warm cache never
+# advertises a ref the other moved or deleted. Requires docker + docker compose.
+e2e-handoff:
+	./scripts/e2e-handoff.sh
 
 # Proof that GITMOTE_CI_ALLOW_BUILDS gates real image builds: runs act in a
 # privileged DinD box (a rootful daemon in a box) with the socket suppressed
