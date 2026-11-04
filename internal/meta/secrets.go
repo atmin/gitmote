@@ -2,6 +2,8 @@ package meta
 
 import (
 	"context"
+	"fmt"
+	"time"
 )
 
 // CISecret is one repo's stored secret envelope. It never carries the plaintext
@@ -78,14 +80,14 @@ func (m *Metadata) DeleteSecret(ctx context.Context, repoID int64, name string) 
 // GetOrCreateSecret returns the persisted server secret named name, generating
 // and persisting it with gen the first time it's requested. It backs the
 // auto-provisioned session cookie key and CI worker secret (see cmd/gitmote): an
-// absent value is created once — on the very first, uncontended cold start, which
-// is necessarily the leader (a follower opens read-only, so its insert would fail
-// loud, and a restart then reads the leader's value restored from the replica).
+// absent value is created once, by the writer. A follower cannot write, and on a
+// fresh storage root a missing secret may only mean that another instance, booting
+// at the same moment, created it after this one restored its snapshot. So a
+// follower catches up from the replica until the secret appears, or until it takes
+// the lease and creates the secret itself, for at most secretWaitTimeout.
 // Narrowly scoped to these named server secrets, not a general key–value store.
 func (m *Metadata) GetOrCreateSecret(ctx context.Context, name string, gen func() ([]byte, error)) ([]byte, error) {
-	var val []byte
-	err := m.db.QueryRowContext(ctx,
-		`SELECT value FROM server_secrets WHERE name = ?`, name).Scan(&val)
+	val, err := m.awaitSecret(ctx, name)
 	if err == nil {
 		return val, nil
 	}
@@ -103,9 +105,55 @@ func (m *Metadata) GetOrCreateSecret(ctx context.Context, name string, gen func(
 		 ON CONFLICT(name) DO NOTHING`, name, val); err != nil {
 		return nil, err
 	}
-	if err := m.db.QueryRowContext(ctx,
-		`SELECT value FROM server_secrets WHERE name = ?`, name).Scan(&val); err != nil {
-		return nil, err
+	return m.getSecret(ctx, name)
+}
+
+// secretWaitTimeout bounds how long a follower waits for a missing server secret
+// to reach it, or for the lease to create it. A peer that created the secret ships
+// it within a second, and an idle peer yields its lease within seconds.
+const secretWaitTimeout = 30 * time.Second
+
+// secretRetryInterval spaces a follower's catch-up attempts for a missing secret.
+const secretRetryInterval = 500 * time.Millisecond
+
+// awaitSecret reads the secret named name. On the writer (an unleased sole writer
+// included) it returns the read as is, sql.ErrNoRows when the secret is absent. On
+// a follower a missing secret is retried: catch up from the replica, read again,
+// and try to take the lease, until the secret appears (returned), this instance
+// becomes the writer (sql.ErrNoRows, so the caller creates it), or
+// secretWaitTimeout passes.
+func (m *Metadata) awaitSecret(ctx context.Context, name string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, secretWaitTimeout)
+	defer cancel()
+	for {
+		val, err := m.getSecret(ctx, name)
+		if err == nil || !isNoRows(err) || m.db.IsLeader() {
+			return val, err
+		}
+		if _, err := m.db.Refresh(ctx); err != nil {
+			return nil, fmt.Errorf("catch up for server secret %q: %w", name, err)
+		}
+		if val, err := m.getSecret(ctx, name); err == nil || !isNoRows(err) {
+			return val, err
+		}
+		if _, err := m.db.TryPromote(ctx); err != nil {
+			return nil, fmt.Errorf("take the lease for server secret %q: %w", name, err)
+		}
+		if m.db.IsLeader() {
+			continue // read once more as the writer, then create if still absent
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("server secret %q: not on the replica, and the lease is held elsewhere: %w", name, ctx.Err())
+		case <-time.After(secretRetryInterval):
+		}
 	}
-	return val, nil
+}
+
+// getSecret reads the secret named name; sql.ErrNoRows when it is absent.
+func (m *Metadata) getSecret(ctx context.Context, name string) ([]byte, error) {
+	var val []byte
+	err := m.db.QueryRowContext(ctx,
+		`SELECT value FROM server_secrets WHERE name = ?`, name).Scan(&val)
+	return val, err
 }
