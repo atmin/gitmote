@@ -7,7 +7,11 @@ name: gitmote-selfdeploy
 
 services:
   minio:
-    image: minio/minio
+    # Silo — Pigsty's community fork of the MinIO server, pinned by release tag and
+    # digest. MinIO no longer publishes minio/minio or minio/mc; Silo keeps the
+    # protocol, the MINIO_* variables and S3 conditional writes (the writer lease
+    # needs them), and the same image answers to `mc` for the setup service.
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     command: server /data --console-address :9201
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -20,7 +24,7 @@ services:
 
   # One-shot bucket creation; invoked with `docker compose run --rm mc` (see dev).
   mc:
-    image: minio/mc
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     profiles: ["setup"]
     depends_on: [minio]
     environment:
