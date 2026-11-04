@@ -70,6 +70,8 @@ Optional body explaining why, not what.
   `feat: pre-receive hook — RPC the CAS back to the parent`.
 - Body: optional, blank-line separated. Explain *why*, not *what* — one to three
   sentences. Omit when the subject says it all.
+- No trailers. Leave out `Co-Authored-By` and "Generated with" lines, also when
+  an agent writes the commit.
 
 ## Testing — test everything
 
