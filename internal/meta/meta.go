@@ -51,6 +51,10 @@ type Config struct {
 	// Owner labels the lease holder in the lock file for diagnostics; empty lets
 	// s3lite generate one (hostname:pid).
 	Owner string
+	// OnDemandPromotion makes a follower promote only through TryPromote, never in
+	// the background. It pairs with YieldLease: without it, a yielded lease is
+	// taken back within a tick (by this instance or an idle peer).
+	OnDemandPromotion bool
 }
 
 // Metadata is the query layer over the s3lite-backed database.
@@ -72,6 +76,8 @@ func Open(ctx context.Context, cfg Config) (*Metadata, error) {
 		Role:        cfg.Role,
 		LeaseTTL:    cfg.LeaseTTL,
 		Owner:       cfg.Owner,
+
+		OnDemandPromotion: cfg.OnDemandPromotion,
 	})
 	if err != nil {
 		return nil, err
@@ -161,6 +167,13 @@ func (m *Metadata) Generation() int64 { return m.db.Generation() }
 // has just become) the writer, false if the lease is still held elsewhere. It
 // blocks for the restore while promoting, so bound ctx.
 func (m *Metadata) TryPromote(ctx context.Context) (bool, error) { return m.db.TryPromote(ctx) }
+
+// YieldLease hands the writer lease back while this instance stays up as a
+// follower, so another instance on the same storage root can write next. The
+// final sync runs before the lock is released, so the next writer sees every
+// acknowledged write. Returns s3lite.ErrNotLeader when there is no lease to
+// yield. Bound ctx.
+func (m *Metadata) YieldLease(ctx context.Context) error { return m.db.YieldLease(ctx) }
 
 // OnPromote registers a callback fired after this instance becomes the writer
 // (acquired the lease and started replicating).

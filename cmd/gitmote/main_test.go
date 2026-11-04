@@ -352,6 +352,9 @@ func TestMetaConfigDerivesReplicaAndRole(t *testing.T) {
 	if cfg.Role != s3lite.RoleAuto {
 		t.Errorf("Role = %v, want RoleAuto (a root must yield the lease)", cfg.Role)
 	}
+	if !cfg.OnDemandPromotion {
+		t.Error("OnDemandPromotion = false, want true (a yielded lease must stay free for the next request)")
+	}
 }
 
 func TestMetaConfigNoBucketLeavesRoleUnset(t *testing.T) {
@@ -366,6 +369,9 @@ func TestMetaConfigNoBucketLeavesRoleUnset(t *testing.T) {
 	}
 	if cfg.Role != s3lite.RoleAuto {
 		t.Errorf("Role = %v, want RoleAuto (unset zero value — role not applied without a replica)", cfg.Role)
+	}
+	if cfg.OnDemandPromotion {
+		t.Error("OnDemandPromotion = true, want false (no replica, no lease to promote into)")
 	}
 }
 

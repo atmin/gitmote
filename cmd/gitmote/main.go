@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -41,6 +43,17 @@ const shutdownTimeout = 10 * time.Second
 // the gate in buildGitHandler): a follower blocks at most this long for the
 // restore before falling back to 503, so a slow S3 can't hang a request.
 const promoteTimeout = 10 * time.Second
+
+const (
+	// idleYieldAfter is how long a writer serves no request before it hands the
+	// lease back, so another instance on the same storage root can write next
+	// (see leaseActivity and docs/ops.md).
+	idleYieldAfter = 5 * time.Second
+	// yieldCheckInterval is how often the writer checks whether it is idle.
+	yieldCheckInterval = time.Second
+	// yieldTimeout bounds one YieldLease call: its final sync and the release.
+	yieldTimeout = 10 * time.Second
+)
 
 // defaultListenAddr is the bind address in the container, where ports are mapped
 // externally. GITMOTE_LISTEN_ADDR overrides it — for running a second native
@@ -200,7 +213,8 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	gitHandler, ui, reportAPI, gate, closeMeta, err := buildGitHandler(ctx, logger)
+	act := newLeaseActivity()
+	gitHandler, ui, reportAPI, gate, closeMeta, err := buildGitHandler(ctx, logger, act)
 	if err != nil {
 		return err
 	}
@@ -212,11 +226,11 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: newHandler(gitHandler, ui, reportAPI, gate),
+		Handler: act.track(newHandler(gitHandler, ui, reportAPI, gate)),
 	}
 
 	if reportAPI != nil {
-		go reconcileLoop(ctx, reportAPI, logger)
+		go reconcileLoop(ctx, reportAPI, act, gate, logger)
 	}
 
 	errCh := make(chan error, 1)
@@ -244,19 +258,119 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 }
 
 // reconcileLoop periodically sweeps abandoned CI jobs (a runner that died mid-run
-// leaves a job stuck in running). ReconcileStuck is leader-gated internally, so a
-// follower's ticks are no-ops. It stops when ctx is cancelled (shutdown).
-func reconcileLoop(ctx context.Context, reportAPI *ci.ReportAPI, logger *slog.Logger) {
+// leaves a job stuck in running). It stops when ctx is cancelled (shutdown).
+func reconcileLoop(ctx context.Context, reportAPI *ci.ReportAPI, act *leaseActivity, gate func(context.Context) bool, logger *slog.Logger) {
 	t := time.NewTicker(reconcileInterval)
+	defer t.Stop()
+	sweep := func(ctx context.Context) error {
+		return reportAPI.ReconcileStuck(ctx, reconcileMaxAge, time.Now())
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := reconcileOnce(ctx, act, gate, sweep); err != nil {
+				logger.Error("ci: reconcile sweep failed", "error", err)
+			}
+		}
+	}
+}
+
+// reconcileOnce runs one sweep as the writer. An idle writer yields its lease
+// (leaseActivity), so the tick takes the lease through the gate like a request,
+// and skips the sweep while another instance holds it — that instance sweeps on
+// its own ticks. It holds the activity read lock throughout, so the sweep never
+// overlaps a yield. It does not count as activity: the lease is free again on
+// the next idle check. A nil gate (no replica) means always the writer.
+func reconcileOnce(ctx context.Context, act *leaseActivity, gate func(context.Context) bool, sweep func(context.Context) error) error {
+	act.mu.RLock()
+	defer act.mu.RUnlock()
+	if gate != nil && !gate(ctx) {
+		return nil
+	}
+	return sweep(ctx)
+}
+
+// leaseActivity lets an idle writer hand its lease back without fencing a
+// request mid-flight. Each request that may touch the metadata holds mu for
+// reading for its whole life, and a yield takes mu for writing, so the two never
+// overlap: a request that arrives during a yield waits, and the gate then takes
+// the lease again. last is when the latest such request ended, in Unix
+// nanoseconds.
+type leaseActivity struct {
+	mu   sync.RWMutex
+	last atomic.Int64
+}
+
+// newLeaseActivity starts the idle clock now, so a fresh writer serves at least
+// idleYieldAfter before it yields.
+func newLeaseActivity() *leaseActivity {
+	a := &leaseActivity{}
+	a.last.Store(time.Now().UnixNano())
+	return a
+}
+
+// track wraps next so that every request counts as activity, except the liveness
+// probes and static assets: they carry no metadata, and a health check every few
+// seconds would otherwise pin the lease forever.
+func (a *leaseActivity) track(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if alwaysServable(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		a.mu.RLock()
+		defer func() {
+			a.last.Store(time.Now().UnixNano())
+			a.mu.RUnlock()
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// idle reports whether no request has ended within idleYieldAfter.
+func (a *leaseActivity) idle() bool {
+	return time.Since(time.Unix(0, a.last.Load())) >= idleYieldAfter
+}
+
+// maybeYield hands the lease back when this instance is the writer, no request is
+// in flight, and none has ended within idleYieldAfter. It reports whether it
+// yielded. A yield that fails leaves s3lite to keep or drop the lease (it renews,
+// or demotes and fires OnDemote); either way the next check tries again.
+func (a *leaseActivity) maybeYield(ctx context.Context, isLeader func() bool, yield func(context.Context) error, logger *slog.Logger) bool {
+	if !isLeader() || !a.idle() {
+		return false
+	}
+	if !a.mu.TryLock() {
+		return false // a request is in flight
+	}
+	defer a.mu.Unlock()
+	if !a.idle() { // a request ended between the check and the lock
+		return false
+	}
+	yctx, cancel := context.WithTimeout(ctx, yieldTimeout)
+	defer cancel()
+	if err := yield(yctx); err != nil {
+		if !errors.Is(err, s3lite.ErrNotLeader) {
+			logger.Warn("yielding the idle writer lease failed", "error", err)
+		}
+		return false
+	}
+	logger.Info("yielded the writer lease after idle", "idle", idleYieldAfter)
+	return true
+}
+
+// yieldWhenIdle runs maybeYield every yieldCheckInterval until ctx ends.
+func yieldWhenIdle(ctx context.Context, act *leaseActivity, md *meta.Metadata, logger *slog.Logger) {
+	t := time.NewTicker(yieldCheckInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := reportAPI.ReconcileStuck(ctx, reconcileMaxAge, time.Now()); err != nil {
-				logger.Error("ci: reconcile sweep failed", "error", err)
-			}
+			act.maybeYield(ctx, md.IsLeader, md.YieldLease, logger)
 		}
 	}
 }
@@ -267,9 +381,9 @@ func reconcileLoop(ctx context.Context, reportAPI *ci.ReportAPI, logger *slog.Lo
 // at "/"; the exact health/version routes stay more specific.
 //
 // gate decides whether this instance may answer a metadata-derived request (see
-// leaderGate): a follower — the brief post-deploy window before it promotes —
-// serves a frozen, stale snapshot, so it must not answer with stale refs. The
-// gate promotes on demand when it can, else refuses.
+// leaderGate): a follower — after a deploy, or while another instance on the
+// same storage root writes — serves a frozen, stale snapshot, so it must not
+// answer with stale refs. The gate promotes on demand when it can, else refuses.
 func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.ReportAPI, gate func(context.Context) bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -302,10 +416,11 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.Report
 // metadata). A nil gate (unreplicated dev, sole writer) means always-leader.
 //
 // The gate promotes on demand: during a graceful deploy the old writer has
-// released its lease by the time the first request reaches the new instance, so
-// the gate acquires it here — blocking for the restore — and serves, instead of
-// refusing until the background poll. It still returns 503 when the lease is
-// genuinely held elsewhere (e.g. a hard kill, until the old lease expires).
+// released its lease by the time the first request reaches the new instance, and
+// an idle writer yields its lease (leaseActivity), so the gate acquires it here —
+// blocking for the restore — and serves. It still returns 503 when the lease is
+// genuinely held elsewhere: another instance is busy (until it is idle for
+// idleYieldAfter), or a hard kill (until the old lease expires).
 func leaderGate(next http.Handler, gate func(context.Context) bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if alwaysServable(r.URL.Path) || gate == nil || gate(r.Context()) {
@@ -313,7 +428,7 @@ func leaderGate(next http.Handler, gate func(context.Context) bool) http.Handler
 			return
 		}
 		w.Header().Set("Retry-After", "2")
-		http.Error(w, "gitmote is warming up (not the writer yet) — retry shortly",
+		http.Error(w, "gitmote is not the writer right now (another instance holds the lease) — retry shortly",
 			http.StatusServiceUnavailable)
 	})
 }
@@ -335,7 +450,7 @@ func alwaysServable(p string) bool {
 // The db, cache, and socket derive from GITMOTE_DATA (see dataDir); metadata
 // replicates to a root-derived replica (see replicaTarget). The push path
 // installs the pre-receive hook binary (gitmote-hook, beside this binary).
-func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *webui.Handler, *ci.ReportAPI, func(context.Context) bool, func() error, error) {
+func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivity) (http.Handler, *webui.Handler, *ci.ReportAPI, func(context.Context) bool, func() error, error) {
 	noop := func() error { return nil }
 
 	if os.Getenv("GITMOTE_S3_BUCKET") == "" {
@@ -360,15 +475,16 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 	})
 
 	// gate answers "may this instance serve a metadata request?" — and promotes on
-	// demand when it can. During a graceful deploy the old writer has released its
-	// lease by the time the first request lands here, so TryPromote acquires it
-	// (blocking for the restore) instead of the request waiting out the background
-	// poll; OnPromote above logs the transition. TryPromote's IsLeader fast path
-	// makes the steady-state call free, and it returns false (not an error) while
-	// the lease is still held elsewhere, so a follower under a live writer stays
-	// quiet and 503s. Per-request promotion is safe only because max-scale=1 keeps
-	// this the sole instance outside the deploy window (docs/ops.md). Bounded so a
-	// slow restore falls back to 503 rather than hanging the request.
+	// demand when it can. The metadata opens with OnDemandPromotion, so this is the
+	// only way a follower becomes the writer after Open: during a graceful deploy
+	// the old writer has released its lease, and an idle writer yields it
+	// (yieldWhenIdle), so TryPromote acquires it here (blocking for the restore);
+	// OnPromote above logs the transition. Two live instances on one storage root
+	// thus take turns as the writer, and the lease keeps them from overlapping.
+	// TryPromote's IsLeader fast path makes the steady-state call free, and it
+	// returns false (not an error) while the lease is still held elsewhere, so a
+	// follower under a busy writer stays quiet and 503s. Bounded so a slow restore
+	// falls back to 503 rather than hanging the request.
 	gate := func(reqCtx context.Context) bool {
 		pctx, cancel := context.WithTimeout(reqCtx, promoteTimeout)
 		defer cancel()
@@ -529,7 +645,21 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger) (http.Handler, *w
 		_ = cleanup()
 		return nil, nil, nil, nil, noop, err
 	}
-	return handler, ui, reportAPI, gate, cleanup, nil
+
+	// Hand the lease back whenever this writer is idle. The loop stops before the
+	// metadata closes, so a yield never races the final Close.
+	yieldCtx, stopYield := context.WithCancel(ctx)
+	yieldDone := make(chan struct{})
+	go func() {
+		defer close(yieldDone)
+		yieldWhenIdle(yieldCtx, act, md, logger)
+	}()
+	closeAll := func() error {
+		stopYield()
+		<-yieldDone
+		return cleanup()
+	}
+	return handler, ui, reportAPI, gate, closeAll, nil
 }
 
 // buildUI constructs the management UI (always on). Its session cookie key is
@@ -622,6 +752,10 @@ func metaConfigFromEnv(logger *slog.Logger, role s3lite.Role) meta.Config {
 	}
 	if replica != "" {
 		cfg.Role = role
+		// A follower promotes only through the request gate, never in the
+		// background, so a lease that an idle writer yields stays free for whichever
+		// instance gets the next request.
+		cfg.OnDemandPromotion = true
 	}
 	return cfg
 }
