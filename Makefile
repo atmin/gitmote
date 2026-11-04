@@ -13,9 +13,9 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # (.github/workflows/publish-runner.yml) or by the manual amd64 path in ops.md.
 IMAGE_SERVER := ghcr.io/atmin/gitmote
 
-# Host port for `make prod`. Defaults to the prod-parity 8080; override to run the
-# container alongside a native `make dev` (which owns 8080) — the shared bucket's
-# writer lease then makes whichever starts second a read-only follower.
+# Host port for `make prod`. Defaults to the prod-parity 8080, so the container runs
+# alongside a native `make dev` (on 6683) — the two share the bucket and take
+# turns as the writer, each yielding the lease when idle (docs/ops.md).
 PORT ?= 8080
 
 # Dev compose project (docker-compose.dev.yml sets name: gitmote-dev). `make prod`
@@ -41,7 +41,7 @@ build:
 	go build -o bin/gitmote-hook ./cmd/gitmote-hook
 	go build -o bin/gitmote-runner ./cmd/gitmote-runner
 
-# Local dev: MinIO in a container (S3 :9100) + gitmote run natively on :8080,
+# Local dev: MinIO in a container (S3 :9100) + gitmote run natively on :6683,
 # with a bootstrapped admin/token/repo persisted under data/ across restarts.
 # First run prints the token and clone URL; Ctrl-C stops the server. See
 # scripts/dev.sh. Requires docker + docker compose.

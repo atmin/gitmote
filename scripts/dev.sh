@@ -12,6 +12,11 @@ COMPOSE=(docker compose -p gitmote-dev -f docker-compose.dev.yml)
 # All-local configuration — none of these are secret. The db, cache, and socket
 # live under data/ (gitignored, one GITMOTE_DATA dir) so refs survive restarts.
 # The bucket alone now derives the metadata replica + single-writer lease.
+#
+# The server listens on 6683, the canonical local port (MOTE on a phone keypad,
+# see README.md); the container's own 8080 stays free for the e2e suites.
+DEV_PORT=6683
+export GITMOTE_LISTEN_ADDR=":$DEV_PORT"
 export GITMOTE_S3_BUCKET="gitmote"
 export GITMOTE_S3_ENDPOINT="http://localhost:9100"
 export AWS_REGION="us-east-1"
@@ -26,7 +31,7 @@ export GITMOTE_COOKIE_KEY="dev-cookie-key-not-for-production"
 # where the runner clones + reports back; WORKER_SECRET authenticates the report
 # API. The runner executes .gitmote/workflows with `act` (install: brew install
 # act), which needs the Docker/podman daemon MinIO already relies on.
-export GITMOTE_URL="http://localhost:8080"
+export GITMOTE_URL="http://localhost:$DEV_PORT"
 export WORKER_SECRET="dev-worker-secret-not-for-production"
 
 # Enable per-repo CI secrets locally (per-repo Secrets page). A fixed dev master
@@ -35,12 +40,12 @@ export GITMOTE_CI_SECRET_KEY_V1="ZGV2LW9ubHktY2ktc2VjcmV0LW1hc3Rlci1rZXktMzI="
 
 mkdir -p "$ROOT/data"
 
-# Free :8080 from a stale dev server left running from a previous session.
-if pid="$(lsof -nP -tiTCP:8080 -sTCP:LISTEN 2>/dev/null)"; then
-  echo "--- stopping process on :8080 (pid $pid) ---"
+# Free the dev port from a stale dev server left running from a previous session.
+if pid="$(lsof -nP -tiTCP:"$DEV_PORT" -sTCP:LISTEN 2>/dev/null)"; then
+  echo "--- stopping process on :$DEV_PORT (pid $pid) ---"
   kill $pid 2>/dev/null || true
   for _ in $(seq 1 20); do
-    lsof -nP -tiTCP:8080 -sTCP:LISTEN >/dev/null 2>&1 || break
+    lsof -nP -tiTCP:"$DEV_PORT" -sTCP:LISTEN >/dev/null 2>&1 || break
     sleep 0.1
   done
 fi
@@ -64,10 +69,10 @@ cat <<EOF
 
   gitmote dev is ready.
 
-    UI:     http://localhost:8080/       (sign in at /login by pasting the token)
+    UI:     http://localhost:$DEV_PORT/       (sign in at /login by pasting the token)
     token:  $TOKEN
-    clone:  git clone http://admin:$TOKEN@localhost:8080/gitmote
-    push:   git push http://admin:$TOKEN@localhost:8080/gitmote HEAD:refs/heads/master
+    clone:  git clone http://admin:$TOKEN@localhost:$DEV_PORT/gitmote
+    push:   git push http://admin:$TOKEN@localhost:$DEV_PORT/gitmote HEAD:refs/heads/master
 
   MinIO console: http://localhost:9101  (minioadmin / minioadmin)
   Ctrl-C stops the server; MinIO keeps running. 'make dev-reset' wipes all state.

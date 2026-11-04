@@ -130,7 +130,7 @@ is a correctness invariant”).
 ## Develop locally
 
 `make dev` gives you a running instance in one command: it builds the binaries,
-starts MinIO in a container (S3 on :9100), runs gitmote **natively** on :8080,
+starts MinIO in a container (S3 on :9100), runs gitmote **natively** on :6683,
 and ensures an admin + a `gitmote` repo (auto-bootstrap), minting a fresh
 token each run and printing it. State (the metadata DB and object cache) persists
 under `data/`, so repos and history survive restarts:
@@ -140,7 +140,7 @@ make dev        # first run prints the token, clone URL, and UI URL
 make dev-reset  # wipe MinIO + data/ for a clean slate
 ```
 
-Sign in to the UI at <http://localhost:8080/> by pasting the token, or
+Sign in to the UI at <http://localhost:6683/> by pasting the token, or
 clone/push straight away with the printed URL. Requires Docker + Docker Compose.
 
 **CI works locally too.** Push a repo with `.gitmote/workflows/*.yml` and gitmote
