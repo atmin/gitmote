@@ -18,7 +18,39 @@ docs/
 tasks/            The frontier — active/upcoming work; deleted once landed
 ```
 
-The Go server, Makefile, and CI arrive as code lands.
+## Run it locally
+
+You need Docker with Docker Compose.
+
+`make dev` builds the binaries and starts an S3 server in a container on port
+9100. The server is Silo, a fork of MinIO. Then `make dev` runs gitmote natively
+on port 6683. It creates the user `admin` and the repository `gitmote`, and prints
+a fresh token. The metadata database and the object cache persist in `data/`, so
+repositories survive a restart.
+
+```sh
+make dev        # prints the token, the clone URL and the UI URL
+make dev-reset  # deletes the S3 volume and data/
+```
+
+`make dev` also runs CI. A push of a repository with `.gitmote/workflows/*.yml`
+starts a run. `gitmote-runner` executes the run as a local process with
+[act](https://github.com/nektos/act), on the same Docker daemon. Install act
+first, for example with `brew install act`. gitmote reads `.gitmote/workflows`
+and never `.github/workflows`, so a repository mirrored to GitHub runs each
+workflow once.
+
+The end-to-end suites run gitmote in a container against the S3 server, with real
+git:
+
+- `make e2e-local` pushes this working tree, clones it back, recreates the
+  container, and clones again from the bucket.
+- `make e2e-restore` deletes the metadata database and checks that a clone works
+  after the restore from S3.
+- `make e2e-handoff` runs two instances on one bucket and checks that they take
+  turns as the writer.
+- `make e2e-build` checks that `GITMOTE_CI_ALLOW_BUILDS` gates image builds in
+  CI. It skips when no Docker daemon runs.
 
 ## Commit messages
 
@@ -61,8 +93,8 @@ golangci-lint run    # lint (includes vet)
 go test ./...        # test
 ```
 
-A Makefile will front these as the single source of truth once code lands; CI
-runs the same targets, so green locally = green in CI.
+`make fmt` formats the code, and `make all` runs lint, test and build. CI runs
+`make all` and the end-to-end suites.
 
 ## Tasks
 

@@ -2,32 +2,26 @@
 
 > *Your own, personal, GitHub.*
 
-A tiny self-hosted git remote. One Go container speaks git's smart-HTTP
-protocol; repositories live in S3-compatible object storage and mutable metadata
-(refs, users, keys, access) in [s3lite](https://github.com/atmin/s3lite). Use it
-instead of GitHub for a handful of repos and a few invited people — it is
-explicitly not trying to be GitHub at scale.
+gitmote is a git remote that keeps all its state in one S3 bucket. You run it as a
+container on your own machine, and only while you need it. The bucket is the
+forge, so no server has to stay up.
 
-The one interesting trick: git's data is split by mutability — immutable
-objects/packs to S3, mutable refs and forge metadata to s3lite (plain SQLite,
-backed to S3) — so the only genuinely hard problem, atomic ref updates, becomes a
-single SQL transaction.
+gitmote has run in production since July 2026. It is built for a few repositories
+and a few people, not for scale.
 
-**Status:** early implementation — git read/write over smart-HTTP works
-(clone/fetch/push with token auth and per-repo ACLs), and gitmote hosts its own
-source repo end-to-end: locally against MinIO (`make e2e-local`) and in
-production on Scaleway Object Storage at
-[gitmote.atmin.net](https://gitmote.atmin.net). The design lives in
-[docs/architecture/](docs/architecture/).
+gitmote provides:
 
-## Quickstart — run it anywhere
+- git over HTTP: clone, fetch and push, with access tokens
+- public and private repositories, with read or write access for invited users
+- a web UI to browse code and to manage users, tokens, access and CI secrets
+- CI for `.gitmote/workflows` in GitHub Actions syntax, once you set up a runner
+  ([docs/ops.md](docs/ops.md#ci-substrate))
 
-One container, one bucket. S3 is the single source of truth and the container is
-disposable: kill it and restart — it restores the whole forge from S3 and
-continues. Point it at any S3-compatible bucket.
+## Quickstart
 
-Keep the bucket's keys in a credentials file, out of your shell history and out
-of `docker inspect`. Create it readable only by you, then open it in an editor:
+You need Docker and an S3-compatible bucket with an access key.
+
+Create a credentials file that only you can read, and open it in an editor:
 
 ```sh
 mkdir -p ~/.config/gitmote && cd ~/.config/gitmote
@@ -35,7 +29,8 @@ touch s3-credentials && chmod 600 s3-credentials
 ${EDITOR:-nano} s3-credentials
 ```
 
-and paste in the keys, so they never pass through the shell:
+Paste the keys into the file. They never pass through your shell, so they stay
+out of its history.
 
 ```ini
 [default]
@@ -43,7 +38,7 @@ aws_access_key_id = …
 aws_secret_access_key = …
 ```
 
-Save this beside it as `compose.yaml`, then run `docker compose up -d`:
+Save this file beside it as `compose.yaml`:
 
 ```yaml
 services:
@@ -65,21 +60,36 @@ volumes:
   gitmote-data:
 ```
 
-On the **first run** gitmote auto-bootstraps an admin and prints a one-time access
-token to the logs behind a `SAVE IT NOW` banner — grab it with
-`docker compose logs`, or from the Logs tab in Docker Desktop (no setup page). Then
-sign in at <http://localhost:6683/login> by pasting it, create a repo on the
-dashboard (/), and clone it:
+Start gitmote:
+
+```sh
+docker compose up -d
+```
+
+On the first start, gitmote creates the user `admin` and prints its access token
+in the logs. Read the token with `docker compose logs`, or in the Logs tab of
+Docker Desktop. The logs show the token only once, so save it.
+
+Sign in at <http://localhost:6683/login> with the token, and create a repository
+on the dashboard. Then clone it:
 
 ```sh
 git clone http://localhost:6683/<repo>   # user: admin, password: the token
 ```
 
-Git asks for the token once, and its credential helper (the macOS Keychain, Git
-Credential Manager) keeps it. Don't put the token in the URL: git would store it
-in plain text in `.git/config`.
+Git asks for the token. A credential helper, such as the macOS Keychain or Git
+Credential Manager, stores it after the first time. Keep the token out of the
+URL, because git saves the URL in `.git/config` as plain text.
 
-Lost the token? It's never stored (only its hash), so re-mint one:
+## Day to day
+
+Stop gitmote with `docker compose stop`, and start it with `docker compose up -d`.
+To keep it always on, leave it running: `restart: unless-stopped` starts it with
+Docker. To start Docker Desktop at sign-in, turn on its setting in Settings,
+General.
+
+If you lose the token, mint a new one. gitmote stores only a hash of each token,
+so it cannot show an old one.
 
 ```sh
 docker compose stop
@@ -87,115 +97,32 @@ docker compose run --rm gitmote bootstrap -reissue
 docker compose start
 ```
 
-Nothing else is required: the session cookie key and CI worker secret are
-generated and persisted on first run. See [docs/ops.md](docs/ops.md) for the full
-env surface, CI, and the Scaleway deployment.
+To use the forge from another machine, set the same bucket, endpoint and region
+there. Sign in with your token, and do not bootstrap again. With a different
+bucket, gitmote starts a new, empty forge.
 
-### Remote bucket, local on-demand forge
+## How it works
 
-Because the bucket *is* the forge, you don't need any always-on compute. The
-quickstart above already keeps the bucket in the cloud and runs gitmote
-**locally**: your git remote is `localhost`, but the durable state lives in S3.
-This is the cheapest way to self-host: you pay for object storage, not a running
-server.
+The bucket holds all the state. Git objects are files in it. Refs, users and
+access rules live in SQLite, which [s3lite](https://github.com/atmin/s3lite)
+replicates to the same bucket. A push updates its refs in one SQL transaction, so
+the push is atomic.
 
-Run it only when you push or pull — `docker compose up -d`, then
-`docker compose stop` — or leave it on: `restart: unless-stopped` brings it back
-whenever Docker starts, and Docker Desktop starts at login when you turn that on
-in its settings (General).
+The container holds only a cache. Delete the container and its volume, and the
+next start restores the forge from the bucket.
 
-```sh
-git remote add gitmote http://localhost:6683/<repo>
-git push gitmote main
-```
+One instance writes at a time, and a lease in the bucket enforces this. An
+instance releases the lease after 5 seconds without requests. So a container on
+your laptop and one in the cloud can share a bucket. A request that reaches one
+instance while the other is busy gets a `503`. Retry the request.
 
-Point at the same **storage root** (`GITMOTE_S3_BUCKET`), endpoint, and region as
-before. Objects and metadata share that root, so a later instance either finds the
-whole forge or, pointed at the wrong root, sees a clean empty one — never a
-half-restored state.
+## Documentation
 
-**Use your existing token.** A populated bucket already has an admin; don't
-re-bootstrap it — sign in with the token you saved (or `bootstrap -reissue` to
-mint a fresh one).
-
-**Only one writer at a time — and that's enforced, not your job.** gitmote takes a
-single-writer *lease* on the storage root, so running a second instance (or a stray
-cloud container) can't corrupt anything. An instance holds the lease only while it
-is busy: after 5 s with no request it hands the lease back, and the next request
-on either instance takes it. So an always-on local container and a cloud instance
-can share one bucket and both serve. A request that reaches one while the other is
-busy gets a retryable `503`. Details in [docs/ops.md](docs/ops.md) (“Single writer
-is a correctness invariant”).
-
-## Develop locally
-
-`make dev` gives you a running instance in one command: it builds the binaries,
-starts MinIO in a container (S3 on :9100), runs gitmote **natively** on :6683,
-and ensures an admin + a `gitmote` repo (auto-bootstrap), minting a fresh
-token each run and printing it. State (the metadata DB and object cache) persists
-under `data/`, so repos and history survive restarts:
-
-```sh
-make dev        # first run prints the token, clone URL, and UI URL
-make dev-reset  # wipe MinIO + data/ for a clean slate
-```
-
-Sign in to the UI at <http://localhost:6683/> by pasting the token, or
-clone/push straight away with the printed URL. Requires Docker + Docker Compose.
-
-**CI works locally too.** Push a repo with `.gitmote/workflows/*.yml` and gitmote
-records a run and executes it on the spot — it spawns `gitmote-runner` as a local
-process (the *same* runner code the cloud path runs on Scaleway, just a local
-substrate) which runs the workflow with [`act`](https://github.com/nektos/act).
-Install act (`brew install act`); it uses the same Docker/podman daemon MinIO
-does. Watch runs in the UI. gitmote reads `.gitmote/workflows` (GitHub-workflow
-syntax, run by act) — **not** `.github/workflows`, so a repo mirrored to GitHub
-chooses its forge by where the workflow lives and never double-runs.
-
-## Run it locally
-
-`make e2e-local` brings up a gitmote container plus MinIO with
-[docker-compose.yml](docker-compose.yml), bootstraps an admin/token/repo, then
-pushes this working tree, clones it back, and — after force-recreating the
-container — clones again to prove the repo survives on the object store and
-persisted refs (not local disk). Requires Docker + Docker Compose.
-
-`make e2e-restore` additionally exercises the litestream cold-start path (wipes
-the metadata DB and restores it from S3).
-
-`make e2e-build` proves the `GITMOTE_CI_ALLOW_BUILDS` gate: it runs `act` in a
-privileged docker-in-docker box (a rootful daemon in a box) with the daemon socket
-suppressed (a `docker build` step fails) then mounted (it succeeds), so the safe
-default and the opt-in are both verified against a real build. Skips cleanly with
-no daemon. Deployment — Scaleway Serverless Containers, single writer,
-`gitmote.atmin.net` — lives in [docs/ops.md](docs/ops.md).
-
-## Bootstrap
-
-An empty instance has no users, so token auth would be a chicken-and-egg — so the
-server **auto-bootstraps on first run**: when it is the writer and no admin
-exists, it creates the `admin` user and prints a one-time token to the logs (see
-the Quickstart). No second command.
-
-You can still bootstrap by hand against the bucket **before** the server is live
-(`gitmote bootstrap [-handle …] [-repo …]`), and recover a lost token with
-`gitmote bootstrap -reissue` — both refuse to clobber and print the token once.
-Only the token's hash is ever stored, so a lost token is re-minted, never
-recovered.
-
-## Web UI
-
-The bare root `/` is a **dashboard**: a viewer-scoped repo list (public repos to
-anyone, private to those with access, all to an admin) with browse pages for each
-repo. Sign in at `/login` by pasting a token (the same PAT format git uses) — any
-user may sign in to see the repos they can access; the server issues a signed,
-stateless session cookie keyed by an auto-generated, persisted secret (override
-with `GITMOTE_COOKIE_KEY`).
-
-The things you can't do over git are **admin-only**: create repos and mint/revoke
-tokens from the top-level `/users` and `/tokens` pages, and manage a repo from its
-`/<repo>/settings` (visibility, default branch), `/<repo>/access` (invite
-spectators/collaborators), and `/<repo>/secrets` pages.
+- [docs/ops.md](docs/ops.md): read it to configure gitmote, deploy it to the cloud,
+  or set up CI.
+- [docs/architecture/](docs/architecture/): read it to understand the design and
+  its safety rules.
+- [CONTRIBUTING.md](CONTRIBUTING.md): read it to build, test or change gitmote.
 
 ---
 
