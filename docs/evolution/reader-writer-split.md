@@ -3,7 +3,7 @@
 > **Status: writer half shipped; read-replica half still speculative.** The
 > **leased single writer** below is now implemented (s3lite `RoleAuto`; gitmote
 > gates pushes on the lease — see [safety.md §1](../architecture/safety.md) and
-> [ops.md](../ops.md)), and an idle writer yields the lease after 5 s, so two
+> [configuration.md](../configuration.md#single-writer)), and an idle writer yields the lease after 5 s, so two
 > long-lived instances take turns as the writer. What remains speculative is the
 > **read-scaling** half: `max-scale > 1` with followers fresh enough to serve
 > clones. Don't cite the read-replica part as a spec.

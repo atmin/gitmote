@@ -177,7 +177,7 @@ Image builds are **substrate-dependent**, and off by default:
   override `GITMOTE_ACT_DAEMON_SOCKET`) rather than let `act` derive the mount from
   `DOCKER_HOST` — for a **VM-backed daemon** (colima, Docker Desktop on macOS)
   `DOCKER_HOST` is a host path the in-VM daemon can't resolve, so the socket mount
-  would fail. See [ops.md](../ops.md).
+  would fail. See [configuration.md](../configuration.md#image-builds).
 
   > **No daemon → every run fails visibly.** `act` needs a reachable Docker/podman
   > daemon to spawn job containers. On a host without one each CI job is still
@@ -194,7 +194,7 @@ Image builds are **substrate-dependent**, and off by default:
   Production deployment stays on **GitHub Actions**
   ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)): build+push the
   public image to GHCR (`ghcr.io/atmin/gitmote`), then `scw container update` to
-  pull it; the leased writer keeps the swap safe (see [ops.md](../ops.md)). The
+  pull it; the leased writer keeps the swap safe (see [configuration.md](../configuration.md#rolling-deploys)). The
   GitHub mirror is the everyday deployer.
 
   A **local** instance, though, is a real builder, so gitmote now closes the loop
@@ -208,7 +208,7 @@ Image builds are **substrate-dependent**, and off by default:
   the `self-deploy` branch, it never overlaps the GitHub path (no double-deploy),
   and the same writer lease makes its rolling swap safe. It is a fallback for when
   the GitHub deployer is unavailable, not the primary route. See
-  [ops.md](../ops.md).
+  [deploy-scaleway.md](../deploy-scaleway.md#self-deploy-without-github).
 - **The runner image is built by CI**, not by hand: a change to
   [`Dockerfile.runner`](../../Dockerfile.runner) or the runner source on `master`
   (or a release) publishes `ghcr.io/atmin/gitmote-runner` publicly via

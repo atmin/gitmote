@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prove that two live instances on one storage root take turns as the writer
-# (docs/ops.md → the idle lease handoff). A receives a push, idles, and yields the
+# (docs/configuration.md, "Two instances take turns"). A receives a push, idles, and yields the
 # lease; B then serves that push. B moves one branch and deletes another, and A —
 # whose warm cache still holds the loose refs of its own push — must advertise
 # exactly B's refs. Whenever both are idle, no instance holds the lease.

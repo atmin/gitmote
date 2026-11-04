@@ -5,7 +5,7 @@
 # gitignored .env as GITMOTE_REPO_SECRET_GITMOTE__* (no Secrets UI, no master key),
 # and pushes HEAD to the `self-deploy` branch — which triggers
 # .gitmote/workflows/deploy.yml to build the amd64 image, push it to GHCR, and
-# `scw container update` prod. Invoked by `make self-deploy`. See docs/ops.md.
+# `scw container update` prod. Invoked by `make self-deploy`. See docs/deploy-scaleway.md.
 #
 # The everyday deployer stays GitHub Actions on `master`; this is the fallback for
 # when that's unavailable or an out-of-band deploy is wanted.
@@ -107,7 +107,7 @@ export GITMOTE_URL="http://localhost:${PORT}"
 export WORKER_SECRET="selfdeploy-worker-secret-not-for-production"
 export GITMOTE_LISTEN_ADDR=":${PORT}"
 # The build capability the deploy needs: hand act the host Docker daemon. Safe here
-# because this instance hosts only gitmote's own (trusted) repo (docs/ops.md).
+# because this instance hosts only gitmote's own (trusted) repo (docs/deploy-scaleway.md).
 export GITMOTE_CI_ALLOW_BUILDS=1
 
 # Free :$PORT from a stale self-deploy server (it must release the writer lease and

@@ -12,7 +12,7 @@ import (
 // no master key (GITMOTE_CI_SECRET_KEY_V<n>): the host env is already the CI
 // trust boundary (docs/architecture/safety.md §7). This is what lets the
 // fully-automated self-deploy keep its secrets in a gitignored .env instead of
-// the Secrets UI (docs/ops.md).
+// the Secrets UI (docs/deploy-scaleway.md).
 const envSecretPrefix = "GITMOTE_REPO_SECRET_"
 
 // EnvSecrets maps a normalized repo key (see repoKey) to that repo's env-seeded

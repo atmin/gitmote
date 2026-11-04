@@ -46,7 +46,7 @@
 ### S3 (immutable — _content before pointer_)
 
 Mirrors the on-disk bare repo's immutable directories, under the storage root
-(the whole bucket, or a `bucket/base` sub-path — see [ops.md](../ops.md)). Refs
+(the whole bucket, or a `bucket/base` sub-path — see [configuration.md](../configuration.md#storage-root)). Refs
 are deliberately **excluded** — they live in s3lite (also under the root, at
 `meta/`, so objects and metadata share fate). Keys below are relative to the root.
 

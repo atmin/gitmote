@@ -47,7 +47,7 @@ const promoteTimeout = 10 * time.Second
 const (
 	// idleYieldAfter is how long a writer serves no request before it hands the
 	// lease back, so another instance on the same storage root can write next
-	// (see leaseActivity and docs/ops.md).
+	// (see leaseActivity and docs/configuration.md).
 	idleYieldAfter = 5 * time.Second
 	// yieldCheckInterval is how often the writer checks whether it is idle.
 	yieldCheckInterval = time.Second
@@ -579,7 +579,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	// push (tasks/16-ci.md).
 	// Operator-supplied per-repo CI secrets from the process env
 	// (GITMOTE_REPO_SECRET_<REPO>__<NAME>): never stored, no master key needed —
-	// the automated self-deploy seeds them from a gitignored .env (docs/ops.md).
+	// the automated self-deploy seeds them from a gitignored .env (docs/deploy-scaleway.md).
 	envSecrets := ci.LoadEnvSecrets(os.Environ())
 	if red := envSecrets.Redacted(); len(red) > 0 {
 		logger.Info("env CI secrets loaded (never persisted)", "repos", red)

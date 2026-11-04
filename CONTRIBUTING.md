@@ -11,11 +11,13 @@ one of them in the same change — never leave the divergence silently.
 
 ```
 docs/
-  architecture/   The design and its decisions — source of truth
-  notes/          Open design questions, one concern per file
-  evolution/      Speculative future directions — ideas, not commitments
-  ops.md          Canonical infra doc — deploy, env, the single-writer rule
-tasks/            The frontier — active/upcoming work; deleted once landed
+  README.md            The index: which doc to read for which task
+  configuration.md     Every deployment: env vars, single writer, CI, first admin
+  deploy-scaleway.md   One deployment: Scaleway, GitHub Actions, self-deploy
+  architecture/        The design and its decisions — source of truth
+  notes/               Open design questions, one concern per file
+  evolution/           Speculative future directions — ideas, not commitments
+tasks/                 The frontier — active/upcoming work; deleted once landed
 ```
 
 ## Run it locally

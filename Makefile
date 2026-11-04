@@ -7,15 +7,15 @@ GOIMPORTS     := go run golang.org/x/tools/cmd/goimports@v0.47.0
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 # Public GHCR server image (CI publishes it on master; the targets below are the
-# local build/run/publish path — see docs/ops.md). The CI *runner* image
+# local build/run/publish path — see docs/deploy-scaleway.md). The CI *runner* image
 # (ghcr.io/atmin/gitmote-runner) is amd64-only and self-tests act at build, so it
 # can't build under local emulation on an arm64 host — it's published by CI
-# (.github/workflows/publish-runner.yml) or by the manual amd64 path in ops.md.
+# (.github/workflows/publish-runner.yml) or by the manual amd64 path in docs/deploy-scaleway.md.
 IMAGE_SERVER := ghcr.io/atmin/gitmote
 
 # Host port for `make prod`. Defaults to the prod-parity 8080, so the container runs
 # alongside a native `make dev` (on 6683) — the two share the bucket and take
-# turns as the writer, each yielding the lease when idle (docs/ops.md).
+# turns as the writer, each yielding the lease when idle (docs/configuration.md).
 PORT ?= 8080
 
 # Dev compose project (docker-compose.dev.yml sets name: gitmote-dev). `make prod`
@@ -58,7 +58,7 @@ dev-reset:
 # throwaway instance on :8081 with its own MinIO (:9300) and pushes HEAD to the
 # `self-deploy` branch. GitHub Actions stays the everyday deployer. Requires act +
 # docker; the deploy workflow needs GITMOTE_CI_ALLOW_BUILDS (the script sets it).
-# See docs/ops.md. Copy .env.example → .env and fill it in first.
+# See docs/deploy-scaleway.md. Copy .env.example → .env and fill it in first.
 self-deploy: build
 	./scripts/self-deploy.sh
 
@@ -117,6 +117,6 @@ prod: image
 
 # Push the built server image to GHCR — the manual / break-glass path (CI
 # publishes on master). Requires `docker login ghcr.io` first (a PAT with
-# write:packages). The runner image publishes via CI / the ops.md amd64 path.
+# write:packages). The runner image publishes via CI / the docs/deploy-scaleway.md amd64 path.
 publish: image
 	docker push $(IMAGE_SERVER):$(VERSION)

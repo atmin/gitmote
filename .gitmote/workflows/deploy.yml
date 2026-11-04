@@ -66,7 +66,7 @@ jobs:
       # safe by construction (new boots as follower, old releases on SIGTERM).
       #
       # ⚠️ Pass NO secret-environment-variables: `update` REPLACES the whole map, so
-      # setting any here would wipe prod's AWS/litestream keys (docs/ops.md). The
+      # setting any here would wipe prod's AWS/litestream keys (docs/deploy-scaleway.md). The
       # env-less update preserves it.
       - name: Deploy (single writer)
         env:

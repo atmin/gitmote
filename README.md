@@ -15,7 +15,7 @@ gitmote provides:
 - public and private repositories, with read or write access for invited users
 - a web UI to browse code and to manage users, tokens, access and CI secrets
 - CI for `.gitmote/workflows` in GitHub Actions syntax, once you set up a runner
-  ([docs/ops.md](docs/ops.md#ci-substrate))
+  ([docs/configuration.md](docs/configuration.md#ci))
 
 ## Quickstart
 
@@ -118,10 +118,11 @@ instance while the other is busy gets a `503`. Retry the request.
 
 ## Documentation
 
-- [docs/ops.md](docs/ops.md): read it to configure gitmote, deploy it to the cloud,
-  or set up CI.
-- [docs/architecture/](docs/architecture/): read it to understand the design and
-  its safety rules.
+- [docs/configuration.md](docs/configuration.md): read it to set the env vars,
+  turn on CI, or recover the admin token.
+- [docs/deploy-scaleway.md](docs/deploy-scaleway.md): read it to run gitmote in
+  the cloud.
+- [docs/](docs/README.md): read it to find the design docs.
 - [CONTRIBUTING.md](CONTRIBUTING.md): read it to build, test or change gitmote.
 
 ---
