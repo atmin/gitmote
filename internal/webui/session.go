@@ -11,12 +11,16 @@ import (
 	"time"
 )
 
-// Session state is a signed cookie, not a server-side table: the value is
-// "<userID>.<expiryUnix>.<hmac>", where the HMAC-SHA256 over "<userID>.<expiry>"
-// is keyed by GITMOTE_COOKIE_KEY. This keeps the UI stateless — no sessions
-// table, no new source of truth — at the cost of not being able to revoke a
-// single cookie before it expires; the short TTL bounds that, and the admin
-// middleware re-checks the user (and is_admin) on every request.
+// Session state is a signed cookie, not a server-side table. The value is
+// "<userID>.<expiryUnix>.<hmac>". The HMAC-SHA256 is over "<userID>.<expiry>".
+// GITMOTE_COOKIE_KEY keys it when it is set. Otherwise, an auto-generated key
+// that the server persists in meta keys it (see resolveCookieKey in
+// cmd/gitmote). This keeps the UI stateless, with no sessions table and no new
+// source of truth.
+//
+// The cost is that a single cookie can't be revoked before it expires. The
+// short TTL bounds that cost. The admin middleware also re-checks the user
+// (and is_admin) on every request.
 const (
 	cookieName = "gm_session"
 	sessionTTL = 12 * time.Hour
@@ -27,8 +31,8 @@ type sessions struct {
 }
 
 // issue signs a session for userID and sets it as the response cookie. Secure is
-// set only on TLS requests so plain-HTTP local development still works while a
-// real (HTTPS) deployment gets a Secure cookie.
+// set only on TLS requests. Local development over plain HTTP then still works,
+// and a real deployment over HTTPS gets a Secure cookie.
 func (s *sessions) issue(w http.ResponseWriter, r *http.Request, userID int64, now time.Time) {
 	exp := now.Add(sessionTTL).Unix()
 	payload := strconv.FormatInt(userID, 10) + "." + strconv.FormatInt(exp, 10)

@@ -13,8 +13,8 @@ import (
 	"github.com/atmin/gitmote/internal/store"
 )
 
-// ciRunsLimit caps the recent-runs page; a 101st run becomes the "more" marker
-// rather than being silently dropped.
+// ciRunsLimit caps the recent-runs page. A 101st run becomes the "more" marker.
+// It is not silently dropped.
 const ciRunsLimit = 100
 
 // ciRuns renders a repo's recent CI runs, newest first.
@@ -67,8 +67,9 @@ func (h *Handler) ciRun(w http.ResponseWriter, r *http.Request, repoName, arg st
 		h.ciRunDetail(w, r, rp, run)
 		return
 	}
-	// Sub-resources of a run: "job/{jid}/log" (the log page) and
-	// "job/{jid}/log/live" (the live-tail JSON the page polls while it runs).
+	// A run has two sub-resources. "job/{jid}/log" is the log page.
+	// "job/{jid}/log/live" is the live-tail JSON that the page polls while the
+	// job runs.
 	parts := strings.Split(rest, "/")
 	live := len(parts) == 4 && parts[3] == "live"
 	if (len(parts) != 3 && !live) || parts[0] != "job" || parts[2] != "log" {
@@ -120,7 +121,8 @@ func (h *Handler) ciJobLog(w http.ResponseWriter, r *http.Request, rp *meta.Repo
 	}
 	switch {
 	case !isTerminalStatus(job.Status):
-		// Still queued/running: the page tails the live buffer and reloads on done.
+		// The job is still queued or running. The page tails the live buffer
+		// and reloads when the job is done.
 		data.Live = true
 	case job.LogKey == "":
 		data.Note = "No log yet — the job hasn't reported."
@@ -130,10 +132,16 @@ func (h *Handler) ciJobLog(w http.ResponseWriter, r *http.Request, rp *meta.Repo
 	h.render(w, "ci_log.html", data)
 }
 
-// ciJobLogLive answers the log page's poll for a running job: the live buffer's
-// bytes from offset onward, the next offset, and whether the job has finished (so
-// the page reloads to the durable log). Falls back to done-by-status when there is
-// no live buffer (never started, swept, or the live store is disabled).
+// ciJobLogLive answers the log page's poll for a running job. The answer holds:
+//   - the bytes of the live buffer from offset onward,
+//   - the next offset,
+//   - whether the job has finished, so that the page reloads to the durable log.
+//
+// When there is no live buffer, the job status alone decides whether the job is
+// done. There is no live buffer in three cases:
+//   - the job never started
+//   - the buffer was swept
+//   - the live store is disabled
 func (h *Handler) ciJobLogLive(w http.ResponseWriter, r *http.Request, run *meta.Run, jobID int64) {
 	job, err := h.md.GetJob(r.Context(), jobID)
 	if errors.Is(err, meta.ErrNotFound) || (err == nil && job.RunID != run.ID) {
@@ -155,7 +163,7 @@ func (h *Handler) ciJobLogLive(w http.ResponseWriter, r *http.Request, run *meta
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// readLive reads the live buffer, returning ok=false when the store is disabled.
+// readLive reads the live buffer. It returns ok=false when the store is disabled.
 func (h *Handler) readLive(jobID int64, offset int) (data []byte, next int, done, ok bool) {
 	if h.live == nil {
 		return nil, offset, false, false
@@ -163,15 +171,15 @@ func (h *Handler) readLive(jobID int64, offset int) (data []byte, next int, done
 	return h.live.Read(jobID, offset)
 }
 
-// liveLogResp is the JSON the log page polls: new bytes, the next offset to poll
-// from, and whether the job has finished.
+// liveLogResp is the JSON that the log page polls. It holds the new bytes, the
+// next offset to poll from, and whether the job has finished.
 type liveLogResp struct {
 	Bytes string `json:"bytes"`
 	Next  int    `json:"next"`
 	Done  bool   `json:"done"`
 }
 
-// isTerminalStatus reports whether a run/job status is a finished state.
+// isTerminalStatus reports whether a run or job status is a finished state.
 func isTerminalStatus(s meta.RunStatus) bool {
 	switch s {
 	case meta.RunPassed, meta.RunFailed, meta.RunError, meta.RunSuperseded:
@@ -181,9 +189,10 @@ func isTerminalStatus(s meta.RunStatus) bool {
 	}
 }
 
-// loadLog fetches a job's log blob and fills data with either the ANSI-rendered
-// HTML or, over the render cap, a plain-text prefix with a note. Read failures
-// degrade to a note — the run detail already showed the status.
+// loadLog fetches a job's log blob and fills data with the ANSI-rendered HTML.
+// Over the render cap, it fills data with a plain-text prefix and a note
+// instead. A read failure gives only a note, because the run detail already
+// showed the status.
 func (h *Handler) loadLog(r *http.Request, key string, data *ciLogData) {
 	rc, err := h.store.Get(r.Context(), key)
 	if errors.Is(err, store.ErrNotFound) {
@@ -211,7 +220,7 @@ func (h *Handler) loadLog(r *http.Request, key string, data *ciLogData) {
 	data.Log = render.ANSI(raw)
 }
 
-// ciRepo resolves the repo record for a CI page. CI reads meta + the object
+// ciRepo resolves the repo record for a CI page. CI reads meta and the object
 // store, not git, so it needs no materialization.
 func (h *Handler) ciRepo(w http.ResponseWriter, r *http.Request, repoName string) (*meta.Repo, bool) {
 	rp, err := h.md.GetRepo(r.Context(), repoName)

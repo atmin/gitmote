@@ -29,7 +29,8 @@ func TestSecretsGoldenPath(t *testing.T) {
 		t.Error("set-secret response echoed the value")
 	}
 
-	// It is stored as an envelope (name listable, value not in plaintext).
+	// It is stored as an envelope. The name is listable, and the value is not in
+	// plaintext.
 	stored, _ := x.md.GetSecrets(ctx, repo.ID)
 	if len(stored) != 1 || stored[0].Name != "API_TOKEN" {
 		t.Fatalf("stored = %+v, want one API_TOKEN envelope", stored)
@@ -76,8 +77,8 @@ func TestSecretsRejectsReservedName(t *testing.T) {
 func TestSecretsRequireAdmin(t *testing.T) {
 	x := newHarness(t)
 
-	// Unauthenticated GET redirects to login; POST is 401 — the panel is gated
-	// by requireAdmin, which runs before the repo is even looked up.
+	// An unauthenticated GET redirects to login, and a POST gets 401. The panel
+	// is gated by requireAdmin, which runs before the repo is even looked up.
 	if rec := x.do(http.MethodGet, "/app/secrets", nil, nil); rec.Code != http.StatusSeeOther {
 		t.Errorf("unauth GET /app/secrets = %d, want 303 redirect", rec.Code)
 	}

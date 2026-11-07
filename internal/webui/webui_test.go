@@ -19,8 +19,8 @@ import (
 	"github.com/atmin/gitmote/internal/store"
 )
 
-// harness wires a real meta DB + auth guard behind the UI handler, seeds one
-// global admin with a token, and returns the admin's raw token for login.
+// harness wires a real meta DB and auth guard behind the UI handler. It seeds
+// one global admin. A test mints the admin's token with mintTokenFor.
 type harness struct {
 	t     *testing.T
 	h     *Handler
@@ -42,8 +42,9 @@ func newHarness(t *testing.T) *harness {
 	objs := store.NewMem()
 	mz := repo.New(md, objs, t.TempDir())
 
-	// A keyring with one all-zero key: enough to exercise the secrets panel
-	// (Enabled() true, encrypt/decrypt round-trip) without a real key.
+	// A keyring with one all-zero key is enough to exercise the secrets panel
+	// without a real key. Enabled() is true, and encryption and decryption
+	// round-trip.
 	t.Setenv("GITMOTE_CI_SECRET_KEY_V1", base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	kr, err := secrets.NewKeyringFromEnv()
 	if err != nil {
@@ -112,9 +113,9 @@ func (x *harness) login(raw string) *http.Cookie {
 	return nil
 }
 
-// TestRootDashboard: the bare root renders the viewer-scoped dashboard (not a
-// redirect, not a 404). It matches only the exact root, leaving repo paths to
-// the git handler.
+// TestRootDashboard checks that the bare root renders the dashboard, scoped to
+// the viewer. The root is not a redirect and not a 404. It matches only the
+// exact root, and leaves repo paths to the git handler.
 func TestRootDashboard(t *testing.T) {
 	x := newHarness(t)
 	rec := x.do(http.MethodGet, "/", nil, nil)
@@ -124,14 +125,17 @@ func TestRootDashboard(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Repositories") {
 		t.Errorf("dashboard body missing heading:\n%s", rec.Body)
 	}
-	// Anonymous sees a sign-in link, not admin nav.
+	// An anonymous viewer sees a sign-in link, not the admin nav.
 	if !strings.Contains(rec.Body.String(), `href="/login"`) {
 		t.Errorf("anonymous dashboard missing sign-in link:\n%s", rec.Body)
 	}
 }
 
-// TestDashboardScoping: the dashboard lists exactly the repos a viewer may see —
-// anonymous → public only; an ACL user → their repos + public; admin → all.
+// TestDashboardScoping checks that the dashboard lists exactly the repos that a
+// viewer may see:
+//   - an anonymous viewer sees only public repos,
+//   - a user with an ACL sees their repos and the public repos,
+//   - an admin sees all repos.
 func TestDashboardScoping(t *testing.T) {
 	x := newHarness(t)
 	ctx := context.Background()
@@ -179,7 +183,7 @@ func TestGoldenPath(t *testing.T) {
 	ctx := context.Background()
 	session := x.login(x.mintTokenFor(x.admin.ID))
 
-	// Create a user to own a repo and receive grants/tokens.
+	// Create a user to own a repo and to receive grants and tokens.
 	if rec := x.do(http.MethodPost, "/users", url.Values{"handle": {"alice"}}, session); rec.Code != http.StatusOK {
 		t.Fatalf("create user: %d (%s)", rec.Code, rec.Body)
 	}
@@ -187,8 +191,8 @@ func TestGoldenPath(t *testing.T) {
 		t.Fatalf("alice not created: %v", err)
 	}
 
-	// Create a repo (POST to the dashboard) — no owner field; the creating admin
-	// gets admin on it.
+	// Create a repo with a POST to the dashboard. There is no owner field. The
+	// creating admin gets admin on the repo.
 	rec := x.do(http.MethodPost, "/",
 		url.Values{"name": {"app"}, "default_branch": {"main"}}, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "created app") {
@@ -199,7 +203,7 @@ func TestGoldenPath(t *testing.T) {
 		t.Fatalf("repo not created: %v", err)
 	}
 
-	// Set default branch via the repo's settings page.
+	// Set the default branch through the repo's settings page.
 	rec = x.do(http.MethodPost, "/app/settings",
 		url.Values{"default_branch": {"trunk"}}, session)
 	if rec.Code != http.StatusOK {
@@ -209,7 +213,7 @@ func TestGoldenPath(t *testing.T) {
 		t.Errorf("default branch = %q, want trunk", got.DefaultBranch)
 	}
 
-	// Toggle visibility to public via settings.
+	// Set the visibility to public through the settings page.
 	rec = x.do(http.MethodPost, "/app/settings", url.Values{"visibility": {"public"}}, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("set visibility: %d (%s)", rec.Code, rec.Body)
@@ -218,7 +222,7 @@ func TestGoldenPath(t *testing.T) {
 		t.Errorf("visibility = %q, want public", got.Visibility)
 	}
 
-	// Mint a token for alice — the raw token is shown exactly once in the body.
+	// Mint a token for alice. The body shows the raw token exactly once.
 	rec = x.do(http.MethodPost, "/tokens", url.Values{"user": {"alice"}, "label": {"laptop"}}, session)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "gmt_") {
 		t.Fatalf("mint token: %d (%s)", rec.Code, rec.Body)
@@ -229,7 +233,7 @@ func TestGoldenPath(t *testing.T) {
 		t.Fatalf("alice tokens = %d, want 1", len(toks))
 	}
 
-	// Grant write (collaborator) to alice on her repo via the access page.
+	// Grant write (collaborator) to alice on her repo through the access page.
 	rec = x.do(http.MethodPost, "/app/access",
 		url.Values{"handle": {"alice"}, "perm": {"write"}}, session)
 	if rec.Code != http.StatusOK {
@@ -250,9 +254,10 @@ func TestGoldenPath(t *testing.T) {
 	}
 }
 
-// TestCreateRepoGrantsCreatorAdmin: creating a repo through the UI grants the
-// creating admin admin on it, so it is immediately usable (clone/push) without a
-// separate ACL step — the gap that left a freshly created repo 403-ing every push.
+// TestCreateRepoGrantsCreatorAdmin checks that creating a repo through the UI
+// grants the creating admin the admin permission on it. The repo is then usable
+// at once (clone and push) without a separate ACL step. Without the grant, every
+// push to a new repo gets 403.
 func TestCreateRepoGrantsCreatorAdmin(t *testing.T) {
 	x := newHarness(t)
 	ctx := context.Background()
@@ -275,13 +280,13 @@ func TestCreateRepoGrantsCreatorAdmin(t *testing.T) {
 func TestUnauthenticatedDenied(t *testing.T) {
 	x := newHarness(t)
 
-	// GET a management page without a session → redirect to login.
+	// A GET of a management page without a session redirects to login.
 	rec := x.do(http.MethodGet, "/users", nil, nil)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
 		t.Errorf("GET /users unauth = %d loc %q, want 303 /login", rec.Code, rec.Header().Get("Location"))
 	}
 
-	// POST without a session → 401 (not a browser navigation).
+	// A POST without a session gets 401 (it is not a browser navigation).
 	rec = x.do(http.MethodPost, "/", url.Values{"name": {"x"}}, nil)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("POST / (create) unauth = %d, want 401", rec.Code)
@@ -292,15 +297,16 @@ func TestNonAdminDenied(t *testing.T) {
 	x := newHarness(t)
 	ctx := context.Background()
 
-	// A regular user with a valid token CAN sign in (to browse their repos)...
+	// A regular user with a valid token CAN sign in, to browse their repos.
 	bob, _ := x.md.CreateUser(ctx, "bob")
 	bobToken := x.mintTokenFor(bob.ID)
 	if rec := x.do(http.MethodPost, "/login", url.Values{"token": {bobToken}}, nil); rec.Code != http.StatusSeeOther {
 		t.Errorf("non-admin login = %d, want 303 (allowed)", rec.Code)
 	}
 
-	// ...but a non-admin session cannot reach a management page (403), covering
-	// demotion mid-session too — the guard re-checks is_admin every request.
+	// But a non-admin session cannot reach a management page (403). This also
+	// covers a demotion during a session: the guard re-checks is_admin on every
+	// request.
 	forged := x.sessionFor(bob.ID)
 	if rec := x.do(http.MethodGet, "/users", nil, forged); rec.Code != http.StatusForbidden {
 		t.Errorf("non-admin session on /users = %d, want 403", rec.Code)
@@ -330,8 +336,9 @@ func TestCreateRepoRejectsReservedName(t *testing.T) {
 	}
 }
 
-// TestSettingsVisibilityAffectsAnonBrowse: flipping a repo public via the
-// settings page opens it to anonymous browsing; flipping it back closes it.
+// TestSettingsVisibilityAffectsAnonBrowse checks that making a repo public on
+// the settings page opens it to anonymous browsing. Making it private again
+// closes it.
 func TestSettingsVisibilityAffectsAnonBrowse(t *testing.T) {
 	x := newHarness(t)
 	x.seedBrowseRepo("app", "main") // private by default
@@ -357,8 +364,8 @@ func TestSettingsVisibilityAffectsAnonBrowse(t *testing.T) {
 	}
 }
 
-// sessionFor forges a valid signed session cookie for userID, used to test the
-// middleware's admin re-check independent of the login form.
+// sessionFor forges a valid signed session cookie for userID. Tests use it to
+// check the admin re-check of the middleware without the login form.
 func (x *harness) sessionFor(userID int64) *http.Cookie {
 	x.t.Helper()
 	rec := httptest.NewRecorder()

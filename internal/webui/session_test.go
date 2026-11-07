@@ -23,12 +23,12 @@ func TestSessionRoundTrip(t *testing.T) {
 		t.Fatalf("verify = %d, %v; want 42, true", uid, ok)
 	}
 
-	// Expired session is rejected.
+	// An expired session is rejected.
 	if _, ok := s.verify(r, now.Add(sessionTTL+time.Second)); ok {
 		t.Error("expired session verified")
 	}
 
-	// Tampered payload (different key) is rejected.
+	// A tampered payload (signed with a different key) is rejected.
 	other := &sessions{key: []byte("different")}
 	if _, ok := other.verify(r, now.Add(time.Minute)); ok {
 		t.Error("session verified under a different signing key")

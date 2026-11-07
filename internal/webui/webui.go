@@ -1,16 +1,24 @@
-// Package webui serves the authenticated management UI — the operations that
-// can't be done over git: create/list repos, mint/revoke tokens, and manage
-// per-repo ACLs (docs/architecture/storage.md, the "web UI" component). It also
-// serves read-only repo browsing (tree/blob/raw/commits/commit) over the
-// materialized bare repo. It is a thin server-rendered layer over the same
-// s3lite tables and object store the git path uses; it introduces no new source
-// of truth.
+// Package webui serves the web UI (the "web UI" component in
+// docs/architecture/storage.md). It is a thin server-rendered layer over the
+// same s3lite tables and object store that the git path uses. It introduces no
+// new source of truth.
 //
-// Management (create/list repos, tokens, users, ACLs, secrets) is gated on the
-// global-admin role (users.is_admin); read-only browsing is gated on repo-read
-// (public → anyone, private → an ACL — see authorizeRead). A browser logs in by
-// pasting a personal access token once (verified through the same path git auth
-// uses); the server then issues a signed, stateless session cookie.
+// The UI covers the operations that git can't do. Management is gated on the
+// global-admin role (users.is_admin). Management covers these operations:
+//   - creating repos
+//   - minting and revoking tokens
+//   - managing users
+//   - managing per-repo settings, ACLs and secrets
+//
+// The other pages are scoped to the viewer and need no admin role. The
+// dashboard lists the repos that the viewer can read. Read-only browsing
+// serves the materialized bare repo as tree, blob, raw, commits and commit
+// pages. Browsing is gated on repo-read. Anyone can read a public repo, and a
+// private repo needs an ACL (see authorizeRead).
+//
+// A browser logs in by pasting a personal access token once. The server
+// verifies the token through the same path that git auth uses. The server then
+// issues a signed, stateless session cookie.
 package webui
 
 import (
@@ -35,21 +43,22 @@ import (
 //go:embed templates/*.html
 var templatesFS embed.FS
 
-// mermaidJS is the vendored, version-pinned mermaid library, embedded and served
-// same-origin so diagram rendering needs no external fetch (see static/README.md).
+// mermaidJS is the vendored, version-pinned mermaid library. It is embedded and
+// served from the same origin, so diagram rendering needs no external fetch
+// (see static/README.md).
 //
 //go:embed static/mermaid.min.js
 var mermaidJS []byte
 
-// Authenticator verifies a raw personal access token, resolving it to its owner.
-// *auth.Guard satisfies it; the login form is the only caller.
+// Authenticator verifies a raw personal access token and resolves it to its
+// owner. *auth.Guard satisfies it. The login form is the only caller.
 type Authenticator interface {
 	VerifyToken(ctx context.Context, raw string) (*meta.User, error)
 }
 
 // SecretsAdmin manages a repo's CI secrets for the admin panel. Values are
-// write-only: only names are ever read back. *secrets.Service satisfies it; nil
-// disables the secrets UI.
+// write-only: only names are ever read back. *secrets.Service satisfies it. A
+// nil SecretsAdmin disables the secrets UI.
 type SecretsAdmin interface {
 	Enabled() bool
 	SetSecret(ctx context.Context, repoID int64, name, value string) error
@@ -60,9 +69,10 @@ type SecretsAdmin interface {
 // nameSegment matches a valid owner or repo path segment.
 var nameSegment = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
-// LiveLog reads a job's in-memory live CI log tail (the leader's ephemeral buffer
-// the browser polls while a job runs). *ci.LiveLogs satisfies it. nil disables the
-// live tail — the UI then shows only the durable log once the job completes.
+// LiveLog reads the live tail of a job's CI log from memory. The tail is the
+// leader's ephemeral buffer, which the browser polls while a job runs.
+// *ci.LiveLogs satisfies it. A nil LiveLog disables the live tail. The UI then
+// shows only the durable log, once the job completes.
 type LiveLog interface {
 	Read(jobID int64, offset int) (data []byte, next int, done, ok bool)
 }
@@ -81,18 +91,20 @@ type Handler struct {
 	now     func() time.Time
 }
 
-// New builds the UI handler. cookieKey signs session cookies and must be
-// non-empty; the auth verifier backs the login form; mz materializes repos for
-// the read-only browse pages; objs reads CI log blobs for the run views; live
-// (may be nil) backs the live log tail of a running job; secrets (may be nil)
-// backs the CI secrets panel.
+// New builds the UI handler. The arguments do the following:
+//   - cookieKey signs session cookies and must be non-empty.
+//   - The auth verifier (a) backs the login form.
+//   - mz materializes repos for the read-only browse pages.
+//   - objs reads CI log blobs for the run views.
+//   - live backs the live log tail of a running job. It may be nil.
+//   - secrets backs the CI secrets panel. It may be nil.
 func New(md *meta.Metadata, mz *repo.Materializer, objs store.Store, live LiveLog, a Authenticator, secrets SecretsAdmin, cookieKey []byte, logger *slog.Logger) (*Handler, error) {
 	if len(cookieKey) == 0 {
 		return nil, errors.New("webui: empty cookie key")
 	}
 	tmpl, err := template.New("webui").Funcs(template.FuncMap{
-		// parentPath is the enclosing directory of a browse path, "" at the root
-		// — used only to build the ".." link in the tree view.
+		// parentPath is the enclosing directory of a browse path, or "" at the
+		// root. Only the ".." link in the tree view uses it.
 		"parentPath": func(p string) string {
 			p = strings.Trim(p, "/")
 			if i := strings.LastIndex(p, "/"); i >= 0 {
@@ -110,7 +122,7 @@ func New(md *meta.Metadata, mz *repo.Materializer, objs store.Store, live LiveLo
 			}
 			return s
 		},
-		// statusColor maps a CI run/job status to a CSS color for its badge.
+		// statusColor maps a CI run or job status to a CSS color for its badge.
 		"statusColor": func(s meta.RunStatus) string {
 			switch s {
 			case meta.RunPassed:
@@ -144,29 +156,32 @@ func New(md *meta.Metadata, mz *repo.Materializer, objs store.Store, live LiveLo
 	}, nil
 }
 
-// Register mounts the UI routes on mux. The dashboard, login, and read-only
-// browsing are reachable unauthenticated (viewer-scoped); the global-management
-// and per-repo-management routes require a global-admin session.
+// Register mounts the UI routes on mux. The dashboard, login and read-only
+// browsing are reachable without authentication, and are scoped to the viewer.
+// The global-management and per-repo-management routes require a global-admin
+// session.
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /login", h.getLogin)
 	mux.HandleFunc("POST /login", h.postLogin)
 	mux.HandleFunc("POST /logout", h.postLogout)
 
-	// The bare root is the dashboard — a viewer-scoped repo list, not a redirect.
-	// GET /{$} matches only the exact root, so it never shadows a repo path;
-	// POST /{$} is the admin-only repo-create. Both exist only when the UI does.
+	// The bare root is the dashboard: a repo list scoped to the viewer, not a
+	// redirect. GET /{$} matches only the exact root, so it never shadows a repo
+	// path. POST /{$} is the admin-only repo-create. Both routes exist only when
+	// the UI exists.
 	mux.HandleFunc("GET /{$}", h.getDashboard)
 	mux.HandleFunc("POST /{$}", h.requireAdmin(h.postRepo))
 
-	// Global management — top-level, admin-only (no /ui/ prefix).
+	// Global management is top-level and admin-only, with no /ui/ prefix.
 	mux.HandleFunc("GET /users", h.requireAdmin(h.getUsers))
 	mux.HandleFunc("POST /users", h.requireAdmin(h.postUser))
 	mux.HandleFunc("GET /tokens", h.requireAdmin(h.getTokens))
 	mux.HandleFunc("POST /tokens", h.requireAdmin(h.postToken))
 	mux.HandleFunc("POST /tokens/revoke", h.requireAdmin(h.postRevokeToken))
 
-	// Per-repo management — segment-2 verbs, admin-only. Enumerated (never a broad
-	// /{repo}/{rest...}), so git's own suffixes still fall through to the catch-all.
+	// Per-repo management uses verbs in the second path segment and is
+	// admin-only. The routes are enumerated, never a broad /{repo}/{rest...}, so
+	// git's own suffixes still fall through to the catch-all.
 	mux.HandleFunc("GET /{repo}/settings", h.requireAdmin(h.getSettings))
 	mux.HandleFunc("POST /{repo}/settings", h.requireAdmin(h.postSettings))
 	mux.HandleFunc("GET /{repo}/access", h.requireAdmin(h.getAccess))
@@ -176,18 +191,22 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /{repo}/secrets", h.requireAdmin(h.postSecret))
 	mux.HandleFunc("POST /{repo}/secrets/delete", h.requireAdmin(h.postDeleteSecret))
 
-	// Read-only browsing. Gated on repo-read (public → anyone, private → an ACL),
-	// not on admin — this is what makes spectators and public repos usable; the
-	// per-request check lives in each handler via authorizeRead. The repo is a
-	// single path segment and the ref lives in the path (greedily resolved), so
-	// each content verb is its own enumerated route. Only these fixed verbs are
-	// registered — never a broad /{repo}/{rest...} — so git's own /{repo}/info/refs,
-	// /{repo}/git-upload-pack, … fall through to the smart-HTTP catch-all at "/"
-	// (docs/architecture/urls.md → Implementation seams).
-	// Each verb registers a bare form and a "/{rest...}" form: a "/{rest...}"
+	// Read-only browsing is gated on repo-read, not on admin. Anyone can read a
+	// public repo, and a private repo needs an ACL. This makes spectators and
+	// public repos usable. Each handler does the per-request check through
+	// authorizeRead.
+	//
+	// The repo is a single path segment. The ref lives in the path and is
+	// resolved greedily, so each content verb has its own enumerated route.
+	// Only these fixed verbs are registered, never a broad /{repo}/{rest...}.
+	// Git's own paths, such as /{repo}/info/refs and /{repo}/git-upload-pack,
+	// therefore fall through to the smart-HTTP catch-all at "/"
+	// (docs/architecture/urls.md, "Implementation seams").
+	//
+	// Each verb registers a bare form and a "/{rest...}" form. A "/{rest...}"
 	// pattern is a subtree, so ServeMux would otherwise 307-redirect the bare
 	// "/{repo}/runs" to "/{repo}/runs/". The bare form (empty rest) selects the
-	// default branch, or the list for runs.
+	// default branch, or the run list for runs.
 	mux.HandleFunc("GET /{repo}/tree", h.browseTreeRoute)
 	mux.HandleFunc("GET /{repo}/tree/{rest...}", h.browseTreeRoute)
 	mux.HandleFunc("GET /{repo}/blob", h.browseBlobRoute)
@@ -201,18 +220,20 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{repo}/refs", h.browseRefsRoute)
 	mux.HandleFunc("GET /{repo}/runs", h.ciRunsRoute)
 	mux.HandleFunc("GET /{repo}/runs/{rest...}", h.ciRunsRoute)
-	// The bare repo landing: README + tree at the default branch. One segment, so
-	// distinct from git's GET /{repo}/info/refs.
+	// The bare repo landing shows the README and the tree at the default branch.
+	// It has one segment, so it is distinct from git's GET /{repo}/info/refs.
 	mux.HandleFunc("GET /{repo}", h.browseLanding)
 
-	// The vendored mermaid library for diagram rendering, served same-origin.
-	// Public and non-sensitive (a pinned copy of an open-source library), so it
-	// needs no admin session; hard-cached, since the file itself is the version pin.
+	// The vendored mermaid library for diagram rendering is served from the same
+	// origin. It is public and non-sensitive (a pinned copy of an open-source
+	// library), so it needs no admin session. It is hard-cached, because the
+	// file itself is the version pin.
 	mux.HandleFunc("GET /static/mermaid.min.js", h.serveMermaidJS)
 }
 
-// serveMermaidJS serves the embedded mermaid library for the browse UI's diagram
-// rendering. Trusted, fixed asset — immutable-cached so a browser fetches it once.
+// serveMermaidJS serves the embedded mermaid library for diagram rendering in
+// the browse UI. The library is a trusted, fixed asset. The response is cached
+// as immutable, so a browser fetches it once.
 func (h *Handler) serveMermaidJS(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -220,7 +241,8 @@ func (h *Handler) serveMermaidJS(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(mermaidJS)
 }
 
-// ctxUser carries the authenticated admin from the middleware to the handler.
+// ctxKey is the type of the context key (userKey) that carries the authenticated
+// admin from the middleware to the handler.
 type ctxKey int
 
 const userKey ctxKey = 0
@@ -230,9 +252,10 @@ func userFrom(ctx context.Context) *meta.User {
 	return u
 }
 
-// requireAdmin resolves the session cookie to a current, still-admin user on
-// every request. Missing/invalid session → redirect to login (GET) or 401;
-// authenticated but not an admin → 403.
+// requireAdmin resolves the session cookie to a current user on every request.
+// It then checks that the user is still an admin. A missing or invalid session
+// gives a redirect to login for GET, and 401 otherwise. An authenticated user
+// who is not an admin gets 403.
 func (h *Handler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid, ok := h.sess.verify(r, h.now())
@@ -265,7 +288,7 @@ func (h *Handler) denyUnauth(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
-// --- login / logout ---
+// --- login and logout ---
 
 func (h *Handler) getLogin(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "login.html", loginData{})
@@ -279,9 +302,9 @@ func (h *Handler) postLogin(w http.ResponseWriter, r *http.Request) {
 		h.render(w, "login.html", loginData{Err: "invalid token"})
 		return
 	}
-	// Any valid user may sign in — a spectator/collaborator needs a session to
-	// browse the private repos they have access to on the dashboard. Management
-	// stays admin-only, enforced per-route by requireAdmin (not here).
+	// Any valid user may sign in. A spectator or collaborator needs a session to
+	// browse, on the dashboard, the private repos that they have access to.
+	// Management stays admin-only. requireAdmin enforces it per route, not here.
 	h.sess.issue(w, r, user.ID, h.now())
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -291,12 +314,12 @@ func (h *Handler) postLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-// --- dashboard / repos ---
+// --- dashboard and repos ---
 
-// getDashboard renders the viewer-scoped repo list at "/": public repos to
-// anyone, private repos to a viewer holding an ACL, all repos to an admin. It is
-// the unauthenticated landing — a signed-out visitor sees public repos and a
-// sign-in link, never a 403 wall.
+// getDashboard renders the repo list at "/", scoped to the viewer. Anyone sees
+// the public repos. A viewer also sees each private repo on which they hold an
+// ACL. An admin sees all repos. It is the unauthenticated landing: a signed-out
+// visitor sees public repos and a sign-in link, never a 403 wall.
 func (h *Handler) getDashboard(w http.ResponseWriter, r *http.Request) {
 	h.renderDashboard(w, r, "", "")
 }
@@ -330,17 +353,19 @@ func (h *Handler) postRepo(w http.ResponseWriter, r *http.Request) {
 		h.renderDashboard(w, r, "", "name must be alphanumeric (._- allowed, not leading)")
 		return
 	}
-	// Flat namespace: the repo is a single path segment. CreateRepo enforces the
-	// reserved-name and structural rules; its error is surfaced below.
+	// The namespace is flat: the repo is a single path segment. CreateRepo
+	// enforces the reserved-name rules and the structural rules. The code below
+	// shows its error to the user.
 	repo, err := h.md.CreateRepo(r.Context(), name, branch)
 	if err != nil {
 		h.renderDashboard(w, r, "", "create repo: "+err.Error())
 		return
 	}
-	// Grant the creating admin admin on the new repo so it is immediately usable
-	// (clone/push) without a separate ACL step. There is no separate "owner" — on
-	// a personal instance the admin implicitly owns repos and ACLs grant everyone
-	// else (docs/architecture/urls.md). requireAdmin guarantees a user in context.
+	// Grant the creating admin the admin permission on the new repo. The repo is
+	// then usable at once (clone and push) without a separate ACL step. There is
+	// no separate "owner". On a personal instance, the admin implicitly owns the
+	// repos, and ACLs grant access to everyone else (docs/architecture/urls.md).
+	// requireAdmin guarantees a user in the context.
 	creator := userFrom(r.Context())
 	if err := h.md.SetACL(r.Context(), repo.ID, creator.ID, meta.PermAdmin); err != nil {
 		h.serverError(w, "grant creator acl", err)
@@ -371,8 +396,9 @@ func (h *Handler) renderSettings(w http.ResponseWriter, r *http.Request, name, f
 	})
 }
 
-// postSettings applies whichever settings the form carries: a non-empty
-// default_branch and/or a visibility value. A form with neither is a no-op.
+// postSettings applies one setting per form. A form with a visibility value
+// sets only the visibility. Otherwise, the form must carry a non-empty
+// default_branch, or the handler shows an error.
 func (h *Handler) postSettings(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("repo")
 	rp, err := h.md.GetRepo(r.Context(), name)
@@ -452,8 +478,9 @@ func (h *Handler) getTokens(w http.ResponseWriter, r *http.Request) {
 	h.renderTokens(w, r, "", "", "")
 }
 
-// renderTokens lists tokens for the selected user (query/form "user"). newRaw,
-// when set, is the just-minted token shown exactly once.
+// renderTokens lists the tokens of the selected user (the query or form value
+// "user"). newRaw, when set, is the newly minted token. The page shows it
+// exactly once.
 func (h *Handler) renderTokens(w http.ResponseWriter, r *http.Request, selected, newRaw, errMsg string) {
 	if selected == "" {
 		selected = strings.TrimSpace(r.FormValue("user"))
@@ -647,7 +674,7 @@ func (h *Handler) renderSecrets(w http.ResponseWriter, r *http.Request, name, fl
 func (h *Handler) postSecret(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("repo")
 	secretName := strings.TrimSpace(r.FormValue("name"))
-	value := r.FormValue("value") // not trimmed: a secret may have meaningful edges
+	value := r.FormValue("value") // not trimmed: edge spaces may matter
 	if h.secrets == nil || !h.secrets.Enabled() {
 		h.renderSecrets(w, r, name, "", "secrets are disabled: set GITMOTE_CI_SECRET_KEY_V1")
 		return
@@ -666,7 +693,8 @@ func (h *Handler) postSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.secrets.SetSecret(r.Context(), rp.ID, secretName, value); err != nil {
-		// The error names the (public) secret name at worst, never the value.
+		// At worst, the error contains the secret name, which is public. It
+		// never contains the value.
 		h.renderSecrets(w, r, name, "", "set secret: "+err.Error())
 		return
 	}
@@ -694,9 +722,10 @@ func (h *Handler) postDeleteSecret(w http.ResponseWriter, r *http.Request) {
 
 // --- rendering ---
 
-// viewer resolves the optional signed-in user for a request: the admin injected
-// by requireAdmin if present, else the session cookie's user, else nil
-// (anonymous). Best-effort — a missing/expired/invalid cookie is anonymous.
+// viewer resolves the optional signed-in user for a request. It returns the
+// admin that requireAdmin injected, if present. Otherwise it returns the user of
+// the session cookie, or else nil for an anonymous viewer. It is best-effort: a
+// missing, expired or invalid cookie gives an anonymous viewer.
 func (h *Handler) viewer(r *http.Request) *meta.User {
 	if u := userFrom(r.Context()); u != nil {
 		return u
@@ -721,8 +750,9 @@ func (h *Handler) base(r *http.Request, flash, errMsg string) base {
 	return h.baseFor(h.viewer(r), flash, errMsg)
 }
 
-// baseFor builds the shared page header from an already-resolved viewer, so a
-// handler that looked the viewer up (the dashboard) needn't do it twice.
+// baseFor builds the shared page header from a viewer that is already resolved.
+// A handler that has looked up the viewer (the dashboard) then does not need to
+// look it up twice.
 func (h *Handler) baseFor(u *meta.User, flash, errMsg string) base {
 	b := base{Flash: flash, Err: errMsg}
 	if u != nil {

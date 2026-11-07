@@ -14,12 +14,13 @@ import (
 	"github.com/atmin/gitmote/internal/repo"
 )
 
-// logLimit caps how many commits a single history page shows; a 101st commit,
-// if present, becomes the "more" marker rather than being silently dropped.
+// logLimit caps how many commits a single history page shows. A 101st commit,
+// if present, becomes the "more" marker. It is not silently dropped.
 const logLimit = 100
 
-// browseLanding serves the bare /{repo}: the README + tree at the default
-// branch (an empty ref selects it, an empty path is the repo root).
+// browseLanding serves the bare /{repo}: the README and the tree at the
+// default branch. An empty ref selects the default branch, and an empty path is
+// the repo root.
 func (h *Handler) browseLanding(w http.ResponseWriter, r *http.Request) {
 	repoName := r.PathValue("repo")
 	if !h.authorizeRead(w, r, repoName) {
@@ -32,9 +33,9 @@ func (h *Handler) browseLanding(w http.ResponseWriter, r *http.Request) {
 	h.renderTree(w, r, c, "")
 }
 
-// browseTreeRoute serves /{repo}/tree/<ref>/<path>: the unified content verb. It
-// renders a directory listing for a tree and the file view for a blob, chosen by
-// the entry's type.
+// browseTreeRoute serves /{repo}/tree/<ref>/<path>: the unified content verb.
+// The entry's type decides the view. A tree gets a directory listing, and a
+// blob gets the file view.
 func (h *Handler) browseTreeRoute(w http.ResponseWriter, r *http.Request) {
 	repoName := r.PathValue("repo")
 	if !h.authorizeRead(w, r, repoName) {
@@ -61,8 +62,9 @@ func (h *Handler) browseTreeRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 // browseBlobRoute serves /{repo}/blob/<ref>/<path>: an explicit file view. A
-// path that is actually a directory 301s to its tree URL (canonicalize, don't
-// 404), so blob self-heals and tree never guesses wrong.
+// path that is actually a directory gets a 301 to its tree URL. The route
+// canonicalizes the URL instead of returning 404. So blob corrects itself, and
+// tree never guesses wrong.
 func (h *Handler) browseBlobRoute(w http.ResponseWriter, r *http.Request) {
 	repoName := r.PathValue("repo")
 	if !h.authorizeRead(w, r, repoName) {
@@ -88,8 +90,8 @@ func (h *Handler) browseBlobRoute(w http.ResponseWriter, r *http.Request) {
 	h.renderBlob(w, r, c, p)
 }
 
-// browseRawRoute serves /{repo}/raw/<ref>/<path>: the file's bytes. It is
-// file-only — a directory 404s (BlobSize fails on a non-blob).
+// browseRawRoute serves /{repo}/raw/<ref>/<path>: the file's bytes. A missing
+// path gets 404.
 func (h *Handler) browseRawRoute(w http.ResponseWriter, r *http.Request) {
 	repoName := r.PathValue("repo")
 	if !h.authorizeRead(w, r, repoName) {
@@ -116,8 +118,9 @@ func (h *Handler) browseCommitsRoute(w http.ResponseWriter, r *http.Request) {
 	h.renderCommits(w, r, c, p)
 }
 
-// browseCommitRoute serves /{repo}/commit/<sha>: one commit's metadata and diff.
-// The URL carries no ref, so the header context resolves the default branch.
+// browseCommitRoute serves /{repo}/commit/<sha>: the metadata and the diff of
+// one commit. The URL carries no ref, so the header context resolves the
+// default branch.
 func (h *Handler) browseCommitRoute(w http.ResponseWriter, r *http.Request) {
 	repoName := r.PathValue("repo")
 	if !h.authorizeRead(w, r, repoName) {
@@ -130,11 +133,11 @@ func (h *Handler) browseCommitRoute(w http.ResponseWriter, r *http.Request) {
 	h.renderCommit(w, r, c, r.PathValue("sha"))
 }
 
-// browseRefsRoute serves /{repo}/refs: the repo's branches and tags. It resolves
-// no ref of its own — deliberately, since it is the redirect target when the
-// default branch is missing, so it must render even then (and it reads refs from
-// meta, needing no materialization). Calling the redirecting resolve here would
-// loop that redirect back onto itself.
+// browseRefsRoute serves /{repo}/refs: the repo's branches and tags. It
+// deliberately resolves no ref of its own. It is the redirect target when the
+// default branch is missing, so it must render even then. It reads refs from
+// meta, so it needs no materialization. A call to the redirecting resolve here
+// would loop that redirect back onto itself.
 func (h *Handler) browseRefsRoute(w http.ResponseWriter, r *http.Request) {
 	repoName := r.PathValue("repo")
 	if !h.authorizeRead(w, r, repoName) {
@@ -156,11 +159,11 @@ func (h *Handler) browseRefsRoute(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// browseCompareRoute serves /{repo}/compare/{base}...{head}: the commits head
-// adds over base and their combined diff. The two refs live in one path segment
-// split on the literal "..." — git forbids ".." in a ref name, so the separator
-// is unambiguous even when a ref itself contains slashes. Each side resolves as
-// a branch, tag, or raw SHA.
+// browseCompareRoute serves /{repo}/compare/{base}...{head}: the commits that
+// head adds over base, and their combined diff. The two refs live in one path
+// segment, split on the literal "...". Git forbids ".." in a ref name. So the
+// separator is unambiguous, even when a ref itself contains slashes. Each side
+// resolves as a branch, a tag or a raw SHA.
 func (h *Handler) browseCompareRoute(w http.ResponseWriter, r *http.Request) {
 	repoName := r.PathValue("repo")
 	if !h.authorizeRead(w, r, repoName) {
@@ -218,11 +221,11 @@ func (h *Handler) browseCompareRoute(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// resolveSide resolves one side of a compare — a whole branch or tag name, or a
-// raw SHA — to a commit SHA against the materialized dir. A named ref is
-// qualified so a branch beats a same-named tag; anything else is handed to git
-// as a rev. It writes a 404 and returns ok=false when the side resolves to
-// nothing.
+// resolveSide resolves one side of a compare to a commit SHA against the
+// materialized dir. A side is a whole branch name, a whole tag name or a raw
+// SHA. A named ref is qualified, so a branch beats a tag of the same name. Git
+// gets anything else as a rev. It writes a 404 and returns ok=false when the
+// side resolves to nothing.
 func (h *Handler) resolveSide(w http.ResponseWriter, r *http.Request, dir string, refs []meta.Ref, side string) (string, bool) {
 	rev := side
 	if name, tail, branch, ok := greedyRef(refs, side, ""); ok && name == side && tail == "" {
@@ -241,7 +244,7 @@ func (h *Handler) resolveSide(w http.ResponseWriter, r *http.Request, dir string
 }
 
 // ciRunsRoute serves /{repo}/runs (the list) and /{repo}/runs/<id>[/job/…] (one
-// run or a job log), sharing the repo-read gate with the other browse verbs.
+// run or a job log). It shares the repo-read gate with the other browse verbs.
 func (h *Handler) ciRunsRoute(w http.ResponseWriter, r *http.Request) {
 	repoName := r.PathValue("repo")
 	if !h.authorizeRead(w, r, repoName) {
@@ -254,8 +257,8 @@ func (h *Handler) ciRunsRoute(w http.ResponseWriter, r *http.Request) {
 	h.ciRuns(w, r, repoName)
 }
 
-// treeURL builds the canonical tree URL for a ref+path (ref and path may both
-// contain slashes; both live in the path, never a query).
+// treeURL builds the canonical tree URL for a ref and a path. The ref and the
+// path may both contain slashes. Both live in the URL path, never in a query.
 func treeURL(repoName, ref, p string) string {
 	u := "/" + repoName + "/tree/" + ref
 	if p != "" {
@@ -264,14 +267,18 @@ func treeURL(repoName, ref, p string) string {
 	return u
 }
 
-// authorizeRead gates a browse request on repo-read: a public repo is readable
-// by anyone, a private repo needs a signed-in user with an ACL (CanRead). It
-// writes the response and returns false on refusal — 404 for an unknown repo, a
-// login redirect for an anonymous viewer of a private repo, 403 for a signed-in
-// viewer without access. Management routes stay admin-gated (requireAdmin).
+// authorizeRead gates a browse request on repo-read. Anyone can read a public
+// repo. A private repo needs a signed-in user with an ACL (CanRead). On refusal,
+// it writes the response and returns false. The response is one of these:
+//   - 404 for an unknown repo, when the viewer is signed in,
+//   - a login redirect for an anonymous viewer of an unknown or private repo,
+//   - 403 for a signed-in viewer without access.
+//
+// Management routes stay admin-gated (requireAdmin).
 func (h *Handler) authorizeRead(w http.ResponseWriter, r *http.Request, repoName string) bool {
-	// The viewer is optional here: a valid session resolves to its user, else the
-	// request is anonymous (uid 0), which CanRead allows only for a public repo.
+	// The viewer is optional here. A valid session resolves to its user.
+	// Otherwise the request is anonymous (uid 0), and CanRead allows an
+	// anonymous request only for a public repo.
 	var uid int64
 	if id, ok := h.sess.verify(r, h.now()); ok {
 		if u, err := h.md.GetUserByID(r.Context(), id); err == nil {
@@ -280,8 +287,9 @@ func (h *Handler) authorizeRead(w http.ResponseWriter, r *http.Request, repoName
 	}
 	rp, err := h.md.GetRepo(r.Context(), repoName)
 	if errors.Is(err, meta.ErrNotFound) {
-		// Don't reveal a private forge's inventory to anonymous callers: a missing
-		// repo redirects to login rather than 404ing (a signed-in user gets the 404).
+		// Don't reveal a private forge's inventory to anonymous callers. For
+		// them, a missing repo redirects to login instead of returning 404. A
+		// signed-in user gets the 404.
 		if uid == 0 {
 			h.denyUnauth(w, r)
 			return false
@@ -302,16 +310,18 @@ func (h *Handler) authorizeRead(w http.ResponseWriter, r *http.Request, repoName
 		return true
 	}
 	if uid == 0 {
-		h.denyUnauth(w, r) // anonymous → login
+		h.denyUnauth(w, r) // an anonymous viewer goes to login
 		return false
 	}
 	http.Error(w, "forbidden", http.StatusForbidden)
 	return false
 }
 
-// browseCtx is the resolved starting point every browse handler needs: the repo
-// record, its materialized on-disk dir, the selected ref, and the commit SHA
-// that ref points at.
+// browseCtx is the resolved starting point that every browse handler needs:
+//   - the repo record,
+//   - its materialized dir on disk,
+//   - the selected ref,
+//   - the commit SHA that the ref points at.
 type browseCtx struct {
 	repo *meta.Repo
 	dir  string
@@ -319,14 +329,21 @@ type browseCtx struct {
 	sha  string
 }
 
-// resolve turns a repo name and an in-path "rest" (ref + path, both possibly
-// slashed) into a browseCtx and the remaining path. The ref is resolved greedily
-// against the repo's refs — the longest leading prefix of rest that names a real
-// branch or tag (branch beats a tag on a tie); an empty rest selects the default
-// branch. It writes a 404 for an unknown repo, a rest that names no ref, or a
-// ref that fails to resolve (and a 500 for anything else), returning ok=false —
-// except a missing *default* branch (empty rest), which redirects to the repo's
-// ref list rather than dead-ending on a 404.
+// resolve turns a repo name and an in-path "rest" into a browseCtx and the
+// remaining path. The rest holds the ref and the path, and both may contain
+// slashes. The ref is resolved greedily against the repo's refs. It is the
+// longest leading prefix of rest that names a real branch or tag. On a tie, a
+// branch beats a tag. An empty rest selects the default branch.
+//
+// On failure, resolve writes the response and returns ok=false. It writes a
+// 404 in three cases:
+//   - an unknown repo
+//   - a rest that names no ref
+//   - a ref that fails to resolve
+//
+// It writes a 500 for anything else. The exception is a missing *default*
+// branch (empty rest). That case redirects to the repo's ref list instead of
+// ending on a 404.
 func (h *Handler) resolve(w http.ResponseWriter, r *http.Request, repoName, rest string) (browseCtx, string, bool) {
 	ctx := r.Context()
 	rp, err := h.md.GetRepo(ctx, repoName)
@@ -345,7 +362,7 @@ func (h *Handler) resolve(w http.ResponseWriter, r *http.Request, repoName, rest
 	}
 	ref, treePath, branch, ok := greedyRef(refs, rest, rp.DefaultBranch)
 	if !ok {
-		http.NotFound(w, r) // rest names no ref
+		http.NotFound(w, r) // the rest names no ref
 		return browseCtx{}, "", false
 	}
 	dir, err := h.mz.Materialize(ctx, repoName)
@@ -353,15 +370,16 @@ func (h *Handler) resolve(w http.ResponseWriter, r *http.Request, repoName, rest
 		h.serverError(w, "materialize repo", err)
 		return browseCtx{}, "", false
 	}
-	// Resolve the fully-qualified ref so a branch beats a same-named tag (git's
-	// bare-name precedence favors tags) and an annotated tag peels to its commit.
+	// Resolve the fully-qualified ref, so a branch beats a tag of the same name.
+	// (Git's precedence for a bare name favors tags.) An annotated tag then
+	// peels to its commit.
 	sha, err := repo.ResolveRef(ctx, dir, qualify(ref, branch))
 	if errors.Is(err, repo.ErrNotFound) {
 		if strings.Trim(rest, "/") == "" {
-			// Empty rest selected the configured default branch, but it doesn't
-			// exist (e.g. default "main" while the repo pushed "master") — there is
-			// no landing content, so send the visitor to the ref list to pick a real
-			// branch instead of a dead-end 404.
+			// The empty rest selected the configured default branch, but that
+			// branch doesn't exist. For example, the default is "main" while the
+			// repo pushed "master". There is no landing content. So send the
+			// visitor to the ref list to pick a real branch, instead of a 404.
 			http.Redirect(w, r, "/"+repoName+"/refs", http.StatusFound)
 			return browseCtx{}, "", false
 		}
@@ -375,12 +393,13 @@ func (h *Handler) resolve(w http.ResponseWriter, r *http.Request, repoName, rest
 	return browseCtx{repo: rp, dir: dir, ref: ref, sha: sha}, treePath, true
 }
 
-// greedyRef splits rest into a ref name and the remaining path: the longest
-// leading prefix of rest that names a real branch or tag. A branch beats a tag
-// on the same prefix; a longer prefix beats a shorter one regardless of type. An
-// empty rest selects defaultBranch with an empty path. branch reports whether
-// the chosen ref is a branch (to qualify it for resolution); ok is false when no
-// prefix names a ref.
+// greedyRef splits rest into a ref name and the remaining path. The ref name is
+// the longest leading prefix of rest that names a real branch or tag. A branch
+// beats a tag on the same prefix. A longer prefix beats a shorter one,
+// regardless of type. An empty rest selects defaultBranch with an empty path.
+//
+// branch reports whether the chosen ref is a branch, to qualify it for
+// resolution. ok is false when no prefix names a ref.
 func greedyRef(refs []meta.Ref, rest, defaultBranch string) (name, treePath string, branch, ok bool) {
 	branches := make(map[string]bool)
 	tags := make(map[string]bool)
@@ -409,8 +428,8 @@ func greedyRef(refs []meta.Ref, rest, defaultBranch string) (name, treePath stri
 	return "", "", false, false
 }
 
-// qualify makes a ref name unambiguous for resolution: refs/heads/<name> for a
-// branch, refs/tags/<name> for a tag.
+// qualify makes a ref name unambiguous for resolution. It gives
+// refs/heads/<name> for a branch, and refs/tags/<name> for a tag.
 func qualify(name string, branch bool) string {
 	if branch {
 		return "refs/heads/" + name
@@ -418,8 +437,8 @@ func qualify(name string, branch bool) string {
 	return "refs/tags/" + name
 }
 
-// base fills the shared browse header (nav identity, repo, selected ref, and the
-// ref switcher's options) for c.
+// browseHeader fills the shared browse header for c. The header holds the nav
+// identity, the repo, the selected ref and the ref switcher's options.
 func (h *Handler) browseHeader(r *http.Request, c browseCtx) browseBase {
 	return browseBase{
 		base: h.base(r, "", ""),
@@ -430,7 +449,7 @@ func (h *Handler) browseHeader(r *http.Request, c browseCtx) browseBase {
 }
 
 // refChoices lists the repo's branches and tags (short names) for the switcher.
-// A ref-listing failure is non-fatal: the page still renders, just without a
+// A failure to list the refs is not fatal: the page still renders, without a
 // switcher.
 func (h *Handler) refChoices(r *http.Request, repoID int64) []refChoice {
 	refs, err := h.md.ListRefs(r.Context(), repoID)
@@ -491,9 +510,10 @@ func (h *Handler) renderBlob(w http.ResponseWriter, r *http.Request, c browseCtx
 		Binary:     binary,
 		Size:       size,
 	}
-	// Text under the size cap is rendered: markdown for a .md blob, otherwise
-	// syntax-highlighted source. Anything else (binary, oversize, or a
-	// highlight error) falls back to the plain <pre> on .Text.
+	// Text under the size cap is rendered. A .md blob renders as markdown, and
+	// any other text renders as syntax-highlighted source. An oversize blob or a
+	// highlight error falls back to the plain <pre> on .Text. A binary blob
+	// gets no content, and the template shows a download link instead.
 	switch {
 	case binary:
 	case size > render.MaxSize:
@@ -512,8 +532,8 @@ func (h *Handler) renderBlob(w http.ResponseWriter, r *http.Request, c browseCtx
 }
 
 func (h *Handler) renderRaw(w http.ResponseWriter, r *http.Request, c browseCtx, blobPath string) {
-	// Confirm the blob exists (404 before any bytes are written), then stream
-	// it — never buffering the whole object.
+	// Confirm that the blob exists, so a 404 comes before any bytes are
+	// written. Then stream the blob, and never buffer the whole object.
 	if _, err := repo.BlobSize(r.Context(), c.dir, c.sha, blobPath); errors.Is(err, repo.ErrNotFound) {
 		http.NotFound(w, r)
 		return
@@ -569,8 +589,8 @@ func (h *Handler) renderCommit(w http.ResponseWriter, r *http.Request, c browseC
 		h.serverError(w, "show commit", err)
 		return
 	}
-	// Best-effort CI badge: the latest run for this exact commit, if any. A
-	// lookup failure is non-fatal — the commit still renders, just without a badge.
+	// The CI badge is best-effort: the latest run for this exact commit, if any.
+	// A lookup failure is not fatal. The commit still renders, without a badge.
 	var run *meta.Run
 	if got, err := h.md.LatestRunForSHA(r.Context(), c.repo.ID, commit.SHA); err == nil {
 		run = got
@@ -585,10 +605,10 @@ func (h *Handler) renderCommit(w http.ResponseWriter, r *http.Request, c browseC
 	})
 }
 
-// readme renders a directory's README.md (if any) to HTML for display below
-// the tree listing, with its relative links resolved against dir (the listed
-// directory). It is best-effort: a missing, binary, oversize, or unreadable
-// README simply yields no rendered block.
+// readme renders a directory's README.md (if any) to HTML, for display below
+// the tree listing. Its relative links resolve against dir (the listed
+// directory). It is best-effort: a missing, binary, oversize or unreadable
+// README gives no rendered block.
 func (h *Handler) readme(r *http.Request, c browseCtx, dir string, entries []repo.TreeEntry) template.HTML {
 	for _, e := range entries {
 		if e.Type != "blob" || !render.IsReadme(e.Name) {
@@ -603,9 +623,10 @@ func (h *Handler) readme(r *http.Request, c browseCtx, dir string, entries []rep
 	return ""
 }
 
-// linkContext builds the markdown link rewriter's context for a file whose
-// relative links resolve against dir: the repo, the selected ref, and a Stat
-// callback backed by the materialized tree (so a nav link maps to blob vs tree).
+// linkContext builds the context of the markdown link rewriter for a file whose
+// relative links resolve against dir. The context holds the repo, the selected
+// ref and a Stat callback. The materialized tree backs Stat, so a nav link maps
+// to blob or to tree.
 func (h *Handler) linkContext(r *http.Request, c browseCtx, dir string) *render.LinkContext {
 	return &render.LinkContext{
 		Repo: c.repo.Name,
@@ -621,9 +642,9 @@ func (h *Handler) linkContext(r *http.Request, c browseCtx, dir string) *render.
 	}
 }
 
-// crumbs turns a path into its breadcrumb trail, each segment linking to the
-// tree at that depth. The empty path yields no crumbs (the repo root link in
-// the template stands alone).
+// crumbs turns a path into its breadcrumb trail. Each segment links to the
+// tree at that depth. The empty path gives no crumbs, and the repo root link in
+// the template stands alone.
 func crumbs(p string) []crumb {
 	p = strings.Trim(p, "/")
 	if p == "" {

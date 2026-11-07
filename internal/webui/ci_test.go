@@ -31,8 +31,9 @@ func (f fakeLive) Read(_ int64, offset int) ([]byte, int, bool, bool) {
 	return f.data[offset:], len(f.data), f.done, true
 }
 
-// seedQueuedJob creates an ACL-granted repo, a run, and a queued (non-terminal)
-// job with no log yet — the running-job state the live tail serves.
+// seedQueuedJob creates a repo with an ACL grant, a run, and a queued
+// (non-terminal) job with no log yet. This is the state of a running job, which
+// the live tail serves.
 func (x *harness) seedQueuedJob(repoName, sha string) (runID, jobID int64) {
 	x.t.Helper()
 	ctx := context.Background()
@@ -55,7 +56,8 @@ func (x *harness) seedQueuedJob(repoName, sha string) (runID, jobID int64) {
 }
 
 // seedRun creates a repo (if repoName is new), a run, and one job with a stored
-// log blob, returning the ids. The log carries ANSI + HTML to exercise rendering.
+// log blob. It returns the ids. The log carries ANSI and HTML to exercise
+// rendering.
 func (x *harness) seedRun(repoName, sha, log string) (repoID, runID, jobID int64) {
 	x.t.Helper()
 	ctx := context.Background()
@@ -66,8 +68,8 @@ func (x *harness) seedRun(repoName, sha, log string) (repoID, runID, jobID int64
 			x.t.Fatalf("CreateRepo: %v", err)
 		}
 	}
-	// Browse (the CI run views) is gated on repo-read; grant the harness admin an
-	// ACL so it can view runs on this private-by-default repo.
+	// Browsing (the CI run views) is gated on repo-read. Grant the harness admin
+	// an ACL, so it can view runs on this repo, which is private by default.
 	if err := x.md.SetACL(ctx, r.ID, x.admin.ID, meta.PermAdmin); err != nil {
 		x.t.Fatalf("SetACL: %v", err)
 	}
@@ -94,7 +96,7 @@ func TestCIRunsListAndDetail(t *testing.T) {
 	session := x.login(x.mintTokenFor(x.admin.ID))
 	_, runID, jobID := x.seedRun("app", "deadbeefcafe1234", "ok\n")
 
-	// Runs list links to the run and shows the short SHA.
+	// The runs list links to the run and shows the short SHA.
 	rec := x.do(http.MethodGet, "/app/runs", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("runs list: %d (%s)", rec.Code, rec.Body)
@@ -104,7 +106,7 @@ func TestCIRunsListAndDetail(t *testing.T) {
 		t.Errorf("runs list missing run link or short sha: %s", body)
 	}
 
-	// Run detail shows the job and links to its log.
+	// The run detail shows the job and links to its log.
 	rec = x.do(http.MethodGet, "/app/runs/"+itoa(runID), nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("run detail: %d (%s)", rec.Code, rec.Body)
@@ -118,7 +120,7 @@ func TestCIRunsListAndDetail(t *testing.T) {
 func TestCIJobLogRendersSafely(t *testing.T) {
 	x := newHarness(t)
 	session := x.login(x.mintTokenFor(x.admin.ID))
-	// Green "ok" via ANSI, then HTML that must be escaped.
+	// A green "ok" through ANSI, then HTML that must be escaped.
 	_, runID, jobID := x.seedRun("app", "sha1", "\x1b[32mok\x1b[0m <b>x</b>\n")
 
 	rec := x.do(http.MethodGet, "/app/runs/"+itoa(runID)+"/job/"+itoa(jobID)+"/log", nil, session)
@@ -147,7 +149,7 @@ func TestCIRunNotFound(t *testing.T) {
 	if err := x.md.SetACL(context.Background(), r.ID, x.admin.ID, meta.PermAdmin); err != nil {
 		t.Fatal(err)
 	}
-	// Unknown run id → 404.
+	// An unknown run id gives 404.
 	if rec := x.do(http.MethodGet, "/app/runs/9999", nil, session); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown run = %d, want 404", rec.Code)
 	}
@@ -173,7 +175,7 @@ func TestCIRunCrossRepoIsNotFound(t *testing.T) {
 
 func TestCIRunsRequireAdmin(t *testing.T) {
 	x := newHarness(t)
-	// Unauthenticated GET is redirected to login like the rest of browsing.
+	// An unauthenticated GET is redirected to login, like the rest of browsing.
 	if rec := x.do(http.MethodGet, "/app/runs", nil, nil); rec.Code != http.StatusSeeOther {
 		t.Errorf("unauth runs = %d, want 303 redirect", rec.Code)
 	}
@@ -203,8 +205,8 @@ func TestCILiveLogStreamsBytes(t *testing.T) {
 }
 
 func TestCILiveLogDoneWhenNoBufferAndTerminal(t *testing.T) {
-	// The fallback path: no live buffer + a finished job → done=true, so the page
-	// stops polling and reloads to the durable log.
+	// The fallback path: no live buffer and a finished job give done=true. The
+	// page then stops polling and reloads to the durable log.
 	x := newHarness(t)
 	x.h.live = fakeLive{ok: false}
 	session := x.login(x.mintTokenFor(x.admin.ID))
@@ -225,8 +227,8 @@ func TestCIJobLogPageTailsRunningJob(t *testing.T) {
 	session := x.login(x.mintTokenFor(x.admin.ID))
 	runID, jobID := x.seedQueuedJob("app", "sha1")
 
-	// A running job's log page renders the live-tail element + poll script instead
-	// of a durable log.
+	// The log page of a running job renders the live-tail element and the poll
+	// script instead of a durable log.
 	rec := x.do(http.MethodGet, "/app/runs/"+itoa(runID)+"/job/"+itoa(jobID)+"/log", nil, session)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("log page: %d", rec.Code)
