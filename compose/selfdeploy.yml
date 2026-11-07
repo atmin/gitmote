@@ -1,9 +1,9 @@
-# Local dev stack: MinIO only, reachable from a natively-run `bin/gitmote`.
-# Driven by `make dev` (scripts/dev.sh). Unlike docker-compose.yml (the e2e
-# topology, where gitmote also runs in a container), here gitmote runs on the
-# host, so MinIO must publish its ports. They're 9100/9101 (not the usual
-# 9000/9001) to avoid colliding with any other local MinIO.
-name: gitmote-dev
+# Self-deploy stack: MinIO only, reachable from a natively-run `bin/gitmote`.
+# Driven by `make self-deploy` (scripts/self-deploy.sh). A sibling of
+# compose/dev.yml with a distinct project name, ports (9300/9301, not
+# 9100/9101), and volume, so a break-glass self-deploy can run without touching —
+# or colliding with — a live `make dev`.
+name: gitmote-selfdeploy
 
 services:
   minio:
@@ -12,19 +12,17 @@ services:
     # protocol, the MINIO_* variables and S3 conditional writes (the writer lease
     # needs them), and the same image answers to `mc` for the setup service.
     image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
-    command: server /data --console-address :9101
+    command: server /data --console-address :9201
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9100:9000"   # S3 API  → GITMOTE_S3_ENDPOINT=http://localhost:9100
-      - "9101:9101"   # console → http://localhost:9101 (minioadmin/minioadmin)
+      - "9300:9000"   # S3 API  → GITMOTE_S3_ENDPOINT=http://localhost:9300
+      - "9301:9301"   # console → http://localhost:9301 (minioadmin/minioadmin)
     volumes:
       - minio-data:/data
 
-  # One-shot bucket creation; not started by `up` (setup profile), invoked with
-  # `docker compose run --rm mc`. MC_HOST_local configures the alias via env, so
-  # no interactive `mc alias set` is needed; it retries until MinIO is reachable.
+  # One-shot bucket creation; invoked with `docker compose run --rm mc` (see dev).
   mc:
     image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     profiles: ["setup"]

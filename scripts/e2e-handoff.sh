@@ -6,8 +6,8 @@
 # exactly B's refs. Whenever both are idle, no instance holds the lease.
 set -euo pipefail
 
-DC="docker compose --profile handoff"
 ROOT="$(git rev-parse --show-toplevel)"
+DC=(docker compose --project-directory "$ROOT" -f "$ROOT/compose/e2e.yml" --profile handoff)
 BRANCH="$(git -C "$ROOT" symbolic-ref --quiet --short HEAD || echo master)"
 PUSHED="$(git -C "$ROOT" rev-parse HEAD)"
 
@@ -18,7 +18,7 @@ CLONES=()
 cleanup() {
   local code=$?
   echo "--- tearing down ---"
-  ( cd "$ROOT" && $DC down -v --remove-orphans ) || true
+  ( cd "$ROOT" && "${DC[@]}" down -v --remove-orphans ) || true
   for d in "${CLONES[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done
   exit $code
 }
@@ -26,7 +26,7 @@ trap cleanup EXIT
 
 fail() {
   echo "HANDOFF FAIL: $*" >&2
-  ( cd "$ROOT" && $DC logs gitmote gitmote-b ) || true
+  ( cd "$ROOT" && "${DC[@]}" logs gitmote gitmote-b ) || true
   exit 1
 }
 
@@ -45,7 +45,7 @@ wait_healthz() {
 wait_lease_free() {
   local out
   for _ in $(seq 1 30); do
-    if out="$($DC run --rm -T mc "mc ls local/gitmote/meta/" 2>/dev/null)"; then
+    if out="$("${DC[@]}" run --rm -T mc "mc ls local/gitmote/meta/" 2>/dev/null)"; then
       grep -q 'lock.json' <<<"$out" || return 0
     fi
     sleep 1
@@ -63,19 +63,19 @@ clone_into() {
 cd "$ROOT"
 
 echo "--- build + minio + bucket ---"
-$DC build gitmote
-$DC up -d minio
-$DC run --rm mc
+"${DC[@]}" build gitmote
+"${DC[@]}" up -d minio
+"${DC[@]}" run --rm mc
 
 echo "--- bootstrap ---"
-BOOT="$($DC run --rm -T gitmote bootstrap -handle admin -repo gitmote -default-branch "$BRANCH")"
+BOOT="$("${DC[@]}" run --rm -T gitmote bootstrap -handle admin -repo gitmote -default-branch "$BRANCH")"
 TOKEN="$(printf '%s\n' "$BOOT" | grep -oE 'gmt_[0-9a-f]+\.[0-9a-f]+' | head -1)"
 [ -n "$TOKEN" ] || { printf '%s\n' "$BOOT"; fail "no token in bootstrap output"; }
 A="http://admin:${TOKEN}@localhost:8080/gitmote"
 B="http://admin:${TOKEN}@localhost:8081/gitmote"
 
 echo "--- start A (:8080) and B (:8081) on one storage root ---"
-$DC up -d gitmote gitmote-b
+"${DC[@]}" up -d gitmote gitmote-b
 wait_healthz 8080 gitmote
 wait_healthz 8081 gitmote-b
 wait_lease_free
@@ -110,7 +110,7 @@ clone_into "$A" "$CLONE_A"
 echo "--- both instances logged the yield ---"
 for svc in gitmote gitmote-b; do
   # Capture first: under pipefail, grep -q closing the pipe early fails the logs call.
-  LOGS="$($DC logs "$svc" 2>/dev/null)"
+  LOGS="$("${DC[@]}" logs "$svc" 2>/dev/null)"
   grep -q 'yielded the writer lease' <<<"$LOGS" || fail "$svc never logged a yield"
 done
 

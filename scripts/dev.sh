@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Local dev loop: MinIO in a container + a natively-run gitmote, with a
-# bootstrapped admin/repo persisted under data/ across restarts and a fresh token
+# bootstrapped admin/repo persisted under data/dev/ across restarts and a fresh token
 # minted on each run. Invoked by `make dev`; `make dev-reset` wipes the state.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-COMPOSE=(docker compose -p gitmote-dev -f docker-compose.dev.yml)
+COMPOSE=(docker compose -p gitmote-dev --project-directory "$ROOT" -f "$ROOT/compose/dev.yml")
 
 # All-local configuration — none of these are secret. The db, cache, and socket
-# live under data/ (gitignored, one GITMOTE_DATA dir) so refs survive restarts.
+# live under data/dev/ (gitignored, one GITMOTE_DATA dir) so refs survive restarts.
 # The bucket alone now derives the metadata replica + single-writer lease.
 #
 # The server listens on 6683, the canonical local port (MOTE on a phone keypad,
@@ -22,7 +22,7 @@ export GITMOTE_S3_ENDPOINT="http://localhost:9100"
 export AWS_REGION="us-east-1"
 export AWS_ACCESS_KEY_ID="minioadmin"
 export AWS_SECRET_ACCESS_KEY="minioadmin"
-export GITMOTE_DATA="$ROOT/data"
+export GITMOTE_DATA="$ROOT/data/dev"
 export GITMOTE_COOKIE_KEY="dev-cookie-key-not-for-production"
 
 # Enable local CI: on a push, gitmote records a run and spawns the runner
@@ -38,7 +38,7 @@ export WORKER_SECRET="dev-worker-secret-not-for-production"
 # key — base64 of 32 bytes — obviously not for production. Rotate by adding _V2.
 export GITMOTE_CI_SECRET_KEY_V1="ZGV2LW9ubHktY2ktc2VjcmV0LW1hc3Rlci1rZXktMzI="
 
-mkdir -p "$ROOT/data"
+mkdir -p "$ROOT/data/dev"
 
 # Free the dev port from a stale dev server left running from a previous session.
 if pid="$(lsof -nP -tiTCP:"$DEV_PORT" -sTCP:LISTEN 2>/dev/null)"; then

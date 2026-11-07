@@ -23,12 +23,12 @@ You need Docker with Docker Compose.
 `make dev` builds the binaries and starts an S3 server in a container on port
 9100. The server is Silo, a fork of MinIO. Then `make dev` runs gitmote natively
 on port 6683. It creates the user `admin` and the repository `gitmote`, and prints
-a fresh token. The metadata database and the object cache persist in `data/`, so
+a fresh token. The metadata database and the object cache persist in `data/dev/`, so
 repositories survive a restart.
 
 ```sh
 make dev        # prints the token, the clone URL and the UI URL
-make dev-reset  # deletes the S3 volume and data/
+make dev-reset  # deletes the S3 volume and data/dev/
 ```
 
 `make dev` also runs CI. A push of a repository with `.gitmote/workflows/*.yml`

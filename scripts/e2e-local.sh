@@ -6,8 +6,8 @@
 # prove durability comes from the object store + persisted refs, not local disk.
 set -euo pipefail
 
-DC="docker compose"
 ROOT="$(git rev-parse --show-toplevel)"
+DC=(docker compose --project-directory "$ROOT" -f "$ROOT/compose/e2e.yml")
 # Fall back to a name when HEAD is detached (CI checkouts are), since the remote
 # branch we host under is our own choice anyway.
 BRANCH="$(git -C "$ROOT" symbolic-ref --quiet --short HEAD || echo master)"
@@ -21,7 +21,7 @@ CLONES=()
 cleanup() {
   local code=$?
   echo "--- tearing down ---"
-  ( cd "$ROOT" && $DC down -v --remove-orphans ) || true
+  ( cd "$ROOT" && "${DC[@]}" down -v --remove-orphans ) || true
   for d in "${CLONES[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done
   exit $code
 }
@@ -35,7 +35,7 @@ wait_healthz() {
     if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then return 0; fi
     sleep 1
   done
-  ( cd "$ROOT" && $DC logs gitmote ) || true
+  ( cd "$ROOT" && "${DC[@]}" logs gitmote ) || true
   fail "gitmote did not become healthy"
 }
 
@@ -61,21 +61,21 @@ assert_clone() {
 cd "$ROOT"
 
 echo "--- building gitmote image ---"
-$DC build gitmote
+"${DC[@]}" build gitmote
 
 echo "--- starting minio + creating bucket ---"
-$DC up -d minio
-$DC run --rm mc
+"${DC[@]}" up -d minio
+"${DC[@]}" run --rm mc
 
 echo "--- bootstrap (one-shot, writes admin/token/repo to the metadata volume) ---"
-BOOT="$($DC run --rm -T gitmote bootstrap -handle admin -repo gitmote -default-branch "$BRANCH")"
+BOOT="$("${DC[@]}" run --rm -T gitmote bootstrap -handle admin -repo gitmote -default-branch "$BRANCH")"
 TOKEN="$(printf '%s\n' "$BOOT" | grep -oE 'gmt_[0-9a-f]+\.[0-9a-f]+' | head -1)"
 [ -n "$TOKEN" ] || { printf '%s\n' "$BOOT"; fail "no token in bootstrap output"; }
 
 REPO_URL="http://admin:${TOKEN}@localhost:8080/gitmote"
 
 echo "--- starting gitmote server ---"
-$DC up -d gitmote
+"${DC[@]}" up -d gitmote
 wait_healthz
 
 echo "--- push this working tree ($BRANCH @ $PUSHED) ---"
@@ -84,7 +84,7 @@ echo "--- push this working tree ($BRANCH @ $PUSHED) ---"
 assert_clone "initial"
 
 echo "--- force-recreate container (wipes ephemeral cache; refs+objects persist) ---"
-$DC up -d --force-recreate --no-deps gitmote
+"${DC[@]}" up -d --force-recreate --no-deps gitmote
 wait_healthz
 assert_clone "after-restart"
 

@@ -16,8 +16,8 @@ cd "$ROOT"
 
 PORT=8081
 S3_PORT=9300
-DATA="$ROOT/data-selfdeploy"
-COMPOSE=(docker compose -p gitmote-selfdeploy -f docker-compose.selfdeploy.yml)
+DATA="$ROOT/data/selfdeploy"
+COMPOSE=(docker compose -p gitmote-selfdeploy --project-directory "$ROOT" -f "$ROOT/compose/selfdeploy.yml")
 
 # --- 1. Load the gitignored .env holding the deploy secrets -------------------
 if [ ! -f "$ROOT/.env" ]; then
@@ -124,9 +124,9 @@ fi
 # The self-deploy instance is disposable: always start from a clean slate. This
 # removes the whole class of "an interrupted previous run left litestream state
 # drifted from the bucket" failures (the txid-mismatch replication loop). It wipes
-# ONLY the dedicated gitmote-selfdeploy volume and data-selfdeploy/ dir — nothing
+# ONLY the dedicated gitmote-selfdeploy volume and data/selfdeploy/ dir — nothing
 # shared with `make dev`. The just-finished run's state survives until the re-run.
-echo "--- resetting throwaway state (data-selfdeploy + its MinIO volume) ---"
+echo "--- resetting throwaway state (data/selfdeploy + its MinIO volume) ---"
 "${COMPOSE[@]}" down -v 2>/dev/null || true
 rm -rf "$DATA"
 mkdir -p "$DATA"

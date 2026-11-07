@@ -18,9 +18,9 @@ IMAGE_SERVER := ghcr.io/atmin/gitmote
 # turns as the writer, each yielding the lease when idle (docs/configuration.md).
 PORT ?= 8080
 
-# Dev compose project (docker-compose.dev.yml sets name: gitmote-dev). `make prod`
+# Dev compose project (compose/dev.yml sets name: gitmote-dev). `make prod`
 # joins this project's network so the container reaches MinIO at minio:9000.
-DEV_COMPOSE := docker compose -p gitmote-dev -f docker-compose.dev.yml
+DEV_COMPOSE := docker compose -p gitmote-dev --project-directory . -f compose/dev.yml
 
 .PHONY: all fmt lint test build dev dev-reset self-deploy self-deploy-reset e2e-local e2e-restore e2e-handoff e2e-build image prod publish
 
@@ -42,7 +42,7 @@ build:
 	go build -o bin/gitmote-runner ./cmd/gitmote-runner
 
 # Local dev: MinIO in a container (S3 :9100) + gitmote run natively on :6683,
-# with a bootstrapped admin/token/repo persisted under data/ across restarts.
+# with a bootstrapped admin/token/repo persisted under data/dev/ across restarts.
 # First run prints the token and clone URL; Ctrl-C stops the server. See
 # scripts/dev.sh. Requires docker + docker compose.
 dev: build
@@ -50,8 +50,8 @@ dev: build
 
 # Wipe all local dev state: the MinIO volume and the persisted DB/cache/token.
 dev-reset:
-	docker compose -p gitmote-dev -f docker-compose.dev.yml down -v 2>/dev/null || true
-	rm -rf data
+	$(DEV_COMPOSE) down -v 2>/dev/null || true
+	rm -rf data/dev
 
 # Break-glass self-deploy: build+deploy gitmote to gitmote.atmin.net through its
 # own local runner, secrets seeded from a gitignored .env (no Secrets UI). Runs a
@@ -64,8 +64,8 @@ self-deploy: build
 
 # Wipe the throwaway self-deploy state (its MinIO volume and data dir).
 self-deploy-reset:
-	docker compose -p gitmote-selfdeploy -f docker-compose.selfdeploy.yml down -v 2>/dev/null || true
-	rm -rf data-selfdeploy
+	docker compose -p gitmote-selfdeploy --project-directory . -f compose/selfdeploy.yml down -v 2>/dev/null || true
+	rm -rf data/selfdeploy
 
 # End-to-end: gitmote hosts itself against MinIO in Docker (CONTRIBUTING.md —
 # integration tests drive real git). Requires docker + docker compose.

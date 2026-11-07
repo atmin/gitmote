@@ -211,7 +211,7 @@ deployer. Because it runs only on `self-deploy`, it never deploys twice with the
 `master` path. The lease keeps its rolling swap safe, as for the GitHub deploy.
 
 The instance is disposable. Each run of `make self-deploy` first resets its state:
-the `data-selfdeploy/` directory and its S3 volume. So an interrupted run cannot
+the `data/selfdeploy/` directory and its S3 volume. So an interrupted run cannot
 leave litestream state that differs from the bucket. `make self-deploy-reset`
 removes the state on demand.
 
