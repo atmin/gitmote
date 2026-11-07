@@ -136,7 +136,7 @@ echo "--- resetting throwaway state (data/selfdeploy + its MinIO volume) ---"
 rm -rf "$DATA"
 mkdir -p "$DATA"
 
-echo "--- starting MinIO (S3 :${S3_PORT}, console :9201) ---"
+echo "--- starting MinIO (S3 :${S3_PORT}, console :9301) ---"
 "${COMPOSE[@]}" up -d minio
 "${COMPOSE[@]}" run --rm mc
 

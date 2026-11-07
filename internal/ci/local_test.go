@@ -31,8 +31,10 @@ func TestLocalTriggerSpawnsRunnerWithEnv(t *testing.T) {
 	out := filepath.Join(dir, "out")
 	script := filepath.Join(dir, "fake-runner")
 	// This is a stand-in runner. It records the injected coordinates, so the
-	// test can assert that they were passed through.
-	body := "#!/bin/sh\nprintf '%s %s' \"$GITMOTE_CI_JOB_ID\" \"$GITMOTE_CI_CLONE_TOKEN\" > \"$OUT_FILE\"\n"
+	// test can assert that they were passed through. The shell redirect creates
+	// the file before printf writes to it. So the script writes a temporary file
+	// and renames it into place.
+	body := "#!/bin/sh\nprintf '%s %s' \"$GITMOTE_CI_JOB_ID\" \"$GITMOTE_CI_CLONE_TOKEN\" > \"$OUT_FILE.tmp\"\nmv \"$OUT_FILE.tmp\" \"$OUT_FILE\"\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}

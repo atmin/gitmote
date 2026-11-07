@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # CI runner image: gitmote-runner and nektos/act, run as a Scaleway Serverless
 # Job. One Job definition serves all repos. The trigger injects the env per job.
 #
@@ -7,7 +8,6 @@
 # ephemeral, scale-to-zero container, so the Job itself is the sandbox. The tools
 # that workflows need (git, node, bash) must therefore live in this image.
 
-# syntax=docker/dockerfile:1
 FROM golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./

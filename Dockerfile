@@ -1,8 +1,8 @@
+# syntax=docker/dockerfile:1
 # Build a static gitmote and its pre-receive hook, and run them beside stock git.
 # modernc.org/sqlite is pure Go, so CGO_ENABLED=0 yields a static binary and the
 # runtime image needs only git.
 
-# syntax=docker/dockerfile:1
 # The build stage runs on the native BUILDPLATFORM and cross-compiles to
 # TARGET*, because the build is pure Go with CGO_ENABLED=0. So a multi-arch
 # build never emulates the compiler. Only apk in the runtime stage runs under
