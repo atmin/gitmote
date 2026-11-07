@@ -7,28 +7,30 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// pushTrigger is the parsed push-event filter of a workflow's `on:` — the subset
-// gitmote evaluates to decide whether a branch push starts a run. reacts is false
-// when the workflow doesn't react to push at all (e.g. workflow_dispatch only),
-// so a push never triggers it. branches / branchesIgnore are GitHub's branch
-// globs; empty means "no branch constraint".
+// pushTrigger is the parsed push-event filter of the `on:` key of a workflow.
+// It is the subset that gitmote evaluates to decide whether a branch push
+// starts a run. reacts is false when the workflow doesn't react to push at all,
+// for example with workflow_dispatch only. A push then never triggers it.
+// branches and branchesIgnore are the GitHub branch globs. Empty means "no
+// branch constraint".
 type pushTrigger struct {
 	reacts         bool
 	branches       []string
 	branchesIgnore []string
 }
 
-// workflowOn decodes just a workflow's `on:` key. The explicit tag matters: YAML
-// resolves a bare `on` scalar as the boolean true (YAML 1.1), so keying off a
-// decoded map would miss it — a tagged struct field matches the literal `on`.
+// workflowOn decodes only the `on:` key of a workflow. The explicit tag
+// matters. YAML 1.1 resolves a bare `on` scalar as the boolean true. So a
+// lookup in a decoded map would miss the key. A tagged struct field matches
+// the literal `on`.
 type workflowOn struct {
 	On yaml.Node `yaml:"on"`
 }
 
-// parsePushTrigger extracts the push filter from a workflow's YAML. A file that
-// doesn't parse returns an error (the caller keeps it so the run still surfaces
-// the failure). A well-formed file that doesn't react to push returns
-// reacts=false with a nil error.
+// parsePushTrigger extracts the push filter from the YAML of a workflow. A file
+// that doesn't parse returns an error. The caller keeps such a file, so the run
+// still surfaces the failure. A well-formed file that doesn't react to push
+// returns reacts=false with a nil error.
 func parsePushTrigger(content []byte) (pushTrigger, error) {
 	var w workflowOn
 	if err := yaml.Unmarshal(content, &w); err != nil {
@@ -37,8 +39,10 @@ func parsePushTrigger(content []byte) (pushTrigger, error) {
 	return interpretOn(&w.On), nil
 }
 
-// interpretOn reads the three shapes `on:` takes — a scalar (`on: push`), a
-// sequence (`on: [push, …]`), or a mapping (`on: {push: {branches: […]}}`).
+// interpretOn reads the three shapes that `on:` takes:
+//   - a scalar (`on: push`)
+//   - a sequence (`on: [push, …]`)
+//   - a mapping (`on: {push: {branches: […]}}`)
 func interpretOn(on *yaml.Node) pushTrigger {
 	switch on.Kind {
 	case yaml.ScalarNode:
@@ -64,13 +68,15 @@ func interpretOn(on *yaml.Node) pushTrigger {
 		}
 		return pushTrigger{}
 	default:
-		return pushTrigger{} // null or absent `on:` — nothing to react to
+		return pushTrigger{} // null or absent `on:`, so nothing to react to
 	}
 }
 
-// matches reports whether a push to branch should trigger this workflow: it must
-// react to push, pass any `branches` allow-list, and clear any `branches-ignore`
-// deny-list.
+// matches reports whether a push to branch should trigger this workflow. The
+// workflow must:
+//   - react to push
+//   - pass any `branches` allow-list
+//   - clear any `branches-ignore` deny-list
 func (t pushTrigger) matches(branch string) bool {
 	if !t.reacts {
 		return false
@@ -94,8 +100,8 @@ func mapValue(m *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-// seqStrings reads a scalar or a sequence of scalars into a string slice (a
-// branch filter may be written `branches: main` or `branches: [main, dev]`).
+// seqStrings reads a scalar or a sequence of scalars into a string slice. A
+// branch filter may be written `branches: main` or `branches: [main, dev]`.
 func seqStrings(n *yaml.Node) []string {
 	if n == nil {
 		return nil
@@ -125,11 +131,14 @@ func anyGlob(patterns []string, name string) bool {
 	return false
 }
 
-// globMatch reports whether name matches a GitHub branch-filter glob. It models
-// the two wildcards that cover real branch filters — `*` (a run of any character
-// except `/`) and `**` (any character including `/`) — and treats everything
-// else literally. GitHub's rarer pattern features (`?`, `+`, `[]`, `!`) are not
-// modeled: a pattern using them matches only its literal form.
+// globMatch reports whether name matches a GitHub branch-filter glob. It
+// models the two wildcards that cover real branch filters:
+//   - `*` matches a run of any character except `/`.
+//   - `**` matches any character, including `/`.
+//
+// It treats everything else literally. It does not model the rarer GitHub
+// pattern features (`?`, `+`, `[]`, `!`). A pattern that uses them matches
+// only its literal form.
 func globMatch(pattern, name string) bool {
 	var b strings.Builder
 	b.WriteByte('^')

@@ -10,7 +10,7 @@ func TestActArgsForwardsSecrets(t *testing.T) {
 	args, extra := actArgs(".gitmote/workflows", []string{
 		"PATH=/usr/bin",
 		"GITMOTE_CI_SECRET_API_TOKEN=s3cr3t",
-		"GITMOTE_URL=http://x", // not a secret; must be ignored
+		"GITMOTE_URL=http://x", // not a secret, so it must be ignored
 	})
 	if !slices.Contains(extra, "API_TOKEN=s3cr3t") {
 		t.Errorf("extraEnv = %v, want the bare-named secret re-exported", extra)
@@ -39,12 +39,14 @@ func TestActArgsDefaultsNoOverrides(t *testing.T) {
 	if len(extra) != 0 {
 		t.Errorf("extraEnv = %v, want none", extra)
 	}
-	// No -s, no -P (local dev: act's default nesting).
+	// There is no -s and no -P. This is local dev, with the default nesting of
+	// act.
 	if hasFlag(args, "-P", "") || slices.Contains(args, "-s") {
 		t.Errorf("args = %v, want no secret/platform overrides", args)
 	}
-	// Safe default: nested mode without an opt-in suppresses the daemon-socket
-	// mount so untrusted workflow code can't reach the host daemon.
+	// This is the safe default. Nested mode without an opt-in suppresses the
+	// daemon-socket mount, so untrusted workflow code can't reach the host
+	// daemon.
 	if !hasFlag(args, "--container-daemon-socket", "-") {
 		t.Errorf("args = %v, want --container-daemon-socket - by default", args)
 	}
@@ -52,8 +54,9 @@ func TestActArgsDefaultsNoOverrides(t *testing.T) {
 
 func TestActArgsAllowBuildsMountsDaemonSocket(t *testing.T) {
 	args, _ := actArgs(".gitmote/workflows", []string{"GITMOTE_CI_ALLOW_BUILDS=1"})
-	// Opted in: mount the daemon's own socket path (not act's DOCKER_HOST-derived
-	// default, which breaks for a VM-backed daemon) so `docker build` reaches it.
+	// Builds are opted in. Mount the socket path of the daemon itself, so
+	// `docker build` reaches it. Do not use the act default derived from
+	// DOCKER_HOST, which breaks for a VM-backed daemon.
 	if !hasFlag(args, "--container-daemon-socket", "/var/run/docker.sock") {
 		t.Errorf("args = %v, want --container-daemon-socket /var/run/docker.sock when builds are allowed", args)
 	}
@@ -77,8 +80,9 @@ func TestActArgsAllowBuildsFalseSuppressesSocket(t *testing.T) {
 }
 
 func TestActArgsSelfHostedOmitsSocketFlag(t *testing.T) {
-	// Self-hosted has no job container to mount into, so the socket flag is moot
-	// and must not be emitted (it would be meaningless / could error).
+	// Self-hosted mode has no job container to mount into, so the socket flag
+	// has no use. It must not be emitted, because it would be meaningless or
+	// could cause an error.
 	args, _ := actArgs(".gitmote/workflows", []string{
 		"GITMOTE_ACT_PLATFORMS=ubuntu-latest=-self-hosted",
 	})

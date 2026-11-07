@@ -17,7 +17,8 @@ var testSpec = spec{
 	Ref: "refs/heads/main", WorkflowDir: ".gitmote/workflows",
 }
 
-// capture records the completion the runner posts, plus any streamed log chunks.
+// capture records the completion that the runner posts, plus any streamed log
+// chunks.
 type capture struct {
 	calls  int
 	status string
@@ -25,8 +26,9 @@ type capture struct {
 	stream string // concatenated live-log chunks posted to /log
 }
 
-// newTestServer serves the two report endpoints. claimStatus controls the claim
-// response (200 returns testSpec; anything else is returned verbatim, e.g. 404).
+// newTestServer serves the three report endpoints: claim, log and complete.
+// claimStatus controls the claim response. 200 returns testSpec. Any other
+// status, for example 404, is returned verbatim.
 func newTestServer(t *testing.T, claimStatus int) (*httptest.Server, *capture) {
 	t.Helper()
 	cap := &capture{}
@@ -109,7 +111,7 @@ func TestRunPassed(t *testing.T) {
 	if err := Run(context.Background(), baseConfig(t, srv.URL, cl, en)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// Cloned the claimed SHA/ref with the injected token.
+	// The runner cloned the claimed SHA and ref with the injected token.
 	if !cl.called || cl.repo != testSpec.Repo || cl.sha != testSpec.SHA ||
 		cl.ref != testSpec.Ref || cl.token != "clone-tok" {
 		t.Errorf("clone = %+v, want repo/sha/ref from the spec and the injected token", cl)
@@ -177,7 +179,7 @@ func TestRunNotClaimableIsNoOp(t *testing.T) {
 func TestRunClaimUnauthorizedFails(t *testing.T) {
 	srv, cap := newTestServer(t, http.StatusOK)
 	cfg := baseConfig(t, srv.URL, &fakeCloner{}, &fakeEngine{})
-	cfg.WorkerSecret = "wrong" // server rejects the claim
+	cfg.WorkerSecret = "wrong" // the server rejects the claim
 
 	if err := Run(context.Background(), cfg); err == nil {
 		t.Error("Run with a bad secret = nil, want an error (claim rejected)")
@@ -193,19 +195,21 @@ func TestRunStreamsLiveLog(t *testing.T) {
 	if err := Run(context.Background(), baseConfig(t, srv.URL, &fakeCloner{}, en)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// The engine's output was streamed live (final flush on stop, before complete)...
+	// The output of the engine was streamed live, with a final flush on stop,
+	// before complete.
 	if cap.stream != "live line\n" {
 		t.Errorf("streamed = %q, want the engine output streamed to /log", cap.stream)
 	}
-	// ...and the durable completion still carries the full log.
+	// The durable completion still carries the full log.
 	if cap.body != "live line\n" {
 		t.Errorf("completion body = %q, want the full durable log", cap.body)
 	}
 }
 
 func TestRunStreamFailureDoesNotBreakRun(t *testing.T) {
-	// The failure path: a leader that rejects live chunks must not fail the run —
-	// the durable completion still lands. /log 500s, /complete works.
+	// This is the failure path. A leader that rejects live chunks must not fail
+	// the run. The durable completion still lands. /log returns 500, and
+	// /complete works.
 	cap := &capture{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/ci/jobs/{id}", func(w http.ResponseWriter, _ *http.Request) {

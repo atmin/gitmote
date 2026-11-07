@@ -23,14 +23,15 @@ func TestFlattenEnv(t *testing.T) {
 	}
 }
 
-// TestLocalTriggerSpawnsRunnerWithEnv proves the local trigger runs the runner
-// binary with the injected env — the local analog of Scaleway starting a job.
+// TestLocalTriggerSpawnsRunnerWithEnv proves that the local trigger runs the
+// runner binary with the injected env. This is the local analog of Scaleway
+// starting a job.
 func TestLocalTriggerSpawnsRunnerWithEnv(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "out")
 	script := filepath.Join(dir, "fake-runner")
-	// A stand-in runner: record the injected coordinates so the test can assert
-	// they were passed through.
+	// This is a stand-in runner. It records the injected coordinates, so the
+	// test can assert that they were passed through.
 	body := "#!/bin/sh\nprintf '%s %s' \"$GITMOTE_CI_JOB_ID\" \"$GITMOTE_CI_CLONE_TOKEN\" > \"$OUT_FILE\"\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
@@ -45,7 +46,8 @@ func TestLocalTriggerSpawnsRunnerWithEnv(t *testing.T) {
 		t.Fatalf("Trigger: %v", err)
 	}
 
-	// Fire-and-forget: poll for the spawned runner to finish and write the file.
+	// Trigger is fire-and-forget. Poll until the spawned runner finishes and
+	// writes the file.
 	var data []byte
 	for range 200 {
 		if b, err := os.ReadFile(out); err == nil {

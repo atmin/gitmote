@@ -10,7 +10,7 @@ func TestLoadEnvSecretsParsesPrefixedEntries(t *testing.T) {
 		"GITMOTE_REPO_SECRET_GITMOTE__SCW_SECRET_KEY=uuid-here",
 		"GITMOTE_REPO_SECRET_GITMOTE__GHCR_TOKEN=ghp_abc",
 		"GITMOTE_REPO_SECRET_OTHER__API_TOKEN=t0ken",
-		"PATH=/usr/bin", // unrelated — ignored
+		"PATH=/usr/bin", // unrelated, so ignored
 	}
 	got := LoadEnvSecrets(env)
 	want := EnvSecrets{
@@ -23,12 +23,13 @@ func TestLoadEnvSecretsParsesPrefixedEntries(t *testing.T) {
 }
 
 func TestLoadEnvSecretsIgnoresMalformed(t *testing.T) {
-	// The failure path: entries missing the prefix, the "__" delimiter, or a repo
-	// or name segment must be dropped, never mis-parsed into a bogus secret.
+	// This is the failure path. LoadEnvSecrets must drop an entry that misses
+	// the prefix, the "__" delimiter, or a repo or name segment. It must never
+	// mis-parse such an entry into a bogus secret.
 	env := []string{
-		"GITMOTE_REPO_SECRET_NOOP",              // no '='/value → whole thing is the key, no "__"
+		"GITMOTE_REPO_SECRET_NOOP",              // no '=' or value: the key is the whole entry, no "__"
 		"GITMOTE_REPO_SECRET_NODELIM=v",         // no "__" between repo and name
-		"GITMOTE_REPO_SECRET___NONAME=v",        // empty name after "__"
+		"GITMOTE_REPO_SECRET___NONAME=v",        // empty repo before "__"
 		"GITMOTE_REPO_SECRET___=v",              // empty repo and name
 		"NOT_THE_PREFIX_GITMOTE__SCW=v",         // wrong prefix
 		"GITMOTE_REPO_SECRET_GITMOTE__OK=value", // the one valid entry
@@ -42,7 +43,8 @@ func TestLoadEnvSecretsIgnoresMalformed(t *testing.T) {
 
 func TestEnvSecretsForNormalizesRepoName(t *testing.T) {
 	e := LoadEnvSecrets([]string{"GITMOTE_REPO_SECRET_MY_REPO__A=1"})
-	// A repo named "my-repo" ('-'→'_', uppercased) must resolve the MY_REPO key.
+	// A repo named "my-repo" must resolve the MY_REPO key ('-' becomes '_',
+	// and the name is uppercased).
 	if got := e.For("my-repo"); !reflect.DeepEqual(got, map[string]string{"A": "1"}) {
 		t.Errorf("For(my-repo) = %#v, want {A:1}", got)
 	}

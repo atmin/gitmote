@@ -18,8 +18,9 @@ import (
 
 const workerSecret = "worker-secret"
 
-// reportFixture wires a report API over a real meta + in-memory store, seeds a
-// repo/run/job, and returns the API's test server, the store, and the ids.
+// reportFixture wires a report API over a real meta and an in-memory store. It
+// seeds a repo, a run and a job. It returns the test server of the API, the
+// store and the ids.
 type reportFixture struct {
 	srv    *httptest.Server
 	store  store.Store
@@ -62,7 +63,7 @@ func newReportFixture(t *testing.T, isLeader func() bool) reportFixture {
 	return reportFixture{srv: srv, store: s, md: md, api: api, repoID: r.ID, runID: run.ID, jobID: job.ID}
 }
 
-// do issues an authenticated request unless secret is "" (then it sends none).
+// do issues an authenticated request. If secret is "", do sends no secret.
 func (f reportFixture) do(t *testing.T, method, path, secret, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(method, f.srv.URL+path, strings.NewReader(body))
@@ -97,13 +98,13 @@ func TestClaimTransitionsAndReturnsSpec(t *testing.T) {
 		t.Errorf("spec = %+v, want the seeded job's coordinates", spec)
 	}
 
-	// The job is now running.
+	// After the claim, the job is running.
 	job, _ := f.md.GetJob(ctx, f.jobID)
 	if job.Status != meta.RunRunning {
 		t.Errorf("job status = %q, want running", job.Status)
 	}
 
-	// A second claim of the now-running job is not claimable → 404.
+	// A second claim of the running job is not claimable, so it gets 404.
 	resp2 := f.do(t, http.MethodGet, "/internal/ci/jobs/"+id(f.jobID), workerSecret, "")
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusNotFound {
@@ -123,7 +124,8 @@ func TestCompleteStoresLogAndRollsUp(t *testing.T) {
 		t.Fatalf("complete status = %d, want 200", resp.StatusCode)
 	}
 
-	// Job is passed, log_key recorded, and the log blob is under the ci/ key.
+	// The job is passed, log_key is recorded, and the log blob is under the
+	// ci/ key.
 	job, _ := f.md.GetJob(ctx, f.jobID)
 	if job.Status != meta.RunPassed {
 		t.Errorf("job status = %q, want passed", job.Status)
@@ -155,8 +157,8 @@ func TestCompleteIsIdempotent(t *testing.T) {
 	f.do(t, http.MethodGet, "/internal/ci/jobs/"+id(f.jobID), workerSecret, "").Body.Close()
 	f.do(t, http.MethodPost, "/internal/ci/jobs/"+id(f.jobID)+"/complete?status=passed", workerSecret, "first\n").Body.Close()
 
-	// A second complete with a different status/log is a no-op — the terminal
-	// job keeps its first outcome and log.
+	// A second complete with a different status and log does nothing. The
+	// terminal job keeps its first outcome and log.
 	resp := f.do(t, http.MethodPost, "/internal/ci/jobs/"+id(f.jobID)+"/complete?status=failed", workerSecret, "second\n")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -178,13 +180,13 @@ func TestReportAPIAuth(t *testing.T) {
 	f := newReportFixture(t, nil)
 	path := "/internal/ci/jobs/" + id(f.jobID)
 
-	// Missing secret → 401.
+	// A missing secret gets 401.
 	resp := f.do(t, http.MethodGet, path, "", "")
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("no secret: status = %d, want 401", resp.StatusCode)
 	}
-	// Wrong secret → 401.
+	// A wrong secret gets 401.
 	resp = f.do(t, http.MethodGet, path, "nope", "")
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -220,7 +222,8 @@ func TestCompleteTruncatesOversizeLog(t *testing.T) {
 	if !strings.HasSuffix(string(data), logTruncationMarker) {
 		t.Error("oversize log missing the truncation marker (silent truncation)")
 	}
-	// Body cut to the cap, plus the marker — not the full oversize input.
+	// The body is cut to the cap, plus the marker. It is not the full oversize
+	// input.
 	if len(data) != logCap+len(logTruncationMarker) {
 		t.Errorf("stored len = %d, want cap+marker = %d", len(data), logCap+len(logTruncationMarker))
 	}
@@ -242,7 +245,8 @@ func TestReconcileStuckSweepsRunningJobs(t *testing.T) {
 	// Claim to put the job in running.
 	f.do(t, http.MethodGet, "/internal/ci/jobs/"+id(f.jobID), workerSecret, "").Body.Close()
 
-	// Sweep with a clock far in the future so the running job is past the bound.
+	// Sweep with a clock far in the future, so the running job is past the
+	// bound.
 	future := time.Now().Add(48 * time.Hour)
 	if err := f.api.ReconcileStuck(ctx, time.Hour, future); err != nil {
 		t.Fatalf("ReconcileStuck: %v", err)
@@ -277,7 +281,8 @@ func TestLogChunkAppendsToLiveBuffer(t *testing.T) {
 }
 
 func TestLogChunkRequiresAuth(t *testing.T) {
-	// The failure path: an unauthenticated chunk is rejected and never buffered.
+	// This is the failure path. An unauthenticated chunk is rejected and never
+	// buffered.
 	f := newReportFixture(t, nil)
 	resp := f.do(t, http.MethodPost, "/internal/ci/jobs/"+id(f.jobID)+"/log", "", "sneaky\n")
 	resp.Body.Close()
@@ -295,7 +300,7 @@ func TestCompleteFinishesLiveTail(t *testing.T) {
 	f.do(t, http.MethodPost, "/internal/ci/jobs/"+id(f.jobID)+"/log", workerSecret, "running...\n").Body.Close()
 	f.do(t, http.MethodPost, "/internal/ci/jobs/"+id(f.jobID)+"/complete?status=passed", workerSecret, "running...\ndone\n").Body.Close()
 
-	// Completion flips the live tail to done so a watching browser reloads to the
+	// Completion marks the live tail done, so a watching browser reloads to the
 	// durable log.
 	if _, _, done, ok := f.api.live.Read(f.jobID, 0); !ok || !done {
 		t.Fatalf("live tail after complete: ok %v done %v, want both true", ok, done)

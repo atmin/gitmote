@@ -17,8 +17,8 @@ import (
 	"github.com/atmin/gitmote/internal/store"
 )
 
-// newFixture wires a local meta, an in-memory store, and a materializer — the
-// real collaborators the dispatcher reads workflow config through.
+// newFixture wires a local meta, an in-memory store and a materializer. These
+// are the real collaborators that the dispatcher reads workflow config through.
 func newFixture(t *testing.T) (*meta.Metadata, store.Store, *repo.Materializer) {
 	t.Helper()
 	md, err := meta.Open(context.Background(), meta.Config{
@@ -33,7 +33,8 @@ func newFixture(t *testing.T) (*meta.Metadata, store.Store, *repo.Materializer) 
 	return md, s, mz
 }
 
-// gitFixture runs a git command hermetically, failing the test on nonzero exit.
+// gitFixture runs a git command hermetically. It fails the test on a nonzero
+// exit.
 func gitFixture(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -50,10 +51,14 @@ func gitFixture(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// seedRepo builds a real repo with the given files, loads its objects into the
-// store the materializer reads, records the repo + branch ref in meta, and
-// returns the repo row and the head SHA. An empty files map makes a repo with a
-// single placeholder file (so the commit is non-empty) and no workflows.
+// seedRepo builds a real repo with the given files. It then does three things:
+//   - It loads the objects of the repo into the store that the materializer
+//     reads.
+//   - It records the repo and the branch ref in meta.
+//   - It returns the repo row and the head SHA.
+//
+// An empty files map makes a repo with no workflows. The repo then holds a
+// single placeholder file, so that the commit is non-empty.
 func seedRepo(t *testing.T, md *meta.Metadata, s store.Store, name string, files map[string]string) (*meta.Repo, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -152,7 +157,8 @@ func TestDispatchOneWorkflowCreatesRunAndJob(t *testing.T) {
 		t.Errorf("jobs = %+v, want one queued job named ci.yml", jobs)
 	}
 
-	// The job was triggered exactly once, with the runner env for that run/job.
+	// The job was triggered exactly once, with the runner env for that run and
+	// job.
 	if len(tr.calls) != 1 {
 		t.Fatalf("trigger calls = %d, want 1", len(tr.calls))
 	}
@@ -195,10 +201,10 @@ func TestDispatchTwoWorkflowsCreateTwoJobs(t *testing.T) {
 	}
 }
 
-// TestDispatchBranchFilterSkipsNonMatchingPush: a workflow gated on a branch
-// filter (gitmote's own deploy.yml, `on.push.branches: [self-deploy]`) creates no
-// run on a push to any other branch — like GitHub, a run appears only when the
-// push actually triggers something.
+// TestDispatchBranchFilterSkipsNonMatchingPush checks a workflow gated on a
+// branch filter, such as the gitmote deploy.yml with
+// `on.push.branches: [self-deploy]`. It creates no run on a push to any other
+// branch. Like GitHub, a run appears only when the push triggers something.
 func TestDispatchBranchFilterSkipsNonMatchingPush(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
@@ -207,13 +213,13 @@ func TestDispatchBranchFilterSkipsNonMatchingPush(t *testing.T) {
 	})
 	d := newDispatcher(md, mz, &stubTrigger{})
 
-	// A push to main matches nothing → no run at all.
+	// A push to main matches nothing, so there is no run at all.
 	d.Dispatch(ctx, Event{RepoID: r.ID, RepoName: r.Name, Ref: "refs/heads/main", OldSHA: meta.ZeroSHA, NewSHA: head})
 	if runs, _ := md.ListRuns(ctx, r.ID, 0); len(runs) != 0 {
 		t.Fatalf("main push runs = %d, want 0 (branch filter excludes main)", len(runs))
 	}
 
-	// A push to self-deploy matches → one run with the deploy job.
+	// A push to self-deploy matches, so there is one run with the deploy job.
 	d.Dispatch(ctx, Event{RepoID: r.ID, RepoName: r.Name, Ref: "refs/heads/self-deploy", OldSHA: meta.ZeroSHA, NewSHA: head})
 	runs, _ := md.ListRuns(ctx, r.ID, 0)
 	if len(runs) != 1 {
@@ -237,10 +243,10 @@ func TestDispatchNoWorkflowsNoRun(t *testing.T) {
 	}
 }
 
-// TestDispatchGitHubWorkflowsIgnored: a repo whose workflows live in
-// .github/workflows (a GitHub-mirrored repo, or gitmote's own repo) triggers no
-// gitmote run — gitmote reads .gitmote/workflows, so the directory declares the
-// forge and there is no double-run.
+// TestDispatchGitHubWorkflowsIgnored checks a repo whose workflows live in
+// .github/workflows, such as a GitHub-mirrored repo or the gitmote repo itself.
+// The repo triggers no gitmote run. gitmote reads .gitmote/workflows, so the
+// directory declares the forge, and no workflow runs twice.
 func TestDispatchGitHubWorkflowsIgnored(t *testing.T) {
 	ctx := context.Background()
 	md, s, mz := newFixture(t)
@@ -263,7 +269,7 @@ func TestDispatchMalformedWorkflowFailsRun(t *testing.T) {
 		".gitmote/workflows/bad.yml":  "name: Bad\n  : : not: valid: yaml\n\t- broken\n",
 	})
 
-	// Must not panic; the push (simulated by the event) is unaffected.
+	// Dispatch must not panic. The push, simulated by the event, is unaffected.
 	newDispatcher(md, mz, &stubTrigger{}).Dispatch(ctx, branchEvent(r, head))
 
 	runs, _ := md.ListRuns(ctx, r.ID, 0)
@@ -330,7 +336,8 @@ func TestDispatchOneTriggerFailsOthersProceed(t *testing.T) {
 		".gitmote/workflows/b.yml": "name: B\non: push\n",
 	})
 
-	// Fail the first trigger, succeed the rest — one failure must not abort others.
+	// Fail the first trigger and succeed the rest. One failure must not abort
+	// the others.
 	tr := &failNthTrigger{failOn: 1}
 	newDispatcher(md, mz, tr).Dispatch(ctx, branchEvent(r, head))
 
@@ -338,7 +345,7 @@ func TestDispatchOneTriggerFailsOthersProceed(t *testing.T) {
 	if len(runs) != 1 {
 		t.Fatalf("runs = %d, want 1", len(runs))
 	}
-	// Not every job failed, so the run is not marked error; it stays queued.
+	// Not every job failed, so the run is not marked error. It stays queued.
 	if runs[0].Status != meta.RunQueued {
 		t.Errorf("run status = %q, want queued (not all jobs failed)", runs[0].Status)
 	}
@@ -401,7 +408,8 @@ func TestDispatchMintsScopedCloneToken(t *testing.T) {
 	if got := tr.calls[0]["GITMOTE_CI_CLONE_TOKEN"]; got != "gmt_scoped.tok" {
 		t.Errorf("GITMOTE_CI_CLONE_TOKEN = %q, want the minted token", got)
 	}
-	// Minted under the pusher, read-only, scoped to just this repo, and expiring.
+	// The token is minted under the pusher. It is read-only, scoped to only
+	// this repo, and expiring.
 	if mint.userID != 42 {
 		t.Errorf("mint userID = %d, want the pusher (42)", mint.userID)
 	}
@@ -423,8 +431,9 @@ func TestDispatchMintFailureLeavesRunUsable(t *testing.T) {
 		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
-	// A mint failure is non-fatal: the run and job still record and trigger, with
-	// an empty clone token (the runner's clone fails visibly, not the push).
+	// A mint failure is non-fatal. The run and job still record and trigger,
+	// with an empty clone token. The clone of the runner fails visibly, not the
+	// push.
 	tr := &stubTrigger{}
 	mint := &stubMinter{err: errors.New("mint down")}
 	NewDispatcher(Config{
@@ -441,7 +450,7 @@ func TestDispatchMintFailureLeavesRunUsable(t *testing.T) {
 	}
 }
 
-// stubSecrets returns a fixed secret map (or an error) for any repo.
+// stubSecrets returns a fixed secret map, or an error, for any repo.
 type stubSecrets struct {
 	env map[string]string
 	err error
@@ -474,7 +483,8 @@ func TestDispatchInjectsSecrets(t *testing.T) {
 	if env["GITMOTE_CI_SECRET_API_TOKEN"] != "s3cr3t" {
 		t.Errorf("GITMOTE_CI_SECRET_API_TOKEN = %q, want the injected value", env["GITMOTE_CI_SECRET_API_TOKEN"])
 	}
-	// The namespacing keeps a secret from ever shadowing the runner's coordinates.
+	// The namespacing keeps a secret from ever shadowing the coordinates of the
+	// runner.
 	if env["GITMOTE_URL"] != "https://gitmote.test" || env["GITMOTE_REPO"] != "app" {
 		t.Errorf("coordinates altered by secret injection: %+v", env)
 	}
@@ -487,7 +497,8 @@ func TestDispatchSecretsFailureRunsWithout(t *testing.T) {
 		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
-	// A secrets error is non-fatal: the job still triggers, just without secrets.
+	// A secrets error is non-fatal. The job still triggers, but without
+	// secrets.
 	tr := &stubTrigger{}
 	NewDispatcher(Config{
 		Runs: md, Materializer: mz, Trigger: tr,
@@ -511,8 +522,9 @@ func TestDispatchInjectsEnvSecrets(t *testing.T) {
 		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
-	// No DB Secrets service configured at all — env secrets alone must inject,
-	// since they need no master key (the fully-automated .env path).
+	// No DB Secrets service is configured at all. Env secrets alone must
+	// inject, because they need no master key. This is the fully automated
+	// .env path.
 	tr := &stubTrigger{}
 	NewDispatcher(Config{
 		Runs: md, Materializer: mz, Trigger: tr,
@@ -536,7 +548,8 @@ func TestDispatchEnvSecretsOverrideDBSecrets(t *testing.T) {
 		".gitmote/workflows/ci.yml": "name: CI\non: push\n",
 	})
 
-	// On a name collision the env value wins; a DB-only secret still comes through.
+	// On a name collision, the env value wins. A DB-only secret still comes
+	// through.
 	tr := &stubTrigger{}
 	NewDispatcher(Config{
 		Runs: md, Materializer: mz, Trigger: tr,
@@ -558,7 +571,7 @@ func TestDispatchEnvSecretsOverrideDBSecrets(t *testing.T) {
 	}
 }
 
-// failNthTrigger fails the Nth (1-based) trigger call and succeeds the others.
+// failNthTrigger fails the Nth trigger call (1-based) and succeeds the others.
 type failNthTrigger struct {
 	failOn int
 	n      int

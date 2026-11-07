@@ -1,8 +1,8 @@
-// Package scaleway is a thin client for Scaleway Serverless Jobs — the CI runner
-// substrate (docs/architecture/ci.md). A job definition is created once
-// out of band; the app injects per-run env at start, so one definition serves
-// all repos. The client is fire-and-forget: the caller triggers a run and never
-// waits on it — the runner reports back over the internal API (stage 4).
+// Package scaleway is a thin client for Scaleway Serverless Jobs, the CI runner
+// substrate (docs/architecture/ci.md). A job definition is created once, out
+// of band. The app injects per-run env at start, so one definition serves all
+// repos. The client is fire-and-forget. The caller triggers a run and never
+// waits on it. The runner reports back over the internal API.
 package scaleway
 
 import (
@@ -15,8 +15,8 @@ import (
 	"time"
 )
 
-// triggerTimeout bounds the single start POST; the job itself runs
-// asynchronously on Scaleway well beyond this.
+// triggerTimeout bounds the single start POST. The job itself runs
+// asynchronously on Scaleway, well beyond this timeout.
 const triggerTimeout = 10 * time.Second
 
 // JobsClient starts runs of one Scaleway Serverless Job definition.
@@ -28,7 +28,7 @@ type JobsClient struct {
 }
 
 // NewJobsClient returns a client for the given job definition. When
-// jobDefinitionID is empty (local dev / tests), Trigger is a no-op.
+// jobDefinitionID is empty (local dev or tests), Trigger does nothing.
 func NewJobsClient(secretKey, region, jobDefinitionID string) *JobsClient {
 	return &JobsClient{
 		secretKey:       secretKey,
@@ -38,9 +38,10 @@ func NewJobsClient(secretKey, region, jobDefinitionID string) *JobsClient {
 	}
 }
 
-// Trigger starts one job run with env injected as its environment variables. It
-// is a no-op returning nil when the client has no job definition configured. A
-// response status >= 300 is an error, with the response body attached.
+// Trigger starts one job run with env injected as its environment variables.
+// When the client has no job definition configured, it does nothing and
+// returns nil. A response status >= 300 is an error, with the response body
+// attached.
 func (c *JobsClient) Trigger(ctx context.Context, env map[string]string) error {
 	if c.jobDefinitionID == "" {
 		return nil

@@ -28,8 +28,9 @@ func TestLiveLogsAppendAndRead(t *testing.T) {
 }
 
 func TestLiveLogsReadUnknownJob(t *testing.T) {
-	// The failure path: no buffer for the job → ok=false so the caller falls back
-	// to the durable log rather than showing an empty live tail forever.
+	// This is the failure path. With no buffer for the job, ok is false. So the
+	// caller falls back to the durable log rather than showing an empty live
+	// tail forever.
 	data, next, done, ok := NewLiveLogs().Read(99, 3)
 	if ok || done || data != nil || next != 3 {
 		t.Fatalf("Read unknown = data %q next %d done %v ok %v, want nil/3/false/false", data, next, done, ok)
@@ -39,7 +40,8 @@ func TestLiveLogsReadUnknownJob(t *testing.T) {
 func TestLiveLogsReadClampsOffset(t *testing.T) {
 	l := NewLiveLogs()
 	l.Append(1, []byte("abc"), time.Unix(0, 0))
-	// An over-long offset (stale client) clamps to the end, never panics.
+	// An over-long offset from a stale client clamps to the end and never
+	// panics.
 	if data, next, _, ok := l.Read(1, 999); !ok || len(data) != 0 || next != 3 {
 		t.Fatalf("clamped Read = %q next %d ok %v, want empty/3/true", data, next, ok)
 	}
@@ -88,7 +90,8 @@ func TestLiveLogsSweep(t *testing.T) {
 	l.Append(1, []byte("old"), start)
 	l.Append(2, []byte("fresh"), start.Add(9*time.Minute))
 
-	// Sweep at start+10m with a 5m TTL: job 1 (idle 10m) goes, job 2 (idle 1m) stays.
+	// Sweep at start+10m with a 5m TTL. Job 1 (idle 10m) goes, and job 2 (idle
+	// 1m) stays.
 	l.Sweep(start.Add(10*time.Minute), 5*time.Minute)
 	if _, _, _, ok := l.Read(1, 0); ok {
 		t.Error("job 1 should have been swept (idle past TTL)")

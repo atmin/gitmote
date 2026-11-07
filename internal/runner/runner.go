@@ -1,10 +1,13 @@
-// Package runner is the CI job runner: the code that claims a queued job from
-// gitmote's internal report API, checks out the repo at the pushed SHA, runs the
-// workflow engine over .gitmote/workflows, and reports the combined log +
-// pass/fail back. It is deliberately substrate-agnostic — the same code runs as
-// a local process (LocalTrigger, dev) and, later, inside a Scaleway Serverless
-// Job container (cloud). It never touches s3lite or S3: the leader writes the
-// log blob and status rows in response to the report calls.
+// Package runner is the CI job runner. It is the code that does these steps:
+//   - It claims a queued job from the internal report API of gitmote.
+//   - It checks out the repo at the pushed SHA.
+//   - It runs the workflow engine over .gitmote/workflows.
+//   - It reports back the combined log and the pass or fail result.
+//
+// It is deliberately substrate-agnostic. The same code runs as a local process
+// (LocalTrigger, dev) and inside a Scaleway Serverless Job container (cloud).
+// It never touches s3lite or S3. The leader writes the log blob and the status
+// rows in response to the report calls.
 package runner
 
 import (
@@ -23,43 +26,46 @@ import (
 	"time"
 )
 
-// errNotClaimable means the job is absent, already claimed, or terminal — the
-// runner has nothing to do and exits cleanly (another runner owns it, or it is
-// already reported).
+// errNotClaimable means that the job is absent, already claimed or terminal.
+// The runner has nothing to do and exits cleanly. Another runner owns the job,
+// or the job is already reported.
 var errNotClaimable = errors.New("job not claimable")
 
-// Cloner fetches a repo at an exact SHA (onto branch ref, when it names one)
-// into dest, authenticating with a scoped token over baseURL's git-HTTP
-// endpoint. GitCloner is the real implementation.
+// Cloner fetches a repo at an exact SHA into dest. When ref names a branch, the
+// SHA goes onto that branch. Cloner authenticates with a scoped token over the
+// git-HTTP endpoint of baseURL. GitCloner is the real implementation.
 type Cloner interface {
 	Clone(ctx context.Context, baseURL, repo, sha, ref, token, dest string) error
 }
 
 // Engine runs the workflows under workflowDir within repoDir. It returns the
-// combined log and whether the run passed. A non-nil error means the engine
-// could not execute at all (e.g. act missing) — distinct from a workflow that
-// ran and failed (passed=false, err=nil). It also tees the combined output to
-// sink as it is produced (nil to disable), which the runner uses to stream a live
-// tail; sink is best-effort and never affects the returned log or status.
+// combined log and whether the run passed. A non-nil error means that the
+// engine could not execute at all, for example because act is missing. That is
+// distinct from a workflow that ran and failed (passed=false, err=nil).
+//
+// Engine also tees the combined output to sink as it is produced. A nil sink
+// disables this. The runner uses sink to stream a live tail. sink is
+// best-effort and never affects the returned log or status.
 type Engine interface {
 	Run(ctx context.Context, repoDir, workflowDir string, sink io.Writer) (log []byte, passed bool, err error)
 }
 
 // Config wires one runner invocation.
 type Config struct {
-	BaseURL      string // GITMOTE_URL, e.g. http://localhost:8080
+	BaseURL      string // GITMOTE_URL, for example http://localhost:8080
 	JobID        int64  // GITMOTE_CI_JOB_ID
-	WorkerSecret string // WORKER_SECRET — authenticates the report API
-	CloneToken   string // GITMOTE_CI_CLONE_TOKEN — read-only, repo-scoped, expiring
+	WorkerSecret string // WORKER_SECRET, which authenticates the report API
+	CloneToken   string // GITMOTE_CI_CLONE_TOKEN: read-only, repo-scoped, expiring
 
 	Cloner     Cloner
 	Engine     Engine
 	HTTPClient *http.Client
-	WorkDir    string // parent dir for the checkout; a temp dir when empty
+	WorkDir    string // parent dir for the checkout. A temp dir when empty.
 	Logger     *slog.Logger
 }
 
-// spec is the job coordinates a claim returns (mirrors the report API's jobSpec).
+// spec is the job coordinates that a claim returns. It mirrors the jobSpec of
+// the report API.
 type spec struct {
 	JobID       int64  `json:"job_id"`
 	RunID       int64  `json:"run_id"`
@@ -69,12 +75,13 @@ type spec struct {
 	WorkflowDir string `json:"workflow_dir"`
 }
 
-// Run executes one job end-to-end: claim → clone → engine → complete. It returns
-// an error only for an internal failure that could not be reported (a failed
-// claim, or a failed completion POST); a workflow that runs and fails is a
-// successful run of the runner that reports status=failed. The caller (the
-// runner binary) exits non-zero on a returned error so a crashed runner is
-// distinguishable from a failed build.
+// Run executes one job end-to-end, in this order: claim, clone, engine,
+// complete. It returns an error only for an internal failure that it could not
+// report. A failed claim or a failed completion POST is such a failure. A
+// workflow that runs and fails is a successful run of the runner. The runner
+// then reports status=failed. The caller (the runner binary) exits non-zero
+// on a returned error. So a crashed runner is distinguishable from a failed
+// build.
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)
@@ -109,10 +116,10 @@ func Run(ctx context.Context, cfg Config) error {
 		return complete(ctx, cfg, sp.JobID, "error", []byte("clone failed: "+err.Error()+"\n"))
 	}
 
-	// Stream the combined output to the leader's live buffer as it is produced, so
-	// the UI can tail the job. Best-effort: the durable log is still shipped whole
-	// by complete below, so a dropped chunk (or an unreachable leader) is only a
-	// cosmetic gap in the live view.
+	// Stream the combined output to the live buffer of the leader as it is
+	// produced, so the UI can tail the job. This is best-effort. complete below
+	// still ships the durable log whole. So a dropped chunk or an unreachable
+	// leader is only a cosmetic gap in the live view.
 	streamer := newLogStreamer(cfg, sp.JobID)
 	streamer.start()
 	log, passed, err := cfg.Engine.Run(ctx, dest, sp.WorkflowDir, streamer)
@@ -181,9 +188,9 @@ func complete(ctx context.Context, cfg Config, jobID int64, status string, log [
 	return nil
 }
 
-// ConfigFromEnv reads the runner's configuration from the environment injected
-// by the trigger (dispatcher.jobEnv). Cloner, Engine, and Logger are left for
-// the caller to set.
+// ConfigFromEnv reads the configuration of the runner from the environment
+// that the trigger injects (dispatcher.jobEnv). The caller sets Cloner, Engine
+// and Logger.
 func ConfigFromEnv() (Config, error) {
 	jobID, err := strconv.ParseInt(os.Getenv("GITMOTE_CI_JOB_ID"), 10, 64)
 	if err != nil {

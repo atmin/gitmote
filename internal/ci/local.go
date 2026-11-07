@@ -9,18 +9,19 @@ import (
 )
 
 // NoopTrigger records a run but executes nothing. It is the fallback when no
-// runner substrate is configured (neither local nor Scaleway) — dispatch stays
-// fire-and-forget and the run simply never leaves the queued state.
+// runner substrate is configured, neither local nor Scaleway. Dispatch stays
+// fire-and-forget, and the run never leaves the queued state.
 type NoopTrigger struct{}
 
 // Trigger implements Trigger.
 func (NoopTrigger) Trigger(context.Context, map[string]string) error { return nil }
 
 // LocalTrigger runs a CI job by spawning the gitmote-runner binary as a local
-// process, mirroring how the Scaleway client starts a container: same runner
-// code, same env contract, a local substrate instead of a cloud job. It is
-// fire-and-forget — Start (not Wait) returns immediately so dispatch never
-// blocks the push; a background goroutine reaps the process and logs its exit.
+// process. This mirrors how the Scaleway client starts a container. The runner
+// code and the env contract are the same, but the substrate is local instead
+// of a cloud job. LocalTrigger is fire-and-forget. Start (not Wait) returns
+// immediately, so dispatch never blocks the push. A background goroutine reaps
+// the process and logs its exit.
 type LocalTrigger struct {
 	binary string
 	logger *slog.Logger
@@ -34,14 +35,18 @@ func NewLocalTrigger(binaryPath string, logger *slog.Logger) *LocalTrigger {
 	return &LocalTrigger{binary: binaryPath, logger: logger}
 }
 
-// Trigger starts the runner with env layered over the parent environment (so the
-// child inherits PATH, DOCKER_HOST, etc. that act needs). It returns the Start
-// error only; a non-zero runner exit is reported to the report API by the runner
-// itself, and reaped here for logging.
+// Trigger starts the runner with env layered over the parent environment. So
+// the child inherits the variables that act needs, such as PATH and
+// DOCKER_HOST. Trigger returns only the Start error. Trigger reaps the exit
+// for logging.
+//
+// The runner reports a failed job to the report API itself, and then exits 0.
+// A non-zero exit is an internal runner failure that the runner could not
+// report. Trigger only logs that exit.
 func (t *LocalTrigger) Trigger(_ context.Context, env map[string]string) error {
-	// Deliberately not tied to the dispatch ctx: the runner outlives the push
-	// request that triggered it. It reports its own outcome and bounds its own
-	// work.
+	// The command is deliberately not tied to the dispatch ctx, because the
+	// runner outlives the push request that triggered it. The runner reports
+	// its own outcome and bounds its own work.
 	cmd := exec.Command(t.binary)
 	cmd.Env = append(os.Environ(), flattenEnv(env)...)
 	if err := cmd.Start(); err != nil {
@@ -58,7 +63,7 @@ func (t *LocalTrigger) Trigger(_ context.Context, env map[string]string) error {
 	return nil
 }
 
-// flattenEnv turns a map into the KEY=VALUE slice exec expects.
+// flattenEnv turns a map into the KEY=VALUE slice that exec expects.
 func flattenEnv(env map[string]string) []string {
 	out := make([]string, 0, len(env))
 	for k, v := range env {

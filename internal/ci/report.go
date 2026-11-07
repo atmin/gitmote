@@ -18,20 +18,20 @@ import (
 )
 
 const (
-	// logCap bounds a stored job log so a runaway workflow can't fill the store.
-	// Over the cap, the log is truncated with an explicit
-	// marker — never silently.
+	// logCap bounds a stored job log, so a runaway workflow can't fill the
+	// store. Over the cap, the log is truncated with an explicit marker, never
+	// silently.
 	logCap = 10 << 20 // 10 MiB
 	// logTruncationMarker is appended when a log is truncated at the cap.
 	logTruncationMarker = "\n\n[log truncated: exceeded 10 MiB cap]\n"
-	// liveLogTTL bounds how long a job's in-memory live buffer survives without an
-	// update before Sweep reclaims it — long enough for a browser to catch the
-	// terminal status and switch to the durable log.
+	// liveLogTTL bounds how long the in-memory live buffer of a job survives
+	// without an update before Sweep reclaims it. It is long enough for a
+	// browser to catch the terminal status and switch to the durable log.
 	liveLogTTL = 10 * time.Minute
 )
 
-// ReportMeta is the slice of meta the report API reads and writes. *meta.Metadata
-// satisfies it.
+// ReportMeta is the part of meta that the report API reads and writes.
+// *meta.Metadata satisfies it.
 type ReportMeta interface {
 	GetJob(ctx context.Context, jobID int64) (*meta.Job, error)
 	ClaimJob(ctx context.Context, jobID int64) (*meta.Job, error)
@@ -43,11 +43,12 @@ type ReportMeta interface {
 	SweepStuckJobs(ctx context.Context, cutoff time.Time) ([]int64, error)
 }
 
-// ReportAPI serves the runner's authenticated internal endpoints: claim a job
-// and report its completion. Runners never touch s3lite or S3 directly — the
-// parent (leader) writes the log blob and the status rows, matching the push-hook
-// discipline (docs/architecture/ci.md). Auth is a constant-time WORKER_SECRET compare;
-// only the leader may write, so a follower returns a retryable 503.
+// ReportAPI serves the authenticated internal endpoints of the runner: claim a
+// job, and report its completion. Runners never touch s3lite or S3 directly.
+// The parent (the leader) writes the log blob and the status rows. This
+// matches the push-hook discipline (docs/architecture/ci.md). Auth is a
+// constant-time WORKER_SECRET compare. Only the leader may write, so a
+// follower returns a retryable 503.
 type ReportAPI struct {
 	meta     ReportMeta
 	store    store.Store
@@ -57,9 +58,10 @@ type ReportAPI struct {
 	logger   *slog.Logger
 }
 
-// NewReportAPI returns a report API. live is the in-memory live-log store the
-// browser tails (nil makes a fresh one). isLeader gates writes (nil means always
-// leader, for tests/local). An empty secret rejects every request.
+// NewReportAPI returns a report API. live is the in-memory live-log store that
+// the browser tails. A nil live makes a fresh one. isLeader gates writes. A nil
+// isLeader means always leader, for tests and local use. An empty secret
+// rejects every request.
 func NewReportAPI(m ReportMeta, s store.Store, live *LiveLogs, isLeader func() bool, secret string, logger *slog.Logger) *ReportAPI {
 	if live == nil {
 		live = NewLiveLogs()
@@ -73,16 +75,16 @@ func NewReportAPI(m ReportMeta, s store.Store, live *LiveLogs, isLeader func() b
 	return &ReportAPI{meta: m, store: s, live: live, isLeader: isLeader, secret: secret, logger: logger}
 }
 
-// Register mounts the internal CI routes on mux (not under /ui — these are
-// machine-to-machine, WORKER_SECRET-authenticated).
+// Register mounts the internal CI routes on mux. They are not under /ui,
+// because they are machine-to-machine and WORKER_SECRET-authenticated.
 func (a *ReportAPI) Register(mux *http.ServeMux) {
 	mux.Handle("GET /internal/ci/jobs/{id}", http.HandlerFunc(a.handleClaim))
 	mux.Handle("POST /internal/ci/jobs/{id}/log", http.HandlerFunc(a.handleLogChunk))
 	mux.Handle("POST /internal/ci/jobs/{id}/complete", http.HandlerFunc(a.handleComplete))
 }
 
-// jobSpec is what a claim returns: everything the runner needs to check out and
-// run the job.
+// jobSpec is what a claim returns: everything that the runner needs to check
+// out and run the job.
 type jobSpec struct {
 	JobID       int64  `json:"job_id"`
 	RunID       int64  `json:"run_id"`
@@ -92,8 +94,9 @@ type jobSpec struct {
 	WorkflowDir string `json:"workflow_dir"`
 }
 
-// handleClaim atomically claims a queued job (queued→running) and returns its
-// spec. A job that is not claimable (absent, already claimed, terminal) is 404.
+// handleClaim atomically claims a queued job, from queued to running, and
+// returns its spec. A job that is not claimable is 404. That is a job that is
+// absent, already claimed or terminal.
 func (a *ReportAPI) handleClaim(w http.ResponseWriter, r *http.Request) {
 	if !a.authed(w, r) {
 		return
@@ -137,10 +140,15 @@ func (a *ReportAPI) handleClaim(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleComplete records a job's outcome. Status and error travel as query
-// params; the request body is the combined log. Content-before-pointer: the log
-// blob is stored first, then the job status + log_key, then the run rolls up.
-// Idempotent: completing an already-terminal job is a no-op.
+// handleComplete records the outcome of a job. Status and error travel as
+// query params. The request body is the combined log. The order is
+// content-before-pointer:
+//   - The log blob is stored first.
+//   - Then the job status and log_key are stored.
+//   - Then the run rolls up.
+//
+// handleComplete is idempotent: completing an already-terminal job does
+// nothing.
 func (a *ReportAPI) handleComplete(w http.ResponseWriter, r *http.Request) {
 	if !a.authed(w, r) {
 		return
@@ -165,7 +173,7 @@ func (a *ReportAPI) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isTerminal(job.Status) {
-		writeJSON(w, map[string]bool{"ok": true}) // idempotent no-op
+		writeJSON(w, map[string]bool{"ok": true}) // idempotent, does nothing
 		return
 	}
 
@@ -182,24 +190,29 @@ func (a *ReportAPI) handleComplete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	// Pointer after content: the blob is durable before the row references it.
+	// The pointer comes after the content. The blob is durable before the row
+	// references it.
 	if err := a.meta.SetJobResult(r.Context(), job.ID, status, logKey); err != nil {
 		a.logger.Error("ci: set job result failed", "job", id, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	a.rollupRun(r.Context(), run.ID)
-	// Flip the live tail to done so a watching browser switches to the durable log.
+	// Mark the live tail done, so a watching browser switches to the durable
+	// log.
 	a.live.Finish(id, time.Now())
 
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
-// handleLogChunk appends a runner's incremental log bytes to the job's in-memory
-// live buffer — the best-effort tail the UI polls while the job runs. It never
-// touches s3lite or S3 (the durable log is written once at completion); a lost
-// chunk is a cosmetic gap, not data loss. Leader-only (the browser reads the same
-// leader's buffer), so a follower's 503 just makes the runner drop the chunk.
+// handleLogChunk appends the incremental log bytes of a runner to the
+// in-memory live buffer of the job. That buffer is the best-effort tail that
+// the UI polls while the job runs. handleLogChunk never touches s3lite or S3.
+// The durable log is written once, at completion. A lost chunk is a cosmetic
+// gap, not data loss.
+//
+// handleLogChunk is leader-only, because the browser reads the buffer of the
+// same leader. So a 503 from a follower only makes the runner drop the chunk.
 func (a *ReportAPI) handleLogChunk(w http.ResponseWriter, r *http.Request) {
 	if !a.authed(w, r) {
 		return
@@ -217,8 +230,8 @@ func (a *ReportAPI) handleLogChunk(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// storeLog writes the body under key, enforcing the size cap with an explicit
-// truncation marker rather than a silent cut.
+// storeLog writes the body under key. It enforces the size cap with an
+// explicit truncation marker rather than a silent cut.
 func (a *ReportAPI) storeLog(ctx context.Context, key string, body io.Reader) error {
 	data, err := io.ReadAll(io.LimitReader(body, logCap+1))
 	if err != nil {
@@ -230,9 +243,10 @@ func (a *ReportAPI) storeLog(ctx context.Context, key string, body io.Reader) er
 	return a.store.Put(ctx, key, bytes.NewReader(data))
 }
 
-// rollupRun recomputes a run's status from its jobs: still running while any job
-// is non-terminal, else error > failed > passed by worst outcome. Logged, not
-// returned — a rollup failure must not fail an already-recorded completion.
+// rollupRun recomputes the status of a run from its jobs. The run is still
+// running while any job is non-terminal. Otherwise the worst outcome wins, in
+// the order error, failed, passed. rollupRun logs errors and does not return
+// them. A rollup failure must not fail an already-recorded completion.
 func (a *ReportAPI) rollupRun(ctx context.Context, runID int64) {
 	jobs, err := a.meta.ListJobs(ctx, runID)
 	if err != nil {
@@ -245,10 +259,11 @@ func (a *ReportAPI) rollupRun(ctx context.Context, runID int64) {
 	}
 }
 
-// ReconcileStuck marks running jobs older than maxAge as error and rolls up their
-// runs, so a runner that dies without reporting doesn't leave a job running
-// forever. It is leader-gated: only the writer may touch s3lite, so a follower
-// no-ops (the leader's sweep covers the shared state).
+// ReconcileStuck marks running jobs older than maxAge as error and rolls up
+// their runs. So a runner that dies without reporting doesn't leave a job
+// running forever. ReconcileStuck is leader-gated. Only the writer may touch
+// s3lite, so on a follower it does nothing. The sweep of the leader covers the
+// shared state.
 func (a *ReportAPI) ReconcileStuck(ctx context.Context, maxAge time.Duration, now time.Time) error {
 	if !a.isLeader() {
 		return nil
@@ -270,22 +285,23 @@ func (a *ReportAPI) ReconcileStuck(ctx context.Context, maxAge time.Duration, no
 	return nil
 }
 
-// authed enforces the constant-time WORKER_SECRET check and the leader gate,
-// writing the response and returning false on failure.
+// authed enforces the constant-time WORKER_SECRET check and the leader gate.
+// On failure, it writes the response and returns false.
 func (a *ReportAPI) authed(w http.ResponseWriter, r *http.Request) bool {
 	if a.secret == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Worker-Secret")), []byte(a.secret)) != 1 {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false
 	}
 	if !a.isLeader() {
-		// A follower can't write s3lite; the runner should retry against the leader.
+		// A follower can't write s3lite. The runner should retry against the
+		// leader.
 		http.Error(w, "not the writer; retry", http.StatusServiceUnavailable)
 		return false
 	}
 	return true
 }
 
-// jobID parses the {id} path value, writing a 400 on failure.
+// jobID parses the {id} path value. It writes a 400 on failure.
 func jobID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -307,7 +323,7 @@ func completionStatus(w http.ResponseWriter, r *http.Request) (meta.RunStatus, b
 	}
 }
 
-// rollup derives a run's status from its jobs.
+// rollup derives the status of a run from its jobs.
 func rollup(jobs []meta.Job) meta.RunStatus {
 	worst := meta.RunPassed
 	for _, j := range jobs {

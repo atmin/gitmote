@@ -5,13 +5,17 @@ import (
 	"time"
 )
 
-// LiveLogs holds in-memory, per-job live CI log buffers on the leader — the
-// ephemeral tail the UI polls while a job runs. It is deliberately NOT replicated
-// or persisted: the durable log is the blob the runner ships on completion
-// (content-before-pointer, see report.go). If this is lost (a leader restart), the
-// live tail blips but the durable record is unaffected — live streaming is a
-// best-effort UX layer, never a correctness path. Safe for concurrent use: the
-// runner's chunk POSTs append while the browser polls Read.
+// LiveLogs holds in-memory, per-job live CI log buffers on the leader. They
+// are the ephemeral tail that the UI polls while a job runs. LiveLogs is
+// deliberately NOT replicated or persisted. The durable log is the blob that
+// the runner ships on completion (content-before-pointer, see report.go).
+//
+// A leader restart loses LiveLogs. The live tail then has a short gap, but the
+// durable record is unaffected. Live streaming is a best-effort UX layer, never
+// a correctness path.
+//
+// LiveLogs is safe for concurrent use. The chunk POSTs of the runner append
+// while the browser polls Read.
 type LiveLogs struct {
 	mu   sync.Mutex
 	jobs map[int64]*liveLog
@@ -30,9 +34,10 @@ func NewLiveLogs() *LiveLogs {
 	return &LiveLogs{jobs: map[int64]*liveLog{}, cap: logCap}
 }
 
-// Append adds chunk to jobID's live buffer, creating it on first write and
-// enforcing the shared size cap with a one-time truncation marker (never a silent
-// cut). Best-effort: appends after the cap are dropped.
+// Append adds chunk to the live buffer of jobID. It creates the buffer on the
+// first write. It enforces the shared size cap with a one-time truncation
+// marker, never a silent cut. Append is best-effort: it drops appends after
+// the cap.
 func (l *LiveLogs) Append(jobID int64, chunk []byte, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -56,9 +61,10 @@ func (l *LiveLogs) Append(jobID int64, chunk []byte, now time.Time) {
 	lg.buf = append(lg.buf, chunk...)
 }
 
-// Finish marks jobID's live tail complete so a reader knows to switch to the
-// durable log. A no-op for an unknown job (its buffer may already be swept — the
-// reader then falls back to the durable log by job status).
+// Finish marks the live tail of jobID complete, so a reader knows to switch to
+// the durable log. Finish does nothing for an unknown job. The buffer of that
+// job may already be swept. The reader then falls back to the durable log by
+// job status.
 func (l *LiveLogs) Finish(jobID int64, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -68,11 +74,17 @@ func (l *LiveLogs) Finish(jobID int64, now time.Time) {
 	}
 }
 
-// Read returns jobID's buffered bytes from offset onward, the next offset to poll
-// from, and whether the job has finished. ok is false when no live buffer exists
-// (never started, or swept) — the caller should fall back to the durable log. A
-// negative or over-long offset is clamped, so a stale client never panics or
-// re-reads the whole buffer.
+// Read returns three things for jobID:
+//   - the buffered bytes from offset onward
+//   - the next offset to poll from
+//   - whether the job has finished
+//
+// ok is false when no live buffer exists, because the job never started or the
+// buffer was swept. The caller should then fall back to the durable log.
+//
+// Read clamps a bad offset, so a stale client never panics:
+//   - A negative offset becomes zero, so Read returns the whole buffer.
+//   - An offset past the end becomes the end, so Read returns no bytes.
 func (l *LiveLogs) Read(jobID int64, offset int) (data []byte, next int, done, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -91,10 +103,11 @@ func (l *LiveLogs) Read(jobID int64, offset int) (data []byte, next int, done, o
 	return out, len(lg.buf), lg.done, true
 }
 
-// Sweep drops buffers idle (no append/finish) for longer than ttl, reclaiming
-// memory once a run is done or its runner has died. Active jobs flush every second
-// so their buffers stay fresh; a swept buffer just makes Read fall back to the
-// durable log.
+// Sweep drops buffers that are idle for longer than ttl. Idle means no Append
+// and no Finish. Sweep reclaims memory once a run is done or its runner has
+// died. A running job keeps its buffer fresh only while it sends log chunks.
+// The runner sends no chunk for a second with no output. So a quiet running
+// job can expire. A swept buffer only makes Read fall back to the durable log.
 func (l *LiveLogs) Sweep(now time.Time, ttl time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

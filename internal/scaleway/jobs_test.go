@@ -25,9 +25,9 @@ func TestTriggerPostsStartRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Point the client at the test server by overriding the base URL via a client
-	// that rewrites the host: simplest is to build the client and swap its
-	// transport to redirect to srv.
+	// Point the client at the test server. Override the base URL through a
+	// client that rewrites the host. The easiest way is to build the client and
+	// swap its transport to redirect to srv.
 	c := NewJobsClient("secret-key", "fr-par", "def-123")
 	c.httpClient = srv.Client()
 	c.httpClient.Transport = rewriteHost(srv.URL)
@@ -89,9 +89,9 @@ func TestTriggerNoOpWhenUnconfigured(t *testing.T) {
 	}
 }
 
-// rewriteHost returns a transport that redirects every request to the test
-// server's host while preserving the request path, so the client's hardcoded
-// api.scaleway.com URL reaches httptest.
+// rewriteHost returns a transport that redirects every request to the host of
+// the test server, and preserves the request path. So the hardcoded
+// api.scaleway.com URL of the client reaches httptest.
 func rewriteHost(serverURL string) http.RoundTripper {
 	base := strings.TrimPrefix(strings.TrimPrefix(serverURL, "http://"), "https://")
 	return roundTripFunc(func(r *http.Request) (*http.Response, error) {

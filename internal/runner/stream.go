@@ -10,16 +10,19 @@ import (
 	"time"
 )
 
-// liveLogFlushInterval is how often the streamer ships accumulated output to the
-// leader's live buffer. Short enough to feel live, long enough to keep the HTTP
-// overhead negligible against a multi-minute build.
+// liveLogFlushInterval is how often the streamer ships accumulated output to
+// the live buffer of the leader. It is short enough to feel live. It is long
+// enough to keep the HTTP overhead negligible against a multi-minute build.
 const liveLogFlushInterval = time.Second
 
-// logStreamer is the io.Writer the engine tees its combined output to. A
-// background goroutine periodically POSTs the accumulated bytes to the leader's
-// live-log endpoint, so the UI can tail a running job. It is deliberately
-// best-effort: a failed POST drops that chunk (the durable log is shipped whole at
-// completion), so streaming never blocks or fails the run.
+// logStreamer is the io.Writer that the engine tees its combined output to. A
+// background goroutine periodically POSTs the accumulated bytes. The POSTs go
+// to the live-log endpoint of the leader, so the UI can tail a running job.
+//
+// logStreamer is deliberately best-effort. A failed POST drops that chunk,
+// because the durable log is shipped whole at completion. So streaming never
+// fails the run. Write only buffers, so the output of the engine never waits
+// on HTTP. Run does wait for stop, which includes a final HTTP flush.
 type logStreamer struct {
 	url    string
 	secret string
@@ -33,7 +36,7 @@ type logStreamer struct {
 	doneCh chan struct{}
 }
 
-// newLogStreamer builds a streamer targeting cfg's leader for jobID.
+// newLogStreamer builds a streamer for jobID that targets the leader of cfg.
 func newLogStreamer(cfg Config, jobID int64) *logStreamer {
 	return &logStreamer{
 		url:    fmt.Sprintf("%s/internal/ci/jobs/%d/log", cfg.BaseURL, jobID),
@@ -45,8 +48,8 @@ func newLogStreamer(cfg Config, jobID int64) *logStreamer {
 	}
 }
 
-// Write buffers p for the next flush. It never errors, so teeing it into the
-// engine's output can't disturb the real capture.
+// Write buffers p for the next flush. It never returns an error. So teeing it
+// into the output of the engine can't disturb the real capture.
 func (s *logStreamer) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	s.pending = append(s.pending, p...)
@@ -72,15 +75,15 @@ func (s *logStreamer) loop() {
 		case <-t.C:
 			s.flush()
 		case <-s.stopCh:
-			s.flush() // ship whatever's left before the durable completion
+			s.flush() // ship the rest before the durable completion
 			return
 		}
 	}
 }
 
-// flush POSTs the pending bytes and clears them. On failure the chunk is dropped
-// (best-effort): the durable log still carries everything, so a live gap is
-// cosmetic.
+// flush POSTs the pending bytes and clears them. On failure, flush drops the
+// chunk (best-effort). The durable log still carries everything, so a live gap
+// is cosmetic.
 func (s *logStreamer) flush() {
 	s.mu.Lock()
 	chunk := s.pending
