@@ -34,33 +34,36 @@ import (
 	"github.com/atmin/s3lite"
 )
 
-// version is stamped at build time via -ldflags "-X main.version=...".
+// version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
 const shutdownTimeout = 10 * time.Second
 
-// promoteTimeout bounds an on-demand lease acquisition on the request path (see
-// the gate in buildGitHandler): a follower blocks at most this long for the
-// restore before falling back to 503, so a slow S3 can't hang a request.
+// promoteTimeout bounds an on-demand lease acquisition on the request path. See
+// the gate in buildGitHandler. A follower waits at most this long for the
+// restore, and then it falls back to a 503. A slow S3 can't hang a request.
 const promoteTimeout = 10 * time.Second
 
 const (
 	// idleYieldAfter is how long a writer serves no request before it hands the
-	// lease back, so another instance on the same storage root can write next
-	// (see leaseActivity and docs/configuration.md).
+	// lease back. Another instance on the same storage root can then write next.
+	// See leaseActivity and docs/configuration.md.
 	idleYieldAfter = 5 * time.Second
 	// yieldCheckInterval is how often the writer checks whether it is idle.
 	yieldCheckInterval = time.Second
-	// yieldTimeout bounds one YieldLease call: its final sync and the release.
+	// yieldTimeout bounds one YieldLease call, which is the final sync and the
+	// release.
 	yieldTimeout = 10 * time.Second
 )
 
 // defaultListenAddr is the bind address in the container, where ports are mapped
-// externally. GITMOTE_LISTEN_ADDR overrides it — for running a second native
-// instance beside `make dev` (e.g. the break-glass self-deploy on :8081).
+// externally. GITMOTE_LISTEN_ADDR overrides it. Use the override to run a second
+// native instance beside `make dev`, for example the break-glass self-deploy on
+// :8081.
 const defaultListenAddr = ":8080"
 
-// listenAddrFromEnv returns GITMOTE_LISTEN_ADDR when set, else defaultListenAddr.
+// listenAddrFromEnv returns GITMOTE_LISTEN_ADDR when it is set, and
+// defaultListenAddr otherwise.
 func listenAddrFromEnv() string {
 	if v := os.Getenv("GITMOTE_LISTEN_ADDR"); v != "" {
 		return v
@@ -71,15 +74,14 @@ func listenAddrFromEnv() string {
 const (
 	// reconcileInterval is how often the leader sweeps abandoned CI jobs.
 	reconcileInterval = 5 * time.Minute
-	// reconcileMaxAge bounds a running job: past this, a runner is presumed dead
-	// and its job is failed. It matches the clone-token TTL — a job that outlives
-	// its credential can't finish anyway.
+	// reconcileMaxAge bounds a running job. Past this age, the runner is presumed
+	// dead and its job is failed.
 	reconcileMaxAge = time.Hour
 )
 
 func main() {
-	// Subcommands run without the server (single-writer admin); the default
-	// (no subcommand) is the server.
+	// A subcommand runs without the server, as a single-writer admin task. With
+	// no subcommand, the binary runs the server.
 	if args := os.Args[1:]; len(args) > 0 && args[0] == "bootstrap" {
 		if err := runBootstrap(context.Background(), args[1:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "bootstrap:", err)
@@ -96,12 +98,12 @@ func main() {
 	}
 }
 
-// runBootstrap creates the first admin and token from an empty instance (or, with
-// -reissue, mints a fresh token for the existing admin). It opens the metadata DB
-// per the environment (the data dir, and the replica derived from the bucket) and
-// prints the one-time token to out on success. The deferred Close durably flushes
-// replication, so this short-lived process reliably pushes the new admin/token to
-// S3 for the server to restore.
+// runBootstrap creates the first admin and token on an empty instance. With
+// -reissue, it mints a fresh token for the existing admin instead. It opens the
+// metadata DB as the environment configures it: the data dir, and the replica
+// derived from the bucket. On success, it prints the one-time token to out. The
+// deferred Close durably flushes replication. This short-lived process thus
+// reliably pushes the new admin and token to S3, and the server restores them.
 func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 	handle := fs.String("handle", bootstrap.DefaultAdminHandle, "admin user handle")
@@ -112,9 +114,9 @@ func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 
-	// Bootstrap is a deliberate single-shot writer: RoleWriter acquires the lease
-	// (when a replica is configured) and fails loudly if a live server already
-	// holds it, so bootstrapping can never race the running writer.
+	// Bootstrap is a deliberate single-shot writer. When a replica is configured,
+	// RoleWriter acquires the lease. It fails loudly if a live server already
+	// holds the lease, so bootstrapping can never race the running writer.
 	md, err := meta.Open(ctx, metaConfigFromEnv(nil, s3lite.RoleWriter))
 	if err != nil {
 		return fmt.Errorf("open metadata: %w", err)
@@ -142,10 +144,15 @@ func runBootstrap(ctx context.Context, args []string, out io.Writer) error {
 	return writeBootstrapBanner(out, res)
 }
 
-// writeBootstrapBanner prints the one-time admin token behind an unmissable,
-// self-explanatory banner: what it is, how to sign in and clone, that it won't be
-// shown again, and how to re-mint if lost. Used by the CLI and the first-run
-// auto-bootstrap (its output is the operator's only chance to capture the token).
+// writeBootstrapBanner prints the one-time admin token inside a large,
+// self-explanatory banner. The banner says:
+//   - what the token is
+//   - how to sign in and clone
+//   - that the token won't be shown again
+//   - how to mint a new token if the token is lost
+//
+// The CLI and the first-run auto-bootstrap use it. Its output is the operator's
+// only chance to capture the token.
 func writeBootstrapBanner(out io.Writer, res *bootstrap.Result) error {
 	const bar = "========================================================================"
 	repoLines := fmt.Sprintf(
@@ -172,15 +179,17 @@ func writeBootstrapBanner(out io.Writer, res *bootstrap.Result) error {
 	return err
 }
 
-// maybeAutoBootstrap makes a fresh instance usable without a second command: on
-// the leader with no admin yet, it creates the admin and mints a token, logging
-// it once behind an unmissable banner (its own output is the operator's only
-// chance to capture the token). Later boots (admin exists) and followers are a
-// no-op — a first-ever boot is uncontended, so it is necessarily the leader.
+// maybeAutoBootstrap makes a fresh instance usable without a second command. On
+// the leader with no admin yet, it creates the admin and mints a token. It logs
+// the token once, inside a large banner. That output is the operator's only
+// chance to capture the token. On a later boot (an admin exists) and on a
+// follower, it does nothing. A first-ever boot is uncontended, so that instance
+// is always the leader.
 //
-// It never creates a repo (made in the UI). Non-fatal: a failure is logged, not
-// returned, so the server still serves; the operator can bootstrap by hand and,
-// if an admin was created without a token, recover with `bootstrap -reissue`.
+// It never creates a repo, because repos are made in the UI. A failure is not
+// fatal: it is logged, not returned, so the server still serves. The operator
+// can then bootstrap by hand. If an admin was created without a token, the
+// operator recovers with `bootstrap -reissue`.
 func maybeAutoBootstrap(ctx context.Context, md *meta.Metadata, logger *slog.Logger) {
 	if !md.IsLeader() {
 		return
@@ -199,7 +208,7 @@ func maybeAutoBootstrap(ctx context.Context, md *meta.Metadata, logger *slog.Log
 		return
 	}
 	if res.AlreadyBootstrapped {
-		return // raced another writer that bootstrapped first
+		return // another writer won the race and bootstrapped first
 	}
 	logger.Info("auto-bootstrapped the first admin; the one-time token is printed below", "admin", res.Admin.Handle)
 	if err := writeBootstrapBanner(os.Stderr, res); err != nil {
@@ -207,8 +216,8 @@ func maybeAutoBootstrap(ctx context.Context, md *meta.Metadata, logger *slog.Log
 	}
 }
 
-// run starts the HTTP server and blocks until ctx is cancelled or a
-// SIGINT/SIGTERM arrives, then shuts the server down gracefully.
+// run starts the HTTP server. It blocks until ctx is cancelled or a SIGINT or
+// SIGTERM arrives, and then it shuts the server down gracefully.
 func run(ctx context.Context, logger *slog.Logger, addr string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -257,8 +266,9 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 	return nil
 }
 
-// reconcileLoop periodically sweeps abandoned CI jobs (a runner that died mid-run
-// leaves a job stuck in running). It stops when ctx is cancelled (shutdown).
+// reconcileLoop periodically sweeps abandoned CI jobs. A runner that dies during
+// a run leaves its job stuck in running. The loop stops when ctx is cancelled at
+// shutdown.
 func reconcileLoop(ctx context.Context, reportAPI *ci.ReportAPI, act *leaseActivity, gate func(context.Context) bool, logger *slog.Logger) {
 	t := time.NewTicker(reconcileInterval)
 	defer t.Stop()
@@ -278,11 +288,14 @@ func reconcileLoop(ctx context.Context, reportAPI *ci.ReportAPI, act *leaseActiv
 }
 
 // reconcileOnce runs one sweep as the writer. An idle writer yields its lease
-// (leaseActivity), so the tick takes the lease through the gate like a request,
-// and skips the sweep while another instance holds it — that instance sweeps on
-// its own ticks. It holds the activity read lock throughout, so the sweep never
-// overlaps a yield. It does not count as activity: the lease is free again on
-// the next idle check. A nil gate (no replica) means always the writer.
+// (see leaseActivity). So the tick takes the lease through the gate, like a
+// request does. It skips the sweep while another instance holds the lease. That
+// instance sweeps on its own ticks. A nil gate (no replica) means that this
+// instance is always the writer.
+//
+// reconcileOnce holds the activity read lock throughout, so the sweep never
+// overlaps a yield. The sweep does not count as activity. So the lease is free
+// again on the next idle check.
 func reconcileOnce(ctx context.Context, act *leaseActivity, gate func(context.Context) bool, sweep func(context.Context) error) error {
 	act.mu.RLock()
 	defer act.mu.RUnlock()
@@ -293,11 +306,11 @@ func reconcileOnce(ctx context.Context, act *leaseActivity, gate func(context.Co
 }
 
 // leaseActivity lets an idle writer hand its lease back without fencing a
-// request mid-flight. Each request that may touch the metadata holds mu for
-// reading for its whole life, and a yield takes mu for writing, so the two never
-// overlap: a request that arrives during a yield waits, and the gate then takes
-// the lease again. last is when the latest such request ended, in Unix
-// nanoseconds.
+// request in flight. Each request that may touch the metadata holds mu for
+// reading for its whole life. A yield takes mu for writing, so a request and a
+// yield never overlap. A request that arrives during a yield waits, and then the
+// gate takes the lease again. last is when the latest such request ended, in
+// Unix nanoseconds.
 type leaseActivity struct {
 	mu   sync.RWMutex
 	last atomic.Int64
@@ -311,9 +324,10 @@ func newLeaseActivity() *leaseActivity {
 	return a
 }
 
-// track wraps next so that every request counts as activity, except the liveness
-// probes and static assets: they carry no metadata, and a health check every few
-// seconds would otherwise pin the lease forever.
+// track wraps next so that every request counts as activity. The exceptions are
+// the liveness probes and static assets. They carry no metadata. Also, a health
+// check every few seconds would otherwise keep the lease on this instance
+// forever.
 func (a *leaseActivity) track(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if alwaysServable(r.URL.Path) {
@@ -334,10 +348,14 @@ func (a *leaseActivity) idle() bool {
 	return time.Since(time.Unix(0, a.last.Load())) >= idleYieldAfter
 }
 
-// maybeYield hands the lease back when this instance is the writer, no request is
-// in flight, and none has ended within idleYieldAfter. It reports whether it
-// yielded. A yield that fails leaves s3lite to keep or drop the lease (it renews,
-// or demotes and fires OnDemote); either way the next check tries again.
+// maybeYield hands the lease back when all of these hold:
+//   - this instance is the writer
+//   - no request is in flight
+//   - no request has ended within idleYieldAfter
+//
+// It reports whether it yielded. After a failed yield, s3lite keeps or drops the
+// lease. It either renews, or it demotes and fires OnDemote. In both cases, the
+// next check tries again.
 func (a *leaseActivity) maybeYield(ctx context.Context, isLeader func() bool, yield func(context.Context) error, logger *slog.Logger) bool {
 	if !isLeader() || !a.idle() {
 		return false
@@ -375,15 +393,17 @@ func yieldWhenIdle(ctx context.Context, act *leaseActivity, md *meta.Metadata, l
 	}
 }
 
-// newHandler returns the server's HTTP routes. ui, when non-nil, registers the
-// management UI under /ui/ and /login (more specific patterns that win over the
-// git catch-all). gitHandler, when non-nil, serves the git smart-HTTP endpoints
-// at "/"; the exact health/version routes stay more specific.
+// newHandler returns the server's HTTP routes. When ui is non-nil, it registers
+// the management UI routes, such as /login, /users and /{repo}/settings. These
+// patterns are more specific, so they win over the git catch-all. When
+// gitHandler is non-nil, it serves the git smart-HTTP endpoints at "/". The
+// exact health and version routes stay more specific.
 //
 // gate decides whether this instance may answer a metadata-derived request (see
-// leaderGate): a follower — after a deploy, or while another instance on the
-// same storage root writes — serves a frozen, stale snapshot, so it must not
-// answer with stale refs. The gate promotes on demand when it can, else refuses.
+// leaderGate). A follower serves a frozen, stale snapshot. This happens after a
+// deploy, or while another instance on the same storage root writes. So a
+// follower must not answer with stale refs. The gate promotes on demand when it
+// can. Otherwise, it refuses.
 func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.ReportAPI, gate func(context.Context) bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -404,23 +424,29 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.Report
 	return leaderGate(mux, gate)
 }
 
-// leaderGate serves stale-free: only the writer (leader) answers requests that
-// read or write the metadata DB. A follower restored a snapshot at startup and
-// does not catch up until it promotes (s3lite RoleAuto), so its refs can lag the
-// true tip — a browse would show a just-pushed file as missing, a fetch would
-// miss commits. Rather than serve that, a follower returns 503 + Retry-After.
+// leaderGate never serves stale data. Only the writer (leader) answers requests
+// that read or write the metadata DB. A follower restored a snapshot at startup.
+// It does not catch up until it promotes (s3lite RoleAuto), so its refs can lag
+// the true tip. A browse would show a just-pushed file as missing, and a fetch
+// would miss commits. So instead, a follower returns 503 with Retry-After.
 //
-// Exceptions that must stay up on a follower: the liveness probes (Scaleway's
-// health check — gating them would deadlock a rolling deploy, since the new
-// instance can't promote until the old one drains) and static assets (no
-// metadata). A nil gate (unreplicated dev, sole writer) means always-leader.
+// These paths must stay up on a follower:
+//   - The liveness probes, which are Scaleway's health check. Gating them would
+//     deadlock a rolling deploy. The new instance can't promote until the old
+//     one drains.
+//   - Static assets, which carry no metadata.
 //
-// The gate promotes on demand: during a graceful deploy the old writer has
-// released its lease by the time the first request reaches the new instance, and
-// an idle writer yields its lease (leaseActivity), so the gate acquires it here —
-// blocking for the restore — and serves. It still returns 503 when the lease is
-// genuinely held elsewhere: another instance is busy (until it is idle for
-// idleYieldAfter), or a hard kill (until the old lease expires).
+// A nil gate (unreplicated dev, sole writer) means that this instance is always
+// the leader.
+//
+// The gate promotes on demand. During a graceful deploy, the old writer
+// releases its lease. It does so before the first request reaches the new
+// instance.
+// An idle writer also yields its lease (see leaseActivity). In both cases, the
+// gate acquires the lease here, blocks for the restore, and serves. It still
+// returns 503 when another holder really has the lease:
+//   - Another instance is busy, until it is idle for idleYieldAfter.
+//   - An old instance was hard-killed, until its lease expires.
 func leaderGate(next http.Handler, gate func(context.Context) bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if alwaysServable(r.URL.Path) || gate == nil || gate(r.Context()) {
@@ -433,23 +459,26 @@ func leaderGate(next http.Handler, gate func(context.Context) bool) http.Handler
 	})
 }
 
-// alwaysServable reports whether a path is answerable by a follower: the liveness
-// probes and static assets, which carry no metadata.
+// alwaysServable reports whether a follower may answer a path. Those paths are
+// the liveness probes and static assets, which carry no metadata.
 func alwaysServable(p string) bool {
 	return p == "/healthz" || p == "/version" || strings.HasPrefix(p, "/static/")
 }
 
-// buildGitHandler wires the git read + write paths when an object store is
-// configured (GITMOTE_S3_BUCKET). Without it, the server runs health/version
-// only — a dev convenience — and the returned close func is a no-op.
+// buildGitHandler wires the git read and write paths when an object store is
+// configured (GITMOTE_S3_BUCKET). Without an object store, the server runs only
+// the health and version routes, as a dev convenience. The returned close func
+// is then a no-op.
 //
-// The management UI (second return) is always built: the HMAC key that signs
-// session cookies is GITMOTE_COOKIE_KEY, or an auto-generated key persisted in
-// meta. It shares this metadata handle, so it runs alongside the git server.
+// The management UI (the second return value) is built whenever an object store
+// is configured. The HMAC key that signs session cookies is GITMOTE_COOKIE_KEY,
+// or an auto-generated key persisted in meta. The UI shares this metadata
+// handle, so it runs beside the git server.
 //
-// The db, cache, and socket derive from GITMOTE_DATA (see dataDir); metadata
-// replicates to a root-derived replica (see replicaTarget). The push path
-// installs the pre-receive hook binary (gitmote-hook, beside this binary).
+// The db, cache, and socket paths derive from GITMOTE_DATA (see dataDir). The
+// metadata replicates to a replica derived from the storage root (see
+// replicaTarget). The push path installs the pre-receive hook binary,
+// gitmote-hook, which is beside this binary.
 func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivity) (http.Handler, *webui.Handler, *ci.ReportAPI, func(context.Context) bool, func() error, error) {
 	noop := func() error { return nil }
 
@@ -458,11 +487,12 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 		return nil, nil, nil, nil, noop, nil
 	}
 
-	// RoleAuto: this instance becomes the writer when it can acquire the lease,
-	// otherwise a read-only follower — so a rolling deploy's brief old+new overlap
-	// is one writer + one follower, never two writers (safety.md §1). With no
-	// replica configured the role is moot and the instance is the sole writer:
-	// tests and local dev unchanged.
+	// With RoleAuto, this instance becomes the writer when it can acquire the
+	// lease. Otherwise, it is a read-only follower. During a rolling deploy, the
+	// old and new instances overlap briefly. That overlap is one writer and one
+	// follower, never two writers (docs/architecture/safety.md, section 1). With
+	// no replica configured, the role has no effect, and the instance is the sole
+	// writer. Tests and local dev therefore behave the same.
 	md, err := meta.Open(ctx, metaConfigFromEnv(logger, s3lite.RoleAuto))
 	if err != nil {
 		return nil, nil, nil, nil, noop, fmt.Errorf("metadata: %w", err)
@@ -474,17 +504,22 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 		logger.Warn("lost the writer lease; now read-only", "error", err)
 	})
 
-	// gate answers "may this instance serve a metadata request?" — and promotes on
-	// demand when it can. The metadata opens with OnDemandPromotion, so this is the
-	// only way a follower becomes the writer after Open: during a graceful deploy
-	// the old writer has released its lease, and an idle writer yields it
-	// (yieldWhenIdle), so TryPromote acquires it here (blocking for the restore);
-	// OnPromote above logs the transition. Two live instances on one storage root
-	// thus take turns as the writer, and the lease keeps them from overlapping.
-	// TryPromote's IsLeader fast path makes the steady-state call free, and it
-	// returns false (not an error) while the lease is still held elsewhere, so a
-	// follower under a busy writer stays quiet and 503s. Bounded so a slow restore
-	// falls back to 503 rather than hanging the request.
+	// gate answers the question "may this instance serve a metadata request?".
+	// It also promotes on demand when it can. The metadata opens with
+	// OnDemandPromotion, so the gate is the only way that a follower becomes the
+	// writer after Open.
+	//
+	// During a graceful deploy, the old writer has released its lease. An idle
+	// writer also yields its lease (yieldWhenIdle). In both cases, TryPromote
+	// acquires the lease here and blocks for the restore. OnPromote above logs
+	// the transition. So two live instances on one storage root take turns as
+	// the writer, and the lease keeps them from overlapping.
+	//
+	// The IsLeader fast path in TryPromote makes the steady-state call free.
+	// TryPromote returns false, not an error, while another holder still has the
+	// lease. So a follower under a busy writer stays quiet and answers 503. The
+	// call is bounded, so a slow restore falls back to 503 and does not hang the
+	// request.
 	gate := func(reqCtx context.Context) bool {
 		pctx, cancel := context.WithTimeout(reqCtx, promoteTimeout)
 		defer cancel()
@@ -496,17 +531,19 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	}
 
 	// Objects, CI logs, and the metadata replica all live under the storage root
-	// (GITMOTE_S3_BUCKET, "bucket" or "bucket/base"), so they share fate: point at
-	// the wrong root and nothing restores (a clean, empty instance), never the
-	// half-restored refs-without-objects state.
+	// (GITMOTE_S3_BUCKET, as "bucket" or "bucket/base"). So they share fate. If
+	// the root is wrong, nothing restores, and the result is a clean, empty
+	// instance. The result is never a half-restored state with refs but without
+	// objects.
 	objs, err := store.NewS3FromEnv(ctx)
 	if err != nil {
 		_ = md.Close()
 		return nil, nil, nil, nil, noop, fmt.Errorf("object store: %w", err)
 	}
 
-	// First-run auto-bootstrap: a fresh empty-bucket instance is usable without a
-	// second command. Runs before anything serves; non-fatal (logged, not returned).
+	// The first-run auto-bootstrap makes a fresh instance on an empty bucket usable
+	// without a second command. It runs before anything serves. It is not fatal:
+	// a failure is logged, not returned.
 	maybeAutoBootstrap(ctx, md, logger)
 
 	writer, err := githttp.NewWriter(md, objs, hookBinaryPath(), sockPath(), logger)
@@ -517,9 +554,10 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	materializer := repo.New(md, objs, cachePath())
 	guard := auth.NewGuard(md)
 
-	// CI secrets: master keys from GITMOTE_CI_SECRET_KEY_V<n>. A malformed key is
-	// fatal (fail loud). With none set the service is disabled — no secrets UI,
-	// none injected. The service is the single hub for the UI and the dispatcher.
+	// The CI secrets service reads its master keys from GITMOTE_CI_SECRET_KEY_V<n>.
+	// A malformed key is fatal, so the server fails loudly. With no key set, the
+	// service is disabled: there is no secrets UI, and no secret is injected. The
+	// UI and the dispatcher both use this one service.
 	keyring, err := secrets.NewKeyringFromEnv()
 	if err != nil {
 		_ = writer.Close()
@@ -529,25 +567,31 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	secretsSvc := secrets.NewService(keyring, md)
 
 	// Select the CI trigger. Cloud and local run the *same* runner code and env
-	// contract; only the substrate differs — Scaleway Serverless Jobs in
-	// production, a local process for dev (docs/architecture/ci.md).
-	// Both need a reachable GITMOTE_URL (the runner clones + reports back over it)
-	// and a WORKER_SECRET (authenticates the report API). With neither configured,
-	// runs still record but nothing executes.
+	// contract. Only the substrate differs: Scaleway Serverless Jobs in
+	// production, and a local process for dev (docs/architecture/ci.md).
+	// Both need two settings:
+	//   - a reachable GITMOTE_URL, which the runner uses to clone and report back
+	//   - a WORKER_SECRET, which authenticates the report API
+	//
+	// With neither configured, runs are still recorded, but nothing executes.
 	jobDefID := os.Getenv("SCW_CI_JOB_DEFINITION_ID")
 	gitmoteURL := os.Getenv("GITMOTE_URL")
-	// Cloud needs a reachable URL for the runner to clone + report back; fail loud
-	// if the job definition is set without one — before provisioning any secret.
+	// Cloud needs a reachable URL for the runner to clone and report back. If the
+	// job definition is set without a URL, fail loudly before provisioning any
+	// secret.
 	if jobDefID != "" && gitmoteURL == "" {
 		_ = writer.Close()
 		_ = md.Close()
 		return nil, nil, nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but GITMOTE_URL is missing")
 	}
-	// WORKER_SECRET authenticates the runner's report-back. It's meaningless
-	// without a CI substrate, so resolve it lazily only then: env → else
-	// meta get-or-create (generated once, restored on every later boot), so a
-	// plain no-CI run provisions nothing. It reaches the cloud runner injected at
-	// trigger time, never baked into the job definition (dispatcher jobEnv).
+	// WORKER_SECRET authenticates the runner's report-back. It has no use without
+	// a CI substrate, so resolve it lazily, only when a substrate is configured.
+	// A plain run without CI provisions nothing.
+	//
+	// Take it from the env. Otherwise, get or create it in meta: it is generated
+	// once and restored on every later boot. The secret reaches the cloud runner
+	// by injection at trigger time. It is never baked into the job definition
+	// (see jobEnv in the dispatcher).
 	var workerSecret string
 	if jobDefID != "" || gitmoteURL != "" {
 		workerSecret, err = resolveWorkerSecret(ctx, md)
@@ -560,7 +604,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	var trigger ci.Trigger = ci.NoopTrigger{}
 	switch {
 	case jobDefID != "":
-		// SCW_REGION falls back to the AWS_REGION already set for the object store.
+		// Without SCW_REGION, use the AWS_REGION already set for the object store.
 		trigger = scaleway.NewJobsClient(os.Getenv("SCW_SECRET_KEY"), envOr("SCW_REGION", os.Getenv("AWS_REGION")), jobDefID)
 		logger.Info("CI trigger: Scaleway Serverless Jobs", "job_definition_id", jobDefID)
 	case gitmoteURL != "":
@@ -574,12 +618,18 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 			"(set GITMOTE_URL for local, or SCW_CI_JOB_DEFINITION_ID + GITMOTE_URL for cloud)")
 	}
 
-	// A successful, branch-advancing push discovers its workflows, records a run,
-	// and triggers a runner per job — fire-and-forget, so dispatch never fails the
-	// push (docs/architecture/ci.md).
-	// Operator-supplied per-repo CI secrets from the process env
-	// (GITMOTE_REPO_SECRET_<REPO>__<NAME>): never stored, no master key needed —
-	// the automated self-deploy seeds them from a gitignored .env (docs/deploy-scaleway.md).
+	// A successful push that advances a branch does three things:
+	//   - It discovers its workflows.
+	//   - It records a run.
+	//   - It triggers a runner for each job.
+	//
+	// Dispatch is fire-and-forget, so it never fails the push
+	// (docs/architecture/ci.md).
+	//
+	// The operator can supply per-repo CI secrets in the process env, as
+	// GITMOTE_REPO_SECRET_<REPO>__<NAME>. They are never stored, and they need no
+	// master key. The automated self-deploy seeds them from a gitignored .env
+	// (docs/deploy-scaleway.md).
 	envSecrets := ci.LoadEnvSecrets(os.Environ())
 	if red := envSecrets.Redacted(); len(red) > 0 {
 		logger.Info("env CI secrets loaded (never persisted)", "repos", red)
@@ -595,11 +645,14 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 		WorkerSecret: workerSecret,
 		Logger:       logger,
 	})
-	// The runner's authenticated claim/complete API. Only the leader may write
-	// completions (a follower returns a retryable 503), and it authenticates with
-	// the same WORKER_SECRET injected into the runner env.
-	// The in-memory live-log store the runner streams into and the UI tails —
-	// leader-side, ephemeral, shared by the report API (writer) and the UI (reader).
+	// The report API is the runner's authenticated API to claim and complete
+	// jobs. Only the leader may write completions, and a follower returns a
+	// retryable 503. The API authenticates with the same WORKER_SECRET that is
+	// injected into the runner env.
+	//
+	// liveLogs is the in-memory live-log store. The runner streams into it, and
+	// the UI tails it. It lives on the leader and is ephemeral. The report API
+	// writes to it, and the UI reads from it.
 	liveLogs := ci.NewLiveLogs()
 	reportAPI := ci.NewReportAPI(md, objs, liveLogs, md.IsLeader, workerSecret, logger)
 	writer.AfterCommit = func(ctx context.Context, pusherID int64, commits []githttp.CommitInfo) {
@@ -616,10 +669,10 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	}
 	cleanup := func() error {
 		err := writer.Close()
-		// Close durably flushes replication on clean shutdown so a redeploy/restart
-		// is lossless (a no-op without a replica). Bound the flush so an unreachable
-		// S3 can't hang shutdown; the accepted crash-loss window (safety.md §4)
-		// still covers a hard kill.
+		// On a clean shutdown, Close durably flushes replication, so a redeploy or
+		// restart loses nothing. Without a replica, the flush is a no-op. Bound the
+		// flush, so an unreachable S3 can't hang shutdown. The accepted crash-loss
+		// window still covers a hard kill (docs/architecture/safety.md, section 4).
 		syncCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if cerr := md.CloseContext(syncCtx); err == nil {
@@ -647,7 +700,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	}
 
 	// Hand the lease back whenever this writer is idle. The loop stops before the
-	// metadata closes, so a yield never races the final Close.
+	// metadata closes, so a yield never runs at the same time as the final Close.
 	yieldCtx, stopYield := context.WithCancel(ctx)
 	yieldDone := make(chan struct{})
 	go func() {
@@ -662,10 +715,11 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	return handler, ui, reportAPI, gate, closeAll, nil
 }
 
-// buildUI constructs the management UI (always on). Its session cookie key is
-// GITMOTE_COOKIE_KEY when set, else an auto-generated key persisted in meta and
-// restored across restart / scale-to-zero — so a session stays valid through an
-// idle→wake and the UI needs no secret config.
+// buildUI constructs the management UI. Its session cookie
+// key is GITMOTE_COOKIE_KEY when that is set. Otherwise, it is an auto-generated
+// key, persisted in meta and restored across a restart or a scale-to-zero. So a
+// session stays valid when an idle instance wakes, and the UI needs no secret
+// config.
 func buildUI(ctx context.Context, md *meta.Metadata, mz *repo.Materializer, objs store.Store, live webui.LiveLog, guard *auth.Guard, secretsSvc *secrets.Service, logger *slog.Logger) (*webui.Handler, error) {
 	cookieKey, err := resolveCookieKey(ctx, md)
 	if err != nil {
@@ -674,8 +728,9 @@ func buildUI(ctx context.Context, md *meta.Metadata, mz *repo.Materializer, objs
 	return webui.New(md, mz, objs, live, guard, secretsSvc, cookieKey, logger)
 }
 
-// resolveCookieKey returns the session cookie key: GITMOTE_COOKIE_KEY when set,
-// else the persisted "cookie_key" server secret, auto-generated on first boot.
+// resolveCookieKey returns the session cookie key. That is GITMOTE_COOKIE_KEY
+// when it is set. Otherwise, it is the persisted "cookie_key" server secret,
+// which is auto-generated on first boot.
 func resolveCookieKey(ctx context.Context, md *meta.Metadata) ([]byte, error) {
 	if v := os.Getenv("GITMOTE_COOKIE_KEY"); v != "" {
 		return []byte(v), nil
@@ -683,8 +738,9 @@ func resolveCookieKey(ctx context.Context, md *meta.Metadata) ([]byte, error) {
 	return md.GetOrCreateSecret(ctx, "cookie_key", genSecret)
 }
 
-// resolveWorkerSecret returns the CI report-API secret: WORKER_SECRET when set,
-// else the persisted "worker_secret" server secret, auto-generated on first boot.
+// resolveWorkerSecret returns the CI report-API secret. That is WORKER_SECRET
+// when it is set. Otherwise, it is the persisted "worker_secret" server secret,
+// which is auto-generated on first boot.
 func resolveWorkerSecret(ctx context.Context, md *meta.Metadata) (string, error) {
 	if v := os.Getenv("WORKER_SECRET"); v != "" {
 		return v, nil
@@ -697,13 +753,13 @@ func resolveWorkerSecret(ctx context.Context, md *meta.Metadata) (string, error)
 }
 
 // genSecretBytes is the entropy of an auto-generated server secret before
-// hex-encoding: 32 bytes → a 64-char hex string, ample for an HMAC cookie key
-// and the worker-secret bearer compare.
+// hex encoding. 32 bytes give a 64-char hex string. That is ample for an HMAC
+// cookie key and for the bearer comparison of the worker secret.
 const genSecretBytes = 32
 
-// genSecret generates a fresh server secret as a hex string's bytes, so the
-// persisted value is printable and usable directly as an HMAC key or a bearer
-// token. It's the get-or-create generator for both auto-provisioned secrets.
+// genSecret generates a fresh server secret as the bytes of a hex string. So the
+// persisted value is printable, and it works directly as an HMAC key or a bearer
+// token. It is the get-or-create generator for both auto-provisioned secrets.
 func genSecret() ([]byte, error) {
 	b := make([]byte, genSecretBytes)
 	if _, err := rand.Read(b); err != nil {
@@ -714,13 +770,14 @@ func genSecret() ([]byte, error) {
 	return enc, nil
 }
 
-// hookBinaryPath is the pre-receive hook executable, gitmote-hook beside this
-// binary. runnerBinaryPath is the CI runner the local trigger spawns.
+// hookBinaryPath is the pre-receive hook executable, gitmote-hook, beside this
+// binary. runnerBinaryPath is the CI runner that the local trigger spawns.
 func hookBinaryPath() string   { return besideExe("gitmote-hook") }
 func runnerBinaryPath() string { return besideExe("gitmote-runner") }
 
-// besideExe resolves a sibling binary next to this executable, falling back to a
-// bare name (found on PATH) when the executable path can't be determined.
+// besideExe resolves a sibling binary next to this executable. When the
+// executable path can't be determined, it falls back to the bare name, which is
+// then found on PATH.
 func besideExe(name string) string {
 	if exe, err := os.Executable(); err == nil {
 		return filepath.Join(filepath.Dir(exe), name)
@@ -729,18 +786,21 @@ func besideExe(name string) string {
 }
 
 // metaConfigFromEnv builds the metadata database config from the environment.
-// The replica (see replicaTarget) is an s3:// URL used for both
-// restore-on-cold-start and continuous backup (litestream); empty leaves the
-// database local-only (tests, ephemeral runs with no bucket), so the same binary
-// runs unreplicated or replicated by env alone. The replica reuses the object
-// store's endpoint and the AWS default credential chain, so one credential set
-// covers both git objects and the metadata WAL.
+// The replica (see replicaTarget) is an s3:// URL. It serves both the restore on
+// cold start and the continuous backup (litestream). An empty replica leaves the
+// database local-only, as in tests and ephemeral runs with no bucket. So the env
+// alone decides whether the same binary runs replicated.
 //
-// role selects single-writer coordination and is applied only when a replica is
-// configured — there is nothing to coordinate on without a shared WAL, so an
-// unreplicated database is left unset (RoleAuto) and runs as the sole writer,
-// keeping tests unchanged. Leaving it unset also avoids handing s3lite a
-// coordinating role (e.g. bootstrap's RoleWriter) with no s3:// replica to lease.
+// The replica reuses the object store's endpoint and the AWS default credential
+// chain. So one set of credentials covers both the git objects and the metadata
+// WAL.
+//
+// role selects single-writer coordination. It applies only when a replica is
+// configured, because without a shared WAL there is nothing to coordinate on.
+// So the role of an unreplicated database stays unset (RoleAuto), and the
+// database runs as the sole writer. Tests therefore behave the same. An unset
+// role also avoids handing s3lite a coordinating role with no s3:// replica to
+// lease. The RoleWriter of bootstrap is such a role.
 func metaConfigFromEnv(logger *slog.Logger, role s3lite.Role) meta.Config {
 	replica := replicaTarget()
 	cfg := meta.Config{
@@ -753,19 +813,21 @@ func metaConfigFromEnv(logger *slog.Logger, role s3lite.Role) meta.Config {
 	if replica != "" {
 		cfg.Role = role
 		// A follower promotes only through the request gate, never in the
-		// background, so a lease that an idle writer yields stays free for whichever
-		// instance gets the next request.
+		// background. So a lease that an idle writer yields stays free for the
+		// instance that gets the next request.
 		cfg.OnDemandPromotion = true
 	}
 	return cfg
 }
 
-// replicaTarget derives the metadata replica URL from the storage root: the
+// replicaTarget derives the metadata replica URL from the storage root. The
 // metadata lives at {root}/meta, a sibling of the git objects under the same
-// root, so a bucket alone yields durability and the single-writer lease with no
-// second env. Placing it under the base (not the bare bucket) is deliberate: refs
-// and objects then share fate, so a wrong root restores nothing rather than
-// stranding objects behind refs that still advertise.
+// root. So a bucket alone gives durability and the single-writer lease, with no
+// second env.
+//
+// The replica is under the base, not the bare bucket, on purpose. Refs and
+// objects then share fate. A wrong root restores nothing. It never leaves refs
+// that still advertise objects that are missing.
 func replicaTarget() string {
 	bucket, prefix := store.ParseBucket(os.Getenv("GITMOTE_S3_BUCKET"))
 	if bucket == "" {
@@ -778,15 +840,17 @@ func replicaTarget() string {
 	return "s3://" + root + "/meta"
 }
 
-// dataDir is the base directory for gitmote's local, restore-from-S3 state:
-// GITMOTE_DATA, defaulting to a temp dir. The db, cache, and socket all live
-// under it — one -v ./data:/data mounts the lot.
+// dataDir is the base directory for gitmote's local state, which restores from
+// S3. It is GITMOTE_DATA, with a temp dir as the default. The db, cache, and
+// socket all live under it. So one -v ./data:/data mounts all of them.
 func dataDir() string {
 	return envOr("GITMOTE_DATA", filepath.Join(os.TempDir(), "gitmote"))
 }
 
-// dbPath, cachePath, and sockPath are the metadata DB, materialized-repo cache,
-// and pre-receive hook socket under dataDir.
+// dbPath, cachePath, and sockPath are paths under dataDir:
+//   - dbPath is the metadata DB.
+//   - cachePath is the cache of materialized repos.
+//   - sockPath is the pre-receive hook socket.
 func dbPath() string    { return filepath.Join(dataDir(), "meta.sqlite3") }
 func cachePath() string { return filepath.Join(dataDir(), "cache") }
 func sockPath() string  { return filepath.Join(dataDir(), "gitmote.sock") }

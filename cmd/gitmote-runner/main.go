@@ -1,8 +1,12 @@
-// Command gitmote-runner executes one CI job: it claims a queued job from
-// gitmote's internal report API, checks out the repo at the pushed SHA, runs the
-// workflow with act, and reports the log + pass/fail back. It is spawned per job
-// — locally by LocalTrigger (dev) or as a Scaleway Serverless Job (cloud) — and
-// reads its coordinates from the environment the trigger injects.
+// Command gitmote-runner executes one CI job. It does these steps:
+//   - It claims a queued job from gitmote's internal report API.
+//   - It checks out the repo at the pushed SHA.
+//   - It runs the workflow with act.
+//   - It reports the log and the pass or fail result back.
+//
+// A trigger spawns one runner for each job. In dev, LocalTrigger spawns it
+// locally. In the cloud, it runs as a Scaleway Serverless Job. It reads its
+// coordinates from the environment that the trigger injects.
 package main
 
 import (
@@ -26,8 +30,9 @@ func main() {
 	cfg.Logger = logger
 
 	if err := runner.Run(context.Background(), cfg); err != nil {
-		// An internal failure we could not report — exit non-zero so a crashed
-		// runner is distinguishable from a failed build (which reports and exits 0).
+		// This is an internal failure that the runner could not report. Exit
+		// non-zero, so a crashed runner differs from a failed build. A failed
+		// build reports and exits 0.
 		logger.Error("ci runner: internal failure", "job", cfg.JobID, "error", err)
 		os.Exit(1)
 	}

@@ -1,7 +1,8 @@
 // Command gitmote-hook is git's pre-receive hook for gitmote. receive-pack runs
-// it (via core.hooksPath) as a child process; it forwards the ref commands and
-// the quarantine path to the parent over a unix socket and turns the parent's
-// verdict into its exit code. It fails closed: any error rejects the push.
+// it as a child process, through core.hooksPath. The hook forwards the ref
+// commands and the quarantine path to the parent over a unix socket. It turns
+// the parent's verdict into its exit code. It fails closed: any error rejects
+// the push.
 package main
 
 import (
@@ -16,8 +17,8 @@ import (
 	"github.com/atmin/gitmote/internal/hookrpc"
 )
 
-// zeroSHA is git's all-zero object id: the "absent" side of a create (old) or a
-// delete (new).
+// zeroSHA is git's all-zero object id. It marks the absent side of an update.
+// In a create, it is the old side. In a delete, it is the new side.
 const zeroSHA = "0000000000000000000000000000000000000000"
 
 func main() {
@@ -34,9 +35,9 @@ func run(stdin io.Reader) error {
 		return fmt.Errorf("hook invoked outside a gitmote push (%s/%s unset)", hookrpc.EnvSock, hookrpc.EnvNonce)
 	}
 
-	// receive-pack points GIT_OBJECT_DIRECTORY at the quarantine while the hook
-	// runs, so it names exactly the newly pushed objects. Resolve it against the
-	// hook's cwd (the bare repo) to an absolute path for the parent.
+	// While the hook runs, receive-pack points GIT_OBJECT_DIRECTORY at the
+	// quarantine. So the variable names exactly the newly pushed objects. Resolve
+	// it against the hook's cwd (the bare repo) to an absolute path for the parent.
 	quarantine := os.Getenv("GIT_OBJECT_DIRECTORY")
 	if quarantine == "" {
 		return fmt.Errorf("GIT_OBJECT_DIRECTORY unset")
@@ -68,12 +69,15 @@ func run(stdin io.Reader) error {
 	return nil
 }
 
-// isForce reports whether a ref update rewrites history: a deletion (new is the
-// zero id) or a non-fast-forward (old is not an ancestor of new). A create (old
-// is the zero id) is not a force. It runs `git merge-base --is-ancestor` in the
-// bare repo, where receive-pack has both the existing objects and the pushed
-// ones (the quarantine) visible; a non-zero exit — not-ancestor, or any git
-// error — is treated as a force so the default-branch guard fails safe.
+// isForce reports whether a ref update rewrites history. Two kinds of update do:
+//   - a deletion, where new is the zero id
+//   - a non-fast-forward, where old is not an ancestor of new
+//
+// A create, where old is the zero id, is not a force. isForce runs
+// `git merge-base --is-ancestor` in the bare repo. There, receive-pack makes
+// both the existing objects and the pushed ones (the quarantine) visible. A
+// non-zero exit counts as a force, so the default-branch guard fails safe. That
+// exit means not-ancestor, or any git error.
 func isForce(old, new string) bool {
 	switch {
 	case new == zeroSHA:
@@ -82,7 +86,7 @@ func isForce(old, new string) bool {
 		return false // create
 	default:
 		err := exec.Command("git", "merge-base", "--is-ancestor", old, new).Run()
-		return err != nil // exit 0 = ancestor (fast-forward); non-zero = non-fast-forward
+		return err != nil // exit 0 is an ancestor (fast-forward), non-zero is not
 	}
 }
 

@@ -70,8 +70,8 @@ func TestUnknownRouteNotFound(t *testing.T) {
 }
 
 func TestGitHandlerMountedAtRoot(t *testing.T) {
-	// A provided git handler serves the catch-all "/" while the exact
-	// health/version routes stay more specific and win.
+	// A provided git handler serves the catch-all "/". The exact health and
+	// version routes stay more specific, so they win.
 	gitHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
@@ -97,11 +97,12 @@ func TestGitHandlerMountedAtRoot(t *testing.T) {
 	}
 }
 
-// TestUIRoutesDoNotShadowGitEndpoints locks the flat-namespace mux seam: the
-// browse verbs (/{repo}/tree/…) share the mux with git's own /{repo}/info/refs.
-// Only enumerated verbs are registered, so git's smart-HTTP suffixes must still
-// fall through to the catch-all while browse verbs and the bare landing reach
-// the UI (docs/architecture/urls.md → Implementation seams).
+// TestUIRoutesDoNotShadowGitEndpoints locks the seam of the flat-namespace mux.
+// The browse verbs (/{repo}/tree/…) share the mux with git's own
+// /{repo}/info/refs. Only enumerated verbs are registered. So git's smart-HTTP
+// suffixes must still fall through to the catch-all. The browse verbs and the
+// bare landing must reach the UI. See the "Implementation seams" section of
+// docs/architecture/urls.md.
 func TestUIRoutesDoNotShadowGitEndpoints(t *testing.T) {
 	ctx := context.Background()
 	m, err := meta.Open(ctx, meta.Config{LocalPath: filepath.Join(t.TempDir(), "meta.sqlite3")})
@@ -139,8 +140,8 @@ func TestUIRoutesDoNotShadowGitEndpoints(t *testing.T) {
 			t.Errorf("GET %s = %d, want 418 (git catch-all)", p, code)
 		}
 	}
-	// Browse verbs and the bare landing reach the UI (unknown repo, anonymous →
-	// login redirect), never the git handler.
+	// Browse verbs and the bare landing reach the UI, never the git handler. For
+	// an unknown repo and an anonymous user, the UI redirects to login.
 	for _, p := range []string{"/some-repo", "/some-repo/tree/main"} {
 		if code := get(p); code == http.StatusTeapot {
 			t.Errorf("GET %s hit the git handler; want the UI", p)
@@ -149,9 +150,9 @@ func TestUIRoutesDoNotShadowGitEndpoints(t *testing.T) {
 }
 
 func TestLeaderGate(t *testing.T) {
-	// A follower must not answer metadata-derived requests with a stale snapshot;
-	// the git/read catch-all is 503'd. Health/version stay up so a rolling deploy
-	// can still promote (gating them would deadlock it).
+	// A follower must not answer metadata-derived requests with a stale snapshot.
+	// So the catch-all for git and reads gets a 503. Health and version stay up,
+	// so a rolling deploy can still promote. Gating them would deadlock it.
 	gitHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
@@ -168,7 +169,7 @@ func TestLeaderGate(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	// As a follower: probes stay up, the git read path is refused.
+	// As a follower, the probes stay up, and the git read path is refused.
 	if code := get("/healthz"); code != http.StatusOK {
 		t.Errorf("follower /healthz = %d, want 200 (must stay up for the deploy)", code)
 	}
@@ -236,7 +237,8 @@ func TestRunBootstrapDefaultsHandleAndReissues(t *testing.T) {
 	t.Setenv("GITMOTE_DATA", dataDir)
 	dbPath := filepath.Join(dataDir, "meta.sqlite3")
 
-	// No handle, no repo: the admin defaults to "admin" and a token is printed.
+	// With no handle and no repo, the admin defaults to "admin", and a token is
+	// printed.
 	var out bytes.Buffer
 	if err := runBootstrap(context.Background(), nil, &out); err != nil {
 		t.Fatalf("runBootstrap: %v", err)
@@ -246,8 +248,8 @@ func TestRunBootstrapDefaultsHandleAndReissues(t *testing.T) {
 	}
 	first := extractToken(t, out.String())
 
-	// Only the hash is at rest: the token's secret half never lands in the DB
-	// (runBootstrap's Close checkpointed the WAL into the file above).
+	// Only the hash is stored at rest. The secret half of the token never lands in
+	// the DB. The Close in runBootstrap checkpointed the WAL into the file above.
 	_, secret, ok := strings.Cut(first, ".")
 	if !ok || secret == "" {
 		t.Fatalf("token %q has no secret half", first)
@@ -273,10 +275,10 @@ func TestRunBootstrapDefaultsHandleAndReissues(t *testing.T) {
 
 func TestMaybeAutoBootstrapCreatesAdminOnceOnFreshLeader(t *testing.T) {
 	ctx := context.Background()
-	md := openMeta(t) // local-only → sole writer → always leader
+	md := openMeta(t) // local-only, so the sole writer, so always the leader
 	logger := slog.New(slog.DiscardHandler)
 
-	// Fresh instance: the default admin is created, no repo.
+	// On a fresh instance, the default admin is created, and no repo is.
 	maybeAutoBootstrap(ctx, md, logger)
 	admin, err := md.GetUser(ctx, "admin")
 	if err != nil {
@@ -293,7 +295,8 @@ func TestMaybeAutoBootstrapCreatesAdminOnceOnFreshLeader(t *testing.T) {
 		t.Fatalf("admin has %d tokens, want 1", len(tokens))
 	}
 
-	// Idempotent: a second boot (admin exists) mints nothing more.
+	// The bootstrap is idempotent. A second boot (an admin exists) mints nothing
+	// more.
 	maybeAutoBootstrap(ctx, md, logger)
 	tokens2, _ := md.ListTokens(ctx, admin.ID)
 	if len(tokens2) != 1 {
@@ -316,8 +319,9 @@ func extractToken(t *testing.T, s string) string {
 }
 
 func TestReplicaTarget(t *testing.T) {
-	// The replica lives at {root}/meta, under the same storage root as the objects
-	// — so a "bucket/base" spec scopes the replica too (they share fate).
+	// The replica lives at {root}/meta, under the same storage root as the
+	// objects. So a "bucket/base" spec scopes the replica too, and the two share
+	// fate.
 	tests := []struct {
 		name   string
 		bucket string
@@ -340,8 +344,8 @@ func TestReplicaTarget(t *testing.T) {
 
 func TestMetaConfigDerivesReplicaAndRole(t *testing.T) {
 	// With a storage root set, metaConfigFromEnv derives the replica under it and
-	// applies the leased role — a root always means durability + the single-writer
-	// lease, and the base scopes the replica.
+	// applies the leased role. A root always means durability and the
+	// single-writer lease. The base scopes the replica.
 	t.Setenv("GITMOTE_S3_BUCKET", "shared/gitmote")
 	t.Setenv("GITMOTE_DATA", t.TempDir())
 
@@ -358,9 +362,10 @@ func TestMetaConfigDerivesReplicaAndRole(t *testing.T) {
 }
 
 func TestMetaConfigNoBucketLeavesRoleUnset(t *testing.T) {
-	// No bucket: nothing to coordinate on, so the role is left unset (the zero
-	// value, RoleAuto) even for a coordinating role like RoleWriter — s3lite then
-	// runs the DB local-only as the sole writer, not demanding a lease it can't get.
+	// Without a bucket, there is nothing to coordinate on. So the role stays unset
+	// (the zero value, RoleAuto), even for a coordinating role such as RoleWriter.
+	// s3lite then runs the DB local-only as the sole writer. It does not demand a
+	// lease that it can't get.
 	t.Setenv("GITMOTE_S3_BUCKET", "")
 
 	cfg := metaConfigFromEnv(nil, s3lite.RoleWriter)
@@ -409,7 +414,8 @@ func TestResolveWorkerSecretGeneratesPersistsAndOverrides(t *testing.T) {
 	t.Setenv("WORKER_SECRET", "")
 	md := openMeta(t)
 
-	// No env: generated, and a hex string of the expected width.
+	// Without the env, the secret is generated as a hex string of the expected
+	// width.
 	s1, err := resolveWorkerSecret(ctx, md)
 	if err != nil {
 		t.Fatalf("resolveWorkerSecret: %v", err)
@@ -417,7 +423,7 @@ func TestResolveWorkerSecretGeneratesPersistsAndOverrides(t *testing.T) {
 	if len(s1) != hex.EncodedLen(genSecretBytes) {
 		t.Errorf("generated secret len = %d, want %d hex chars", len(s1), hex.EncodedLen(genSecretBytes))
 	}
-	// Stable across calls (persisted, not regenerated).
+	// The secret is stable across calls. It is persisted, not regenerated.
 	if s2, _ := resolveWorkerSecret(ctx, md); s2 != s1 {
 		t.Errorf("second resolve = %q, want the persisted %q", s2, s1)
 	}
@@ -470,8 +476,9 @@ func TestResolvedWorkerSecretReachesDispatcherAndReportAPI(t *testing.T) {
 		t.Fatalf("resolveWorkerSecret: %v", err)
 	}
 
-	// The dispatcher injects the resolved secret into the runner env at trigger —
-	// the cloud runner reads WORKER_SECRET from there, never a baked-in job def.
+	// The dispatcher injects the resolved secret into the runner env at trigger
+	// time. The cloud runner reads WORKER_SECRET from there, never from a value
+	// baked into the job definition.
 	s := store.NewMem()
 	mz := repo.New(md, s, t.TempDir())
 	r, head := seedWorkflowRepo(t, md, s)
@@ -490,8 +497,8 @@ func TestResolvedWorkerSecretReachesDispatcherAndReportAPI(t *testing.T) {
 		t.Errorf("injected WORKER_SECRET = %q, want the resolved %q", got, secret)
 	}
 
-	// The report API validates that same secret — closing the loop the runner
-	// rides: injected at trigger, checked on report-back.
+	// The report API validates that same secret. This closes the loop for the
+	// runner: the secret is injected at trigger time and checked on report-back.
 	api := ci.NewReportAPI(md, s, nil, nil, secret, nil)
 	mux := http.NewServeMux()
 	api.Register(mux)
@@ -501,7 +508,8 @@ func TestResolvedWorkerSecretReachesDispatcherAndReportAPI(t *testing.T) {
 	if code := claimStatus(t, srv.URL, "wrong-secret"); code != http.StatusUnauthorized {
 		t.Errorf("claim with wrong secret = %d, want 401", code)
 	}
-	// The resolved secret authenticates: a nonexistent job id is a 404, not a 401.
+	// The resolved secret authenticates. So a nonexistent job id gets a 404, not a
+	// 401.
 	if code := claimStatus(t, srv.URL, secret); code == http.StatusUnauthorized {
 		t.Error("claim with resolved secret = 401, want auth to pass")
 	}
@@ -524,8 +532,9 @@ func claimStatus(t *testing.T, base, secret string) int {
 	return resp.StatusCode
 }
 
-// seedWorkflowRepo builds a real repo with one workflow, loads its objects into
-// the store the materializer reads, and records the repo + branch ref in meta.
+// seedWorkflowRepo builds a real repo with one workflow. It loads the objects of
+// the repo into the store that the materializer reads. It records the repo and
+// its branch ref in meta.
 func seedWorkflowRepo(t *testing.T, md *meta.Metadata, s store.Store) (*meta.Repo, string) {
 	t.Helper()
 	ctx := context.Background()

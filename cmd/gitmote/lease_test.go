@@ -22,9 +22,13 @@ func idleFor(d time.Duration) *leaseActivity {
 }
 
 func TestMaybeYield(t *testing.T) {
-	// An idle writer hands the lease back; a busy one, a follower, or a writer with
-	// a request in flight keeps still. A failed yield reports false, and only an
-	// unexpected error is logged (ErrNotLeader just means there was nothing to yield).
+	// An idle writer hands the lease back. These keep the lease as it is:
+	//   - a busy writer
+	//   - a follower
+	//   - a writer with a request in flight
+	//
+	// A failed yield reports false. Only an unexpected error is logged.
+	// ErrNotLeader means that there was nothing to yield.
 	errBoom := errors.New("final sync failed")
 	cases := []struct {
 		name      string
@@ -70,8 +74,9 @@ func TestMaybeYield(t *testing.T) {
 }
 
 func TestTrackCountsRequestsButNotProbes(t *testing.T) {
-	// Probes and static assets must not reset the idle clock — a health check every
-	// few seconds would otherwise pin the lease forever. Every other request does.
+	// Probes and static assets must not reset the idle clock. Otherwise, a health
+	// check every few seconds would keep the lease on this instance forever.
+	// Every other request does reset the idle clock.
 	a := idleFor(time.Hour)
 	srv := httptest.NewServer(a.track(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -98,8 +103,8 @@ func TestTrackCountsRequestsButNotProbes(t *testing.T) {
 }
 
 func TestNoYieldWhileARequestRuns(t *testing.T) {
-	// A request holds the activity read lock for its whole life, so a yield can never
-	// fence it mid-flight — even a request that has outlasted idleYieldAfter.
+	// A request holds the activity read lock for its whole life. So a yield can
+	// never fence a request in flight, even one that has outlasted idleYieldAfter.
 	a := idleFor(time.Hour)
 	entered, release := make(chan struct{}), make(chan struct{})
 	h := a.track(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -133,8 +138,9 @@ func TestNoYieldWhileARequestRuns(t *testing.T) {
 }
 
 func TestRequestDuringYieldWaits(t *testing.T) {
-	// A request that arrives while the lease is being yielded waits for the yield to
-	// finish, so it is gated against the post-yield state, never served mid-yield.
+	// A request that arrives during a yield waits for the yield to finish. So the
+	// gate checks it against the state after the yield. It is never served during
+	// the yield.
 	a := idleFor(time.Hour)
 	inYield, finishYield := make(chan struct{}), make(chan struct{})
 	yielded := false
@@ -170,8 +176,9 @@ func TestRequestDuringYieldWaits(t *testing.T) {
 }
 
 func TestReconcileOnce(t *testing.T) {
-	// The sweep runs only as the writer, taking the lease through the gate like a
-	// request, and always under the activity read lock so it never overlaps a yield.
+	// The sweep runs only as the writer. It takes the lease through the gate, like
+	// a request does. It always runs under the activity read lock, so it never
+	// overlaps a yield.
 	cases := []struct {
 		name      string
 		gate      func(context.Context) bool
