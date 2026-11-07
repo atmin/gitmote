@@ -23,7 +23,8 @@ func openMeta(t *testing.T) *meta.Metadata {
 	return m
 }
 
-// verifyToken resolves raw to its owner — the token-only check, no repo needed.
+// verifyToken resolves raw to its owner. It is the token-only check, so it
+// needs no repo.
 func verifyToken(t *testing.T, m *meta.Metadata, raw string) (*meta.User, error) {
 	t.Helper()
 	return auth.NewGuard(m).VerifyToken(context.Background(), raw)
@@ -81,7 +82,7 @@ func TestRunDefaultsHandleAndSkipsRepo(t *testing.T) {
 	if res.RawToken == "" {
 		t.Fatal("no token returned")
 	}
-	// The token authenticates as the (global-admin) user with no repo present.
+	// The token authenticates as the global admin user, with no repo present.
 	if _, err := verifyToken(t, m, res.RawToken); err != nil {
 		t.Fatalf("VerifyToken with bootstrap token: %v", err)
 	}
@@ -108,8 +109,8 @@ func TestRunIsIdempotentAndRefusesToClobber(t *testing.T) {
 		t.Error("second Run minted a token")
 	}
 
-	// The original admin still authenticates; the would-be second admin was never
-	// created.
+	// The original admin still authenticates. The requested second admin was
+	// never created.
 	if _, err := verifyToken(t, m, first.RawToken); err != nil {
 		t.Errorf("original admin no longer authorized: %v", err)
 	}
@@ -138,8 +139,8 @@ func TestReissueMintsFreshTokenForExistingAdmin(t *testing.T) {
 		t.Errorf("reissued for user %d, want the existing admin %d", res.Admin.ID, first.Admin.ID)
 	}
 
-	// Both the old and the freshly-reissued token authenticate as the admin (the
-	// old one isn't revoked — reissue only adds a new token).
+	// Both the old token and the reissued token authenticate as the admin.
+	// Reissue does not revoke the old token. It only adds a new token.
 	if _, err := verifyToken(t, m, res.RawToken); err != nil {
 		t.Errorf("reissued token not authorized: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestReissueRequiresAnExistingAdmin(t *testing.T) {
 	ctx := context.Background()
 	m := openMeta(t)
 
-	// No admin yet: reissue has nothing to reissue for.
+	// With no admin, reissue has no admin to reissue a token for.
 	if _, err := Reissue(ctx, m, Options{}); err == nil {
 		t.Error("Reissue on an empty instance succeeded, want an error")
 	}

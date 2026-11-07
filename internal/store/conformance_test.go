@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-// testConformance is the shared Store contract suite. Every implementation
-// must pass it — mem and s3 stay in lockstep by construction. newStore must
-// return an empty store with an isolated keyspace.
+// testConformance is the shared suite for the Store contract. Every
+// implementation must pass it, so mem and s3 behave the same by construction.
+// newStore must return an empty store with an isolated keyspace.
 func testConformance(t *testing.T, newStore func(t *testing.T) Store) {
 	ctx := context.Background()
 

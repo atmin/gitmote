@@ -1,8 +1,10 @@
-// Package bootstrap takes an empty instance to a usable one: the first admin
-// user and a token to authenticate as them. The
-// schema itself is created by meta.Open; this fills in the day-one rows that
-// token auth otherwise makes a chicken-and-egg. Repos are created later in the
-// UI, so bootstrap no longer needs one (it stays optional for scripts/tests).
+// Package bootstrap turns an empty instance into a usable one. It creates the
+// first admin user and a token to authenticate as that user. meta.Open creates
+// the schema itself. Bootstrap fills in the first rows. Without them, token
+// auth is circular: creating the first user and token would need a token.
+//
+// Repos are created afterwards in the UI, so bootstrap does not need one. A
+// repo stays optional for scripts and tests.
 package bootstrap
 
 import (
@@ -14,25 +16,28 @@ import (
 	"github.com/atmin/gitmote/internal/meta"
 )
 
-// DefaultAdminHandle is the first admin's handle when none is given — so a plain
+// DefaultAdminHandle is the first admin's handle when none is given. So a plain
 // `docker run` needs no extra input.
 const DefaultAdminHandle = "admin"
 
 // Options parameterize a bootstrap.
 type Options struct {
-	// AdminHandle is the first global admin's handle; empty means DefaultAdminHandle.
+	// AdminHandle is the first global admin's handle. Empty means
+	// DefaultAdminHandle.
 	AdminHandle string
-	// RepoName is an optional initial repo, e.g. "gitmote"; empty creates none
-	// (repos are made in the UI).
+	// RepoName is an optional initial repo, for example "gitmote". Empty
+	// creates no repo, because repos are made in the UI.
 	RepoName string
-	// DefaultBranch for the initial repo; empty means "main". Ignored without a repo.
+	// DefaultBranch is the default branch of the initial repo. Empty means
+	// "main". It is ignored without a repo.
 	DefaultBranch string
 	// TokenLabel labels the minted admin token; empty means "bootstrap".
 	TokenLabel string
 }
 
 // Result reports what a bootstrap did. When AlreadyBootstrapped is true, the
-// instance already had an admin and nothing was changed; RawToken is empty.
+// instance already had an admin and nothing was changed. RawToken is then
+// empty.
 type Result struct {
 	AlreadyBootstrapped bool
 	Admin               *meta.User
@@ -43,11 +48,11 @@ type Result struct {
 	RawToken string
 }
 
-// Run bootstraps md. It refuses to clobber an existing admin: if any global
-// admin already exists it returns a Result with AlreadyBootstrapped set and
-// makes no changes, so re-running is safe. Otherwise it creates the admin, mints
-// a token, and — only when opts.RepoName is set — the initial repo with a
-// repo-admin ACL.
+// Run bootstraps md. It refuses to overwrite an existing admin. If any global
+// admin already exists, it returns a Result with AlreadyBootstrapped set and
+// makes no changes. So re-running is safe. Otherwise it creates the admin and
+// mints a token. Only when opts.RepoName is set does it also create the
+// initial repo with a repo-admin ACL.
 func Run(ctx context.Context, md *meta.Metadata, opts Options) (*Result, error) {
 	handle := opts.AdminHandle
 	if handle == "" {
@@ -86,12 +91,15 @@ func Run(ctx context.Context, md *meta.Metadata, opts Options) (*Result, error) 
 	return res, nil
 }
 
-// Reissue mints a fresh token for the existing admin (identified by handle, or
-// DefaultAdminHandle) and returns it once — the recovery path for a lost token.
-// Whoever can run the container against the bucket already has total infra
-// control, so an out-of-band re-mint is the correct authz boundary. It requires
-// an existing admin (run bootstrap first) and the writer lease (run it while the
-// server is idle/stopped). No token is ever stored at rest — only its hash.
+// Reissue mints a fresh token for the existing admin and returns it once. The
+// admin is identified by handle, or by DefaultAdminHandle. This is the
+// recovery path for a lost token. Whoever can run the container against the
+// bucket already has total control of the infrastructure. So an out-of-band
+// re-mint is the correct authorization boundary. Reissue requires:
+//   - an existing admin, so run bootstrap first
+//   - the writer lease, so run Reissue while the server is idle or stopped
+//
+// No token is ever stored at rest, only its hash.
 func Reissue(ctx context.Context, md *meta.Metadata, opts Options) (*Result, error) {
 	handle := opts.AdminHandle
 	if handle == "" {
@@ -120,8 +128,9 @@ func Reissue(ctx context.Context, md *meta.Metadata, opts Options) (*Result, err
 	return &Result{Admin: user, RawToken: raw}, nil
 }
 
-// mintToken mints a personal access token for userID and stores only its hash,
-// returning the raw token (shown once). label defaults to "bootstrap".
+// mintToken mints a personal access token for userID and stores only its
+// hash. It returns the raw token, which is shown once. label defaults to
+// "bootstrap".
 func mintToken(ctx context.Context, md *meta.Metadata, userID int64, label string) (string, error) {
 	if label == "" {
 		label = "bootstrap"

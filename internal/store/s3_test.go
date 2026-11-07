@@ -13,9 +13,9 @@ import (
 )
 
 // TestS3Conformance runs the shared suite against a real S3-compatible
-// endpoint (MinIO in dev). Gated by env: skipped unless GITMOTE_TEST_S3 is
-// set; GITMOTE_S3_BUCKET, GITMOTE_S3_ENDPOINT, and the standard AWS_* vars
-// configure the target.
+// endpoint, such as Silo (a MinIO fork) in dev. The environment gates it: it
+// skips unless GITMOTE_TEST_S3 is set. GITMOTE_S3_BUCKET, GITMOTE_S3_ENDPOINT and the
+// standard AWS_* variables configure the target.
 func TestS3Conformance(t *testing.T) {
 	if os.Getenv("GITMOTE_TEST_S3") == "" {
 		t.Skip("set GITMOTE_TEST_S3=1 (plus GITMOTE_S3_BUCKET, GITMOTE_S3_ENDPOINT, AWS_*) to run against MinIO/S3")
@@ -23,8 +23,9 @@ func TestS3Conformance(t *testing.T) {
 	testConformance(t, newTestS3)
 }
 
-// newTestS3 builds an S3 store scoped to a unique prefix so concurrent test
-// runs can share a bucket, and deletes everything under it on cleanup.
+// TestParseBucket checks that ParseBucket splits a storage-root spec into the
+// bucket and the prefix. It also checks that ParseBucket trims leading and
+// trailing slashes.
 func TestParseBucket(t *testing.T) {
 	tests := []struct {
 		raw, bucket, prefix string
@@ -44,6 +45,8 @@ func TestParseBucket(t *testing.T) {
 	}
 }
 
+// newTestS3 builds an S3 store scoped to a unique prefix, so concurrent test
+// runs can share a bucket. On cleanup, it deletes everything under the prefix.
 func newTestS3(t *testing.T) Store {
 	t.Helper()
 	ctx := context.Background()
@@ -52,8 +55,8 @@ func newTestS3(t *testing.T) Store {
 	if _, err := rand.Read(suffix[:]); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	// Scope this run to a unique sub-path of the operator's bucket by extending the
-	// storage-root spec — concurrent runs share a bucket without colliding.
+	// Extend the storage-root spec to scope this run to a unique sub-path of the
+	// operator's bucket. Concurrent runs then share a bucket without colliding.
 	base := os.Getenv("GITMOTE_S3_BUCKET")
 	t.Setenv("GITMOTE_S3_BUCKET", fmt.Sprintf("%s/conformance/%s/%s", base, t.Name(), hex.EncodeToString(suffix[:])))
 

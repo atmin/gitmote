@@ -15,8 +15,8 @@ func b64key(n byte) string {
 	return base64.StdEncoding.EncodeToString(k[:])
 }
 
-// keyringEnv sets GITMOTE_CI_SECRET_KEY_V<v> for each (v→key) and builds a
-// keyring from the env.
+// keyringEnv sets GITMOTE_CI_SECRET_KEY_V<v> for each version v and its key,
+// and builds a keyring from the env.
 func keyringEnv(t *testing.T, keys map[int]string) *Keyring {
 	t.Helper()
 	// Clear any inherited key vars so the test is hermetic.
@@ -92,7 +92,7 @@ func TestMissingVersionFailsClosed(t *testing.T) {
 
 func TestRotation(t *testing.T) {
 	// A secret written under V1 must still decrypt after V2 is added and becomes
-	// current; new writes then use V2.
+	// current. New writes then use V2.
 	old := keyringEnv(t, map[int]string{1: b64key(1)})
 	e1, _ := old.Encrypt(7, "TOKEN", "old-value")
 

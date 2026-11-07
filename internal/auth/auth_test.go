@@ -54,7 +54,8 @@ func TestSplitRejectsMalformed(t *testing.T) {
 	}
 }
 
-// seedToken creates a user + token and returns the raw token and user id.
+// seedToken creates a user and a token, and returns the raw token and the user
+// id.
 func seedToken(t *testing.T, m *meta.Metadata) (string, int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -92,7 +93,8 @@ func TestAuthorize(t *testing.T) {
 	}
 	raw, userID := seedToken(t, m)
 
-	// No token / malformed / unknown / wrong secret → ErrUnauthorized.
+	// No token, a malformed token, an unknown token and a wrong secret all give
+	// ErrUnauthorized.
 	sel, _, _ := split(raw)
 	unauth := map[string]*http.Request{
 		"no token":     bearer(""),
@@ -106,12 +108,12 @@ func TestAuthorize(t *testing.T) {
 		}
 	}
 
-	// Valid token, no ACL → ErrForbidden.
+	// A valid token with no ACL gives ErrForbidden.
 	if _, err := g.Authorize(bearer(raw), "repo", meta.PermRead); !errors.Is(err, ErrForbidden) {
 		t.Errorf("no ACL: Authorize = %v, want ErrForbidden", err)
 	}
 
-	// Valid token, unknown repo → meta.ErrNotFound.
+	// A valid token on an unknown repo gives meta.ErrNotFound.
 	if _, err := g.Authorize(bearer(raw), "nope", meta.PermRead); !errors.Is(err, meta.ErrNotFound) {
 		t.Errorf("unknown repo: Authorize = %v, want meta.ErrNotFound", err)
 	}
@@ -153,7 +155,8 @@ func TestVerifyToken(t *testing.T) {
 	raw, userID := seedToken(t, m)
 	sel, _, _ := split(raw)
 
-	// Valid raw token resolves to its owner — the web UI login path.
+	// A valid raw token resolves to its owner. This is the login path of the
+	// web UI.
 	user, err := g.VerifyToken(ctx, raw)
 	if err != nil {
 		t.Fatalf("VerifyToken(valid): %v", err)
@@ -162,7 +165,8 @@ func TestVerifyToken(t *testing.T) {
 		t.Errorf("user = %d, want %d", user.ID, userID)
 	}
 
-	// Malformed, unknown selector, and wrong secret all → ErrUnauthorized.
+	// A malformed token, an unknown selector and a wrong secret all give
+	// ErrUnauthorized.
 	for name, tok := range map[string]string{
 		"malformed":    "not-a-token",
 		"unknown":      "gmt_ffffffffffffffffffffffffffffffff.1234",
@@ -184,8 +188,8 @@ func TestBasicAuthCredentials(t *testing.T) {
 		t.Fatalf("SetACL: %v", err)
 	}
 
-	// Token as Basic password (git's default) and as Basic username (token-only)
-	// both authenticate.
+	// The token authenticates as the Basic password, which is the git default.
+	// It also authenticates as the Basic username with no password.
 	for _, creds := range []struct {
 		user, pass string
 	}{
@@ -216,13 +220,13 @@ func TestTokenExpiry(t *testing.T) {
 		t.Fatalf("MintScoped: %v", err)
 	}
 
-	// Before expiry: authorizes.
+	// Before the expiry, the token authorizes.
 	g.now = func() time.Time { return expiry.Add(-time.Minute) }
 	if _, err := g.Authorize(bearer(raw), "repo", meta.PermRead); err != nil {
 		t.Errorf("before expiry: Authorize = %v, want ok", err)
 	}
 
-	// At/after expiry: rejected as unauthorized.
+	// At or after the expiry, the token is rejected as unauthorized.
 	g.now = func() time.Time { return expiry }
 	if _, err := g.Authorize(bearer(raw), "repo", meta.PermRead); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("at expiry: Authorize = %v, want ErrUnauthorized", err)
@@ -294,7 +298,8 @@ func TestUnscopedTokenUnaffected(t *testing.T) {
 		t.Fatalf("SetACL: %v", err)
 	}
 
-	// No expiry, any owned repo, read + write per ACL — even far in the future.
+	// The token has no expiry and reaches any owned repo. It reads and writes
+	// as the ACL allows, even far in the future.
 	g.now = func() time.Time { return time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC) }
 	if _, err := g.Authorize(bearer(raw), "repo", meta.PermWrite); err != nil {
 		t.Errorf("unscoped token write: Authorize = %v, want ok", err)
@@ -314,7 +319,8 @@ func TestAuthorizeVisibility(t *testing.T) {
 		t.Fatalf("CreateRepo: %v", err)
 	}
 
-	// Anonymous read of a public repo is allowed — a nil user, no error.
+	// An anonymous read of a public repo is allowed. It gives a nil user and no
+	// error.
 	if u, err := g.Authorize(bearer(""), "pub", meta.PermRead); err != nil || u != nil {
 		t.Errorf("anon read public = (%v, %v), want (nil, nil)", u, err)
 	}
@@ -326,7 +332,8 @@ func TestAuthorizeVisibility(t *testing.T) {
 	if _, err := g.Authorize(bearer(""), "priv", meta.PermRead); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("anon read private = %v, want ErrUnauthorized", err)
 	}
-	// Anonymous read of a missing repo is also 401, not 404 — no inventory leak.
+	// An anonymous read of a missing repo is also 401, not 404. So the
+	// inventory does not leak.
 	if _, err := g.Authorize(bearer(""), "missing", meta.PermRead); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("anon read missing = %v, want ErrUnauthorized", err)
 	}

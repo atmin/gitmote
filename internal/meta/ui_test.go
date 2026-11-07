@@ -22,7 +22,7 @@ func TestSetDefaultBranch(t *testing.T) {
 		t.Errorf("default branch = %q, want trunk", got.DefaultBranch)
 	}
 
-	// Unknown repo → ErrNotFound (failure path).
+	// An unknown repo gives ErrNotFound (failure path).
 	if err := m.SetDefaultBranch(ctx, 9999, "x"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("SetDefaultBranch(missing) = %v, want ErrNotFound", err)
 	}
@@ -120,7 +120,7 @@ func TestListAndDeleteACL(t *testing.T) {
 	if len(acls) != 1 || acls[0].Handle != "alice" {
 		t.Errorf("after delete ListACLs = %+v, want [alice]", acls)
 	}
-	// Revoked user now has no access.
+	// After the revoke, the user has no access.
 	if _, err := m.GetACL(ctx, r.ID, bob.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetACL after revoke = %v, want ErrNotFound", err)
 	}

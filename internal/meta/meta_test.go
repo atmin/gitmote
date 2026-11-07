@@ -24,7 +24,7 @@ func openAt(t *testing.T, path string) *Metadata {
 	return m
 }
 
-// seedRepo inserts a repo and returns it; a helper for the ref/ACL tests.
+// seedRepo inserts a repo and returns it. The ref and ACL tests use it.
 func seedRepo(t *testing.T, m *Metadata, name string) *Repo {
 	t.Helper()
 	r, err := m.CreateRepo(context.Background(), name, "")
@@ -38,7 +38,8 @@ func TestMigrationsIdempotentAndFreshSchema(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "meta.sqlite3")
 
-	// Fresh DB: schema is usable — a round-trip proves the tables exist.
+	// On a fresh database the schema is usable. A round-trip proves that the
+	// tables exist.
 	m := openAt(t, path)
 	r, err := m.CreateRepo(ctx, "dotfiles", "")
 	if err != nil {
@@ -69,8 +70,9 @@ func TestScopedTokenColumnsMigrateAndPersist(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "meta.sqlite3")
 
-	// A DB whose tokens table predates the scoped columns: create it by hand
-	// without them, plus a legacy row, then let Open's guarded migration add them.
+	// Build a database whose tokens table predates the scoped columns. Create
+	// the table by hand without them, and add a legacy row. Then let the
+	// guarded migration in Open add the columns.
 	m := openAt(t, path)
 	u, err := m.CreateUser(ctx, "atmin")
 	if err != nil {
@@ -92,9 +94,10 @@ func TestScopedTokenColumnsMigrateAndPersist(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// Re-open: migrate adds the columns. Open again: idempotent (no error).
+	// Re-open, and migrate adds the columns. Open again to show that migrate
+	// is idempotent: it returns no error.
 	m2 := openAt(t, path)
-	// The legacy row reads back with NULL/0 defaults.
+	// The legacy row reads back with NULL and 0 defaults.
 	ta, err := m2.TokenBySelector(ctx, "legacy-sel")
 	if err != nil {
 		t.Fatalf("TokenBySelector(legacy): %v", err)
@@ -149,9 +152,11 @@ func TestRepoCRUD(t *testing.T) {
 	}
 }
 
-// TestRepoNameValidation covers the flat single-segment namespace rules: a
-// trailing ".git" is stripped, reserved globals and structural forms are
-// rejected with a clear error, and a ".git" clone URL resolves via GetRepo.
+// TestRepoNameValidation covers the rules of the flat namespace of single
+// segments:
+//   - A trailing ".git" is stripped.
+//   - Reserved globals and structural forms are rejected with a clear error.
+//   - A ".git" clone URL resolves through GetRepo.
 func TestRepoNameValidation(t *testing.T) {
 	ctx := context.Background()
 
@@ -168,7 +173,8 @@ func TestRepoNameValidation(t *testing.T) {
 		t.Errorf("GetRepo(gitmote.git) = (%v, %v), want the same repo", got, err)
 	}
 
-	// Rejected names: reserved globals, a leading dot, the bare dash, a slash, empty.
+	// Rejected names: reserved globals, a leading dot, the bare dash, a slash
+	// and the empty name.
 	for _, name := range []string{"login", "api", "internal", ".hidden", "-", "a/b", ""} {
 		if _, err := m.CreateRepo(ctx, name, ""); err == nil {
 			t.Errorf("CreateRepo(%q) succeeded, want a validation error", name)
@@ -203,8 +209,8 @@ func TestSetVisibility(t *testing.T) {
 	}
 }
 
-// TestCanRead covers the visibility-aware repo-read shared by git and browse:
-// a public repo is anyone-readable, a private repo needs an ACL.
+// TestCanRead covers the repo read check that git and browse share. Anyone may
+// read a public repo. A private repo needs an ACL.
 func TestCanRead(t *testing.T) {
 	ctx := context.Background()
 	m := open(t)
@@ -273,7 +279,8 @@ func TestListReposForViewer(t *testing.T) {
 	if got := names(0); len(got) != 1 || got[0] != "pub" {
 		t.Errorf("anonymous viewer repos = %v, want [pub]", got)
 	}
-	// alice sees public + the one she has an ACL on (ordered by name).
+	// alice sees the public repos and the one repo with her ACL, ordered by
+	// name.
 	if got := names(u.ID); len(got) != 2 || got[0] != "mine" || got[1] != "pub" {
 		t.Errorf("alice viewer repos = %v, want [mine pub]", got)
 	}
@@ -297,7 +304,7 @@ func TestTokenStorage(t *testing.T) {
 		t.Fatalf("CreateToken: %v", err)
 	}
 
-	// Lookup by selector returns the verifier + owner, and does not touch
+	// Lookup by selector returns the verifier and owner, and does not touch
 	// last_used.
 	ta, err := m.TokenBySelector(ctx, selector)
 	if err != nil {

@@ -7,8 +7,9 @@ import (
 )
 
 // CISecret is one repo's stored secret envelope. It never carries the plaintext
-// value — only the sealed bytes and the key version that sealed them. Decryption
-// happens in internal/secrets with the server-held master key.
+// value. It carries only the sealed bytes and the key version that sealed them.
+// internal/secrets decrypts the envelope with the master key that the server
+// holds.
 type CISecret struct {
 	Name    string
 	Version int
@@ -16,8 +17,8 @@ type CISecret struct {
 	CT      []byte
 }
 
-// SetSecret upserts a repo's secret envelope by (repo_id, name). Written only by
-// the leader, like every other row.
+// SetSecret upserts a repo's secret envelope by (repo_id, name). Only the
+// leader writes it, as with every other row.
 func (m *Metadata) SetSecret(ctx context.Context, repoID int64, name string, version int, iv, ct []byte) error {
 	_, err := m.db.ExecContext(ctx,
 		`INSERT INTO ci_secrets (repo_id, name, v, iv, ct, created_at)
@@ -28,8 +29,8 @@ func (m *Metadata) SetSecret(ctx context.Context, repoID int64, name string, ver
 	return err
 }
 
-// ListSecretNames returns a repo's secret names (never values), ordered by name
-// — the only view the UI ever gets.
+// ListSecretNames returns a repo's secret names, ordered by name. It never
+// returns the values. This is the only view that the UI ever gets.
 func (m *Metadata) ListSecretNames(ctx context.Context, repoID int64) ([]string, error) {
 	rows, err := m.db.QueryContext(ctx,
 		`SELECT name FROM ci_secrets WHERE repo_id = ? ORDER BY name`, repoID)
@@ -69,23 +70,27 @@ func (m *Metadata) GetSecrets(ctx context.Context, repoID int64) ([]CISecret, er
 	return secrets, rows.Err()
 }
 
-// DeleteSecret removes a repo's secret by name. Deleting an absent secret is a
-// no-op (idempotent), so it returns no ErrNotFound.
+// DeleteSecret removes a repo's secret by name. It is idempotent: deleting an
+// absent secret does nothing, so it returns no ErrNotFound.
 func (m *Metadata) DeleteSecret(ctx context.Context, repoID int64, name string) error {
 	_, err := m.db.ExecContext(ctx,
 		`DELETE FROM ci_secrets WHERE repo_id = ? AND name = ?`, repoID, name)
 	return err
 }
 
-// GetOrCreateSecret returns the persisted server secret named name, generating
-// and persisting it with gen the first time it's requested. It backs the
-// auto-provisioned session cookie key and CI worker secret (see cmd/gitmote): an
-// absent value is created once, by the writer. A follower cannot write, and on a
-// fresh storage root a missing secret may only mean that another instance, booting
-// at the same moment, created it after this one restored its snapshot. So a
-// follower catches up from the replica until the secret appears, or until it takes
-// the lease and creates the secret itself, for at most secretWaitTimeout.
-// Narrowly scoped to these named server secrets, not a general key–value store.
+// GetOrCreateSecret returns the persisted server secret named name. On the
+// first request for the secret, it generates the secret with gen and persists
+// it. The writer creates an absent value once.
+//
+// A follower cannot write. On a fresh storage root, a missing secret may only
+// mean that another instance booted at the same moment. That instance created
+// the secret after this one restored its snapshot. So a follower catches up
+// from the replica, for at most secretWaitTimeout. It stops when the secret
+// appears, or when it takes the lease and creates the secret itself.
+//
+// It backs the auto-provisioned session cookie key and CI worker secret (see
+// cmd/gitmote). The scope is narrow: these named server secrets, not a general
+// key-value store.
 func (m *Metadata) GetOrCreateSecret(ctx context.Context, name string, gen func() ([]byte, error)) ([]byte, error) {
 	val, err := m.awaitSecret(ctx, name)
 	if err == nil {
@@ -98,8 +103,9 @@ func (m *Metadata) GetOrCreateSecret(ctx context.Context, name string, gen func(
 	if err != nil {
 		return nil, err
 	}
-	// ON CONFLICT DO NOTHING keeps a concurrent creator's value; the re-read below
-	// then returns whichever insert won, so every caller agrees on one value.
+	// ON CONFLICT DO NOTHING keeps the value of a concurrent creator. The
+	// re-read below then returns the insert that won, so every caller agrees
+	// on one value.
 	if _, err := m.db.ExecContext(ctx,
 		`INSERT INTO server_secrets (name, value) VALUES (?, ?)
 		 ON CONFLICT(name) DO NOTHING`, name, val); err != nil {
@@ -108,20 +114,24 @@ func (m *Metadata) GetOrCreateSecret(ctx context.Context, name string, gen func(
 	return m.getSecret(ctx, name)
 }
 
-// secretWaitTimeout bounds how long a follower waits for a missing server secret
-// to reach it, or for the lease to create it. A peer that created the secret ships
-// it within a second, and an idle peer yields its lease within seconds.
+// secretWaitTimeout bounds how long a follower waits for a missing server
+// secret. The follower waits for the secret to reach it, or for the lease so
+// that it can create the secret. A peer that created the secret ships it
+// within a second. An idle peer yields its lease within seconds.
 const secretWaitTimeout = 30 * time.Second
 
 // secretRetryInterval spaces a follower's catch-up attempts for a missing secret.
 const secretRetryInterval = 500 * time.Millisecond
 
-// awaitSecret reads the secret named name. On the writer (an unleased sole writer
-// included) it returns the read as is, sql.ErrNoRows when the secret is absent. On
-// a follower a missing secret is retried: catch up from the replica, read again,
-// and try to take the lease, until the secret appears (returned), this instance
-// becomes the writer (sql.ErrNoRows, so the caller creates it), or
-// secretWaitTimeout passes.
+// awaitSecret reads the secret named name. On the writer, including a sole
+// writer without a lease, it returns the result of the read as is. That result
+// is sql.ErrNoRows when the secret is absent. On a follower, it retries a
+// missing secret. Each try catches up from the replica, reads again and tries
+// to take the lease. The retries stop at the first of these events:
+//   - The secret appears. awaitSecret returns it.
+//   - This instance becomes the writer. awaitSecret returns sql.ErrNoRows, so
+//     the caller creates the secret.
+//   - secretWaitTimeout passes.
 func (m *Metadata) awaitSecret(ctx context.Context, name string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, secretWaitTimeout)
 	defer cancel()
@@ -150,7 +160,8 @@ func (m *Metadata) awaitSecret(ctx context.Context, name string) ([]byte, error)
 	}
 }
 
-// getSecret reads the secret named name; sql.ErrNoRows when it is absent.
+// getSecret reads the secret named name. It returns sql.ErrNoRows when the
+// secret is absent.
 func (m *Metadata) getSecret(ctx context.Context, name string) ([]byte, error) {
 	var val []byte
 	err := m.db.QueryRowContext(ctx,

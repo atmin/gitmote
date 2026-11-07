@@ -15,21 +15,21 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// S3 is the durable Store implementation backed by an S3-compatible bucket
-// (AWS S3, MinIO, …). Puts overwrite unconditionally — keys are
+// S3 is the durable Store implementation backed by an S3-compatible bucket,
+// such as AWS S3 or MinIO. Puts overwrite unconditionally. Keys are
 // content-addressed, so rewriting the same content is a no-op.
 type S3 struct {
 	client   *s3.Client
 	uploader *transfermanager.Client
 	bucket   string
-	prefix   string // optional key prefix inside the bucket; "" or ends with "/"
+	prefix   string // optional key prefix inside the bucket: "" or ending with "/"
 }
 
 var _ Store = (*S3)(nil)
 
-// NewS3 returns a Store over the given bucket. prefix, if non-empty, is
-// prepended to every key (a "/" separator is added if missing) — it scopes
-// the store to a corner of a shared bucket.
+// NewS3 returns a Store over the given bucket. If prefix is non-empty, NewS3
+// prepends it to every key and adds a "/" separator if it is missing. The
+// prefix scopes the store to one part of a shared bucket.
 func NewS3(client *s3.Client, bucket, prefix string) *S3 {
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
@@ -43,10 +43,11 @@ func NewS3(client *s3.Client, bucket, prefix string) *S3 {
 }
 
 // ParseBucket splits the storage-root spec "bucket[/base/path]" into the S3
-// bucket name and an optional key prefix. S3 bucket names cannot contain "/", so
-// the first segment is the bucket and the remainder is a prefix prepended to
-// every key — scoping a whole forge (objects, CI logs, and, via the caller, the
-// metadata replica) under one root of a bucket it may share.
+// bucket name and an optional key prefix. S3 bucket names cannot contain "/".
+// So the first segment is the bucket, and the remainder is a prefix for every
+// key. The prefix scopes a whole forge under one root of a bucket that the
+// forge may share. This covers the objects, the CI logs and, through the
+// caller, the metadata replica.
 func ParseBucket(raw string) (bucket, prefix string) {
 	raw = strings.Trim(raw, "/")
 	bucket, prefix, _ = strings.Cut(raw, "/")
@@ -55,13 +56,15 @@ func ParseBucket(raw string) (bucket, prefix string) {
 
 // NewS3FromEnv builds an S3 store from the environment:
 //
-//   - GITMOTE_S3_BUCKET   — storage root, "bucket" or "bucket/base/path" (required)
-//   - GITMOTE_S3_ENDPOINT — custom endpoint, e.g. a local MinIO (optional;
-//     implies path-style addressing)
+//   - GITMOTE_S3_BUCKET is the storage root, "bucket" or "bucket/base/path".
+//     It is required.
+//   - GITMOTE_S3_ENDPOINT is a custom endpoint, for example a local MinIO. It
+//     is optional, and it implies path-style addressing.
 //
-// Region and credentials come from the standard AWS environment
-// (AWS_REGION, AWS_ACCESS_KEY_ID, …) and config files; the region defaults to
-// us-east-1 when unset (ignored by most S3-compatible stores).
+// Region and credentials come from the standard AWS environment variables,
+// such as AWS_REGION and AWS_ACCESS_KEY_ID. They also come from the AWS config
+// files. The region defaults to us-east-1 when it is unset. Most S3-compatible stores
+// ignore the region.
 func NewS3FromEnv(ctx context.Context) (*S3, error) {
 	bucket, prefix := ParseBucket(os.Getenv("GITMOTE_S3_BUCKET"))
 	if bucket == "" {
@@ -74,16 +77,16 @@ func NewS3FromEnv(ctx context.Context) (*S3, error) {
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		if endpoint := os.Getenv("GITMOTE_S3_ENDPOINT"); endpoint != "" {
 			o.BaseEndpoint = aws.String(endpoint)
-			// Virtual-host addressing needs DNS per bucket; local
-			// S3-compatible stores like MinIO want path-style.
+			// Virtual-host addressing needs DNS for each bucket. Local
+			// S3-compatible stores such as MinIO want path-style addressing.
 			o.UsePathStyle = true
 		}
 	})
 	return NewS3(client, bucket, prefix), nil
 }
 
-// Put implements Store. The uploader streams r, switching to multipart for
-// large bodies (packfiles), so r need not be seekable.
+// Put implements Store. The uploader streams r and switches to multipart for
+// large bodies such as packfiles. So r need not be seekable.
 func (s *S3) Put(ctx context.Context, key string, r io.Reader) error {
 	_, err := s.uploader.UploadObject(ctx, &transfermanager.UploadObjectInput{
 		Bucket: aws.String(s.bucket),

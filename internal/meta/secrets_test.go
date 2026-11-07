@@ -26,7 +26,7 @@ func TestGetOrCreateSecretCreatesOnceAndReuses(t *testing.T) {
 		t.Errorf("value = %q, want the generated value", v1)
 	}
 
-	// Second call reuses the stored value — gen must not run again.
+	// The second call reuses the stored value. gen must not run again.
 	v2, err := m.GetOrCreateSecret(ctx, "cookie_key", func() ([]byte, error) {
 		t.Fatal("gen called on an existing secret")
 		return nil, nil
@@ -68,8 +68,8 @@ func TestGetOrCreateSecretPersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// Re-open the same file (a restart / scale-to-zero restore): the value is the
-	// one restored, so gen must not run.
+	// Re-open the same file, as in a restart or a restore after scale to zero.
+	// The value is the restored one, so gen must not run.
 	m2 := openAt(t, path)
 	v2, err := m2.GetOrCreateSecret(ctx, "cookie_key", func() ([]byte, error) {
 		t.Fatal("gen called after reopen; the persisted value should be reused")

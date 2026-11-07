@@ -7,18 +7,20 @@ import (
 	"time"
 )
 
-// Visibility values for repos.visibility. A public repo is readable with no
-// token (clone/fetch/browse); writes are never anonymous (see auth.md).
+// Visibility values for repos.visibility. Anyone may clone, fetch or browse a
+// public repo without a token. Writes are never anonymous (see
+// docs/architecture/auth.md).
 const (
 	VisibilityPrivate = "private"
 	VisibilityPublic  = "public"
 )
 
-// ReservedRepoNames are the top-level global route names a repo may not take,
-// so a repo can never shadow a global route. Kept here as the single source so
-// routing and CreateRepo validation cannot drift (docs/architecture/urls.md).
-// The `.`-prefix and bare-`-` structural rules (below, in validateRepoName)
-// reserve room for future system routes without a breaking rename.
+// ReservedRepoNames are the top-level global route names that a repo may not
+// take. So a repo can never shadow a global route. This list is the single
+// source of these names. So routing and CreateRepo validation cannot drift
+// apart (docs/architecture/urls.md). validateRepoName adds two structural
+// rules: a name may not start with `.`, and a name may not be a bare `-`.
+// These rules reserve room for future system routes without a breaking rename.
 var ReservedRepoNames = map[string]bool{
 	"login": true, "logout": true, "users": true, "tokens": true,
 	"settings": true, "new": true, "search": true, "api": true,
@@ -26,8 +28,9 @@ var ReservedRepoNames = map[string]bool{
 	"version": true,
 }
 
-// Repo is a hosted repository. DefaultBranch backs the derived HEAD (see
-// storage.md — HEAD is not a stored ref). Visibility is "private" or "public".
+// Repo is a hosted repository. DefaultBranch backs the derived HEAD. HEAD is
+// not a stored ref (see docs/architecture/storage.md). Visibility is "private"
+// or "public".
 type Repo struct {
 	ID            int64
 	Name          string
@@ -40,15 +43,20 @@ type Repo struct {
 func (r *Repo) Public() bool { return r.Visibility == VisibilityPublic }
 
 // normalizeRepoName strips a trailing ".git" so `clone host/<repo>.git`
-// resolves to the same repo as `<repo>` (both at creation and lookup).
+// resolves to the same repo as `<repo>`. This holds at creation and at lookup.
 func normalizeRepoName(name string) string {
 	return strings.TrimSuffix(name, ".git")
 }
 
-// validateRepoName enforces the flat single-segment namespace: a name is one
-// path segment, not a reserved global, not starting with "." and not the bare
-// "-" (nor empty). See docs/architecture/urls.md. The name is assumed already
-// normalized (trailing ".git" stripped).
+// validateRepoName enforces the flat namespace of single segments. A valid
+// name:
+//   - is one path segment and is not empty
+//   - is not a reserved global name
+//   - does not start with "."
+//   - is not the bare "-"
+//
+// See docs/architecture/urls.md. validateRepoName assumes that the name is
+// already normalized, with any trailing ".git" stripped.
 func validateRepoName(name string) error {
 	switch {
 	case name == "":
@@ -65,9 +73,9 @@ func validateRepoName(name string) error {
 	return nil
 }
 
-// CreateRepo inserts a repository at visibility "private". A trailing ".git" is
-// stripped and the name is validated against the flat namespace rules
-// (validateRepoName). defaultBranch defaults to "main" when empty.
+// CreateRepo inserts a repository at visibility "private". It strips a trailing
+// ".git" and validates the name against the rules of the flat namespace
+// (validateRepoName). An empty defaultBranch defaults to "main".
 func (m *Metadata) CreateRepo(ctx context.Context, name, defaultBranch string) (*Repo, error) {
 	name = normalizeRepoName(name)
 	if err := validateRepoName(name); err != nil {
@@ -97,7 +105,7 @@ func (m *Metadata) CreateRepo(ctx context.Context, name, defaultBranch string) (
 }
 
 // SetVisibility sets a repository's visibility ("private" or "public"). It
-// returns ErrNotFound when no repo has the given id; the CHECK constraint
+// returns ErrNotFound when no repo has the given id. The CHECK constraint
 // rejects any other value.
 func (m *Metadata) SetVisibility(ctx context.Context, repoID int64, visibility string) error {
 	res, err := m.db.ExecContext(ctx,
@@ -133,8 +141,8 @@ func (m *Metadata) SetDefaultBranch(ctx context.Context, repoID int64, branch st
 	return nil
 }
 
-// GetRepo returns the repository named name, or ErrNotFound. A trailing ".git"
-// is tolerated (stripped) so `clone host/<repo>.git` resolves.
+// GetRepo returns the repository named name, or ErrNotFound. It accepts and
+// strips a trailing ".git", so `clone host/<repo>.git` resolves.
 func (m *Metadata) GetRepo(ctx context.Context, name string) (*Repo, error) {
 	var (
 		r  Repo
@@ -197,11 +205,12 @@ func (m *Metadata) ListRepos(ctx context.Context) ([]Repo, error) {
 	return repos, rows.Err()
 }
 
-// ListReposForViewer returns the repos a viewer may see, ordered by name: every
-// public repo plus any private repo on which the viewer holds an ACL. userID 0
-// is anonymous (public only). The visibility/ACL filter lives here, in SQL, so
-// the dashboard handler cannot drift from the repo-read rule (CanRead). An admin
-// sees everything — the caller uses ListRepos for that.
+// ListReposForViewer returns the repos that a viewer may see, ordered by name.
+// These are every public repo and any private repo on which the viewer holds
+// an ACL. userID 0 is the anonymous viewer, who sees public repos only. The
+// filter on visibility and ACLs lives here, in SQL. So the dashboard handler
+// cannot drift from the repo read rule (CanRead). An admin sees every repo,
+// and the caller uses ListRepos for that.
 func (m *Metadata) ListReposForViewer(ctx context.Context, userID int64) ([]Repo, error) {
 	rows, err := m.db.QueryContext(ctx,
 		`SELECT id, name, default_branch, visibility, created_at FROM repos r
@@ -228,9 +237,9 @@ func (m *Metadata) ListReposForViewer(ctx context.Context, userID int64) ([]Repo
 	return repos, rows.Err()
 }
 
-// parseTime parses an RFC 3339 timestamp written by now(); a parse failure
-// yields the zero time rather than an error, since the column is always
-// written by this package.
+// parseTime parses an RFC 3339 timestamp that now() wrote. A parse failure
+// gives the zero time, not an error, because this package always writes the
+// column.
 func parseTime(s string) time.Time {
 	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {

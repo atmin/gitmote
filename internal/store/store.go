@@ -1,8 +1,8 @@
 // Package store provides durable, content-addressed storage for git objects
-// and packfiles, per the S3 layout in docs/architecture/storage.md. Keys are
-// content-addressed ({repo}/objects/… and {repo}/objects/pack/…), so values
-// are immutable: a re-Put of an existing key is a no-op. This idempotence is
-// the substrate for the content-before-pointer invariant in
+// and packfiles. It follows the S3 layout in docs/architecture/storage.md.
+// Keys are content-addressed ({repo}/objects/… and {repo}/objects/pack/…), so
+// values are immutable. A re-Put of an existing key is a no-op. This
+// idempotence is the base of the content-before-pointer invariant in
 // docs/architecture/safety.md.
 package store
 
@@ -22,14 +22,14 @@ type Store interface {
 	Put(ctx context.Context, key string, r io.Reader) error
 
 	// Get returns the content stored under key. The caller must close the
-	// returned reader. Returns ErrNotFound if the key does not exist.
+	// returned reader. It returns ErrNotFound if the key does not exist.
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
 
 	// Exists reports whether key exists.
 	Exists(ctx context.Context, key string) (bool, error)
 
-	// List returns, in lexicographic order, all keys that start with
-	// prefix — plain string-prefix matching, as in S3. Callers listing a
-	// "directory" must include the trailing slash.
+	// List returns all keys that start with prefix, in lexicographic order.
+	// It uses plain string-prefix matching, as in S3. To list a "directory",
+	// include the trailing slash.
 	List(ctx context.Context, prefix string) ([]string, error)
 }

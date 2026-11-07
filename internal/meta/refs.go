@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// ZeroSHA is git's all-zero object id, used on the wire for a ref that is being
-// created (old = zero) or deleted (new = zero). CASRef treats it — and the
-// empty string — as "the ref is absent".
+// ZeroSHA is the all-zero object id of git. The wire protocol uses it for a ref
+// that is being created (old is zero) or deleted (new is zero). CASRef treats
+// ZeroSHA and the empty string as "the ref is absent".
 const ZeroSHA = "0000000000000000000000000000000000000000"
 
 // Ref is a mutable pointer: a ref name and the object id it resolves to.
@@ -20,8 +20,9 @@ type Ref struct {
 }
 
 // RefUpdate is one compare-and-swap: advance Name from Old to New. Old is the
-// caller's expected current value (ZeroSHA/"" to require the ref be absent);
-// New is the desired value (ZeroSHA/"" to delete it).
+// current value that the caller expects. Set Old to ZeroSHA or "" to require
+// that the ref is absent. New is the desired value. Set New to ZeroSHA or ""
+// to delete the ref.
 type RefUpdate struct {
 	Name string
 	Old  string
@@ -67,15 +68,16 @@ func (m *Metadata) ListRefs(ctx context.Context, repoID int64) ([]Ref, error) {
 
 // CASRef atomically advances a single ref. It succeeds only if the ref
 // currently holds old; otherwise it returns *CASMismatchError and changes
-// nothing. This is the ref linearization point (safety.md §3).
+// nothing. This is the linearization point for refs
+// (docs/architecture/safety.md, section 3).
 func (m *Metadata) CASRef(ctx context.Context, repoID int64, name, old, new string) error {
 	return m.CASRefs(ctx, repoID, []RefUpdate{{Name: name, Old: old, New: new}})
 }
 
-// CASRefs applies several ref updates as one all-or-nothing transaction: if any
-// update's expected old value does not match, none are applied and a
-// *CASMismatchError for the first offending ref is returned. This is the atomic
-// multi-ref push guarantee.
+// CASRefs applies several ref updates as one all-or-nothing transaction. If
+// the expected old value of any update does not match, it applies none of
+// them. It then returns a *CASMismatchError for the first ref that does not
+// match. This is the guarantee behind the atomic multi-ref push.
 func (m *Metadata) CASRefs(ctx context.Context, repoID int64, updates []RefUpdate) error {
 	if len(updates) == 0 {
 		return nil
@@ -129,7 +131,8 @@ func casOne(ctx context.Context, tx *sql.Tx, repoID int64, u RefUpdate, ts strin
 }
 
 // normalizeSHA collapses the two spellings of "absent" (empty and ZeroSHA) to
-// the empty string, so comparisons and the create/delete branches are uniform.
+// the empty string. So comparisons and the create and delete branches are
+// uniform.
 func normalizeSHA(sha string) string {
 	if sha == ZeroSHA {
 		return ""

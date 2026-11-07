@@ -10,8 +10,8 @@ import (
 	"github.com/atmin/gitmote/internal/meta"
 )
 
-// newSvc builds a service over a keyring (one key) and a real temp meta DB with
-// one repo, returning the service and the repo id.
+// newSvc builds a service over a keyring with one key and a real temporary meta
+// database with one repo. It returns the service and the repo id.
 func newSvc(t *testing.T) (*Service, int64) {
 	t.Helper()
 	t.Setenv(keyEnvPrefix+"1", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, masterKeyLen)))
@@ -96,8 +96,9 @@ func TestServiceRejectsBadAndReservedNames(t *testing.T) {
 	}
 }
 
-// TestSecretValueNotStoredInPlaintext is the at-rest leak invariant: the stored
-// envelope's ciphertext must not contain the plaintext bytes.
+// TestSecretValueNotStoredInPlaintext checks the invariant against leaks at
+// rest. The ciphertext of the stored envelope must not contain the plaintext
+// bytes.
 func TestSecretValueNotStoredInPlaintext(t *testing.T) {
 	ctx := context.Background()
 	svc, repoID := newSvc(t)

@@ -7,7 +7,8 @@ import (
 )
 
 // User is a forge account. IsAdmin marks a global administrator (see
-// storage.md) — distinct from a per-repo admin ACL.
+// docs/architecture/storage.md). A global administrator is distinct from a
+// per-repo admin ACL.
 type User struct {
 	ID        int64
 	Handle    string
@@ -15,8 +16,8 @@ type User struct {
 	CreatedAt time.Time
 }
 
-// Token is a stored personal access token's metadata. Neither the raw token nor
-// its verifier is exposed here — this is what the UI lists.
+// Token is the metadata of a stored personal access token. It exposes neither
+// the raw token nor its verifier. The UI lists these fields.
 type Token struct {
 	ID        int64
 	UserID    int64
@@ -25,9 +26,10 @@ type Token struct {
 	LastUsed  *time.Time
 }
 
-// TokenAuth is a token's stored verifier plus its owner and constraints,
-// returned to the auth layer for constant-time verification and the scope/expiry
-// checks (see internal/auth). ExpiresAt/RepoScope are nil when unconstrained.
+// TokenAuth is a token's stored verifier, with its owner and constraints. The
+// auth layer uses it for constant-time verification and for the scope and
+// expiry checks (see internal/auth). ExpiresAt and RepoScope are nil when the
+// token has no such constraint.
 type TokenAuth struct {
 	TokenID   int64
 	Verifier  string
@@ -132,8 +134,8 @@ func (m *Metadata) ListUsers(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
-// AdminExists reports whether any global administrator exists — the signal
-// bootstrap uses to refuse clobbering an already-initialized instance.
+// AdminExists reports whether any global administrator exists. Bootstrap uses
+// this signal to refuse to overwrite an instance that is already initialized.
 func (m *Metadata) AdminExists(ctx context.Context) (bool, error) {
 	var exists int64
 	err := m.db.QueryRowContext(ctx,
@@ -145,7 +147,7 @@ func (m *Metadata) AdminExists(ctx context.Context) (bool, error) {
 }
 
 // CreateToken stores a personal access token for a user. selector is the token's
-// public lookup key; verifier is the hash of its secret half (see internal/auth
+// public lookup key. verifier is the hash of its secret half (see internal/auth
 // for the token format). Neither the raw token nor the secret is persisted.
 func (m *Metadata) CreateToken(ctx context.Context, userID int64, selector, verifier, label string) (*Token, error) {
 	created := now()
@@ -162,9 +164,12 @@ func (m *Metadata) CreateToken(ctx context.Context, userID int64, selector, veri
 	return &Token{ID: id, UserID: userID, Label: label, CreatedAt: parseTime(created)}, nil
 }
 
-// CreateScopedToken stores a token carrying optional constraints: repoScope (nil
-// = all the owner's repos), readOnly (deny push), and expiresAt (zero = never).
-// It backs the CI clone credential and any expiring/scoped PAT.
+// CreateScopedToken stores a token with optional constraints:
+//   - repoScope sets the repo scope. nil means all the owner's repos.
+//   - readOnly denies push.
+//   - expiresAt sets the expiry. Zero means the token never expires.
+//
+// It backs the CI clone credential and any PAT that expires or has a scope.
 func (m *Metadata) CreateScopedToken(ctx context.Context, userID int64, selector, verifier, label string, repoScope *int64, readOnly bool, expiresAt time.Time) (*Token, error) {
 	created := now()
 	var exp *string
@@ -188,7 +193,7 @@ func (m *Metadata) CreateScopedToken(ctx context.Context, userID int64, selector
 
 // TokenBySelector returns the verifier, owner, and constraints of the token with
 // the given selector, or ErrNotFound. The auth layer compares the verifier in
-// constant time and enforces the constraints; this method deliberately does not
+// constant time and enforces the constraints. This method deliberately does not
 // touch last_used (see TouchToken).
 func (m *Metadata) TokenBySelector(ctx context.Context, selector string) (*TokenAuth, error) {
 	var (
@@ -225,7 +230,7 @@ func (m *Metadata) TokenBySelector(ctx context.Context, selector string) (*Token
 	return &ta, nil
 }
 
-// TouchToken stamps a token's last_used with the current time. Called after a
+// TouchToken stamps a token's last_used with the current time. Call it after a
 // successful verification.
 func (m *Metadata) TouchToken(ctx context.Context, tokenID int64) error {
 	_, err := m.db.ExecContext(ctx,
@@ -233,8 +238,8 @@ func (m *Metadata) TouchToken(ctx context.Context, tokenID int64) error {
 	return err
 }
 
-// DeleteToken revokes a token by id. It is idempotent — deleting an absent
-// token is not an error, so a double revoke from the UI is harmless.
+// DeleteToken revokes a token by id. It is idempotent. Deleting an absent token
+// is not an error, so a double revoke from the UI is harmless.
 func (m *Metadata) DeleteToken(ctx context.Context, tokenID int64) error {
 	_, err := m.db.ExecContext(ctx, `DELETE FROM tokens WHERE id = ?`, tokenID)
 	return err

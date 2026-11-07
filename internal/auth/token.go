@@ -1,12 +1,12 @@
-// Package auth authenticates smart-HTTP requests with personal access tokens
-// and authorizes them per-repo against the ACL table, per
-// docs/architecture/auth.md.
+// Package auth authenticates smart-HTTP requests with personal access tokens.
+// It authorizes them per repo against the ACL table, as
+// docs/architecture/auth.md describes.
 //
-// A PAT is a `selector.secret` pair (see docs/architecture/storage.md): the
-// selector is a non-secret lookup key and only the SHA-256 of the secret — the
-// verifier — is stored. Verification looks the row up by selector, then
-// compares the verifier in constant time, so neither a timing side-channel nor
-// a database leak yields a usable token.
+// A PAT is a `selector.secret` pair (see docs/architecture/storage.md). The
+// selector is a lookup key that is not secret. Only the SHA-256 of the secret
+// is stored, and that hash is the verifier. Verification looks up the row by
+// selector, then compares the verifier in constant time. So neither a timing
+// side-channel nor a database leak yields a usable token.
 package auth
 
 import (
@@ -17,12 +17,12 @@ import (
 	"strings"
 )
 
-// Sentinels distinguishing the two rejection modes, so the transport layer can
-// answer with the auth challenge git expects.
+// Sentinels that distinguish the two rejection modes, so the transport layer
+// can answer with the auth challenge that git expects.
 var (
-	// ErrUnauthorized is a missing or invalid token — answer 401 + challenge.
+	// ErrUnauthorized is a missing or invalid token. Answer 401 with a challenge.
 	ErrUnauthorized = errors.New("auth: unauthorized")
-	// ErrForbidden is a valid token lacking the required permission — answer 403.
+	// ErrForbidden is a valid token without the required permission. Answer 403.
 	ErrForbidden = errors.New("auth: forbidden")
 )
 
@@ -30,15 +30,15 @@ const (
 	// tokenPrefix marks gitmote PATs (like GitHub's ghp_), so a leaked token is
 	// recognizable and secret-scanners can match it.
 	tokenPrefix = "gmt_"
-	// selectorBytes / secretBytes size the two halves; 128-bit selector for a
-	// collision-free lookup key, 256-bit secret for the verifier.
+	// selectorBytes and secretBytes size the two halves. The 128-bit selector
+	// gives a collision-free lookup key. The 256-bit secret backs the verifier.
 	selectorBytes = 16
 	secretBytes   = 32
 )
 
-// Mint generates a new personal access token. It returns the raw token — shown
-// to the user exactly once — and the selector and verifier to persist via
-// meta.CreateToken.
+// Mint generates a new personal access token. It returns the raw token, which
+// the user sees exactly once. It also returns the selector and verifier to
+// persist through meta.CreateToken.
 func Mint() (raw, selector, verifier string, err error) {
 	sel, err := randHex(selectorBytes)
 	if err != nil {

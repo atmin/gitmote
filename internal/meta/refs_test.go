@@ -68,7 +68,7 @@ func TestCASRefRejectsAndRollsBack(t *testing.T) {
 		t.Fatalf("seed create: %v", err)
 	}
 
-	// Stale expected value: a non-fast-forward the server must refuse.
+	// A stale expected value is a non-fast-forward that the server must refuse.
 	var mm *CASMismatchError
 	err := m.CASRef(ctx, r.ID, main, shaB, shaC)
 	if !errors.As(err, &mm) {
@@ -77,7 +77,7 @@ func TestCASRefRejectsAndRollsBack(t *testing.T) {
 	if mm.Got != shaA || mm.Want != shaB {
 		t.Errorf("mismatch = %+v, want Want=%s Got=%s", mm, shaB, shaA)
 	}
-	// The ref is unchanged — the rejected update rolled back.
+	// The ref is unchanged, because the rejected update rolled back.
 	if got := refSHA(t, m, r.ID, main); got != shaA {
 		t.Errorf("after rejected update sha = %q, want %q (unchanged)", got, shaA)
 	}
@@ -97,8 +97,8 @@ func TestCASRefsAtomicMultiRef(t *testing.T) {
 		dev  = "refs/heads/dev"
 	)
 
-	// One bad update in the batch rolls back the whole thing — the good
-	// create for main must not survive.
+	// One bad update in the batch rolls back the whole batch. The good create
+	// for main must not survive.
 	err := m.CASRefs(ctx, r.ID, []RefUpdate{
 		{Name: main, Old: ZeroSHA, New: shaA},
 		{Name: dev, Old: shaB, New: shaC}, // wrong: dev is absent, not shaB

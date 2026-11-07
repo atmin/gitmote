@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// RunStatus is the lifecycle state of a CI run. A run starts queued and moves
-// to a terminal state as later stages execute it.
+// RunStatus is the lifecycle state of a CI run. A run starts as queued. It
+// moves to a terminal state as CI executes it.
 type RunStatus string
 
 const (
@@ -19,8 +19,8 @@ const (
 	RunSuperseded RunStatus = "superseded"
 )
 
-// Run is one CI run: a workflow triggered by a ref advancing to SHA. Rows are
-// written only by the leader, like refs.
+// Run is one CI run: a workflow that starts because a ref advanced to SHA.
+// Only the leader writes the rows, as with refs.
 type Run struct {
 	ID        int64
 	RepoID    int64
@@ -99,8 +99,8 @@ func (m *Metadata) GetRun(ctx context.Context, runID int64) (*Run, error) {
 	return &r, nil
 }
 
-// ListRuns returns a repository's runs, newest first, capped at limit (<= 0
-// means no limit).
+// ListRuns returns the runs of a repository, newest first. It returns at most
+// limit runs. A limit <= 0 means no limit.
 func (m *Metadata) ListRuns(ctx context.Context, repoID int64, limit int) ([]Run, error) {
 	query := `SELECT id, repo_id, ref, sha, status, created_at, updated_at
 	          FROM ci_runs WHERE repo_id = ? ORDER BY id DESC`
@@ -159,8 +159,8 @@ func (m *Metadata) LatestRunForSHA(ctx context.Context, repoID int64, sha string
 	return &r, nil
 }
 
-// Job is one unit of a run: a single workflow file. Name is the workflow file's
-// base name (stage 2); LogKey is the ci/ object key, set on completion (stage 4).
+// Job is one unit of a run: a single workflow file. Name is the base name of
+// the workflow file. LogKey is the object key under ci/, set on completion.
 type Job struct {
 	ID        int64
 	RunID     int64
@@ -241,8 +241,9 @@ func (m *Metadata) GetJob(ctx context.Context, jobID int64) (*Job, error) {
 }
 
 // ClaimJob atomically transitions a queued job to running and returns it. It
-// returns ErrNotFound when no job with the id is queued — already claimed,
-// terminal, or absent — so a concurrent double-claim yields exactly one winner.
+// returns ErrNotFound when no queued job has the id. In that case the job is
+// already claimed, terminal or absent. So when two callers claim the same job
+// at once, exactly one wins.
 func (m *Metadata) ClaimJob(ctx context.Context, jobID int64) (*Job, error) {
 	res, err := m.db.ExecContext(ctx,
 		`UPDATE ci_jobs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
@@ -279,9 +280,10 @@ func (m *Metadata) SetJobResult(ctx context.Context, jobID int64, status RunStat
 	return nil
 }
 
-// SweepStuckJobs marks every running job last updated before cutoff as error and
-// returns the ids it changed, so the caller can roll up their runs. A runner that
-// dies without completing would otherwise leave a job running forever.
+// SweepStuckJobs marks as error every running job that was last updated before
+// cutoff. It returns the ids it changed, so the caller can roll up the runs of
+// those jobs. Without this sweep, a runner that dies before it completes would
+// leave a job running forever.
 func (m *Metadata) SweepStuckJobs(ctx context.Context, cutoff time.Time) ([]int64, error) {
 	rows, err := m.db.QueryContext(ctx,
 		`SELECT id, updated_at FROM ci_jobs WHERE status = ?`, string(RunRunning))

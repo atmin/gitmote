@@ -10,7 +10,7 @@ import (
 )
 
 // Store is the meta slice the service reads and writes. *meta.Metadata satisfies
-// it. It carries only sealed envelopes — never plaintext.
+// it. It carries only sealed envelopes, never plaintext.
 type Store interface {
 	SetSecret(ctx context.Context, repoID int64, name string, version int, iv, ct []byte) error
 	ListSecretNames(ctx context.Context, repoID int64) ([]string, error)
@@ -18,9 +18,10 @@ type Store interface {
 	DeleteSecret(ctx context.Context, repoID int64, name string) error
 }
 
-// Service is the CI-secrets hub: it seals on write and opens on read, over the
-// keyring and the meta store. The admin UI uses Set/List/Delete/Enabled; the CI
-// dispatcher uses Secrets to build the trigger env.
+// Service is the hub for CI secrets. It seals on write and opens on read, over
+// the keyring and the meta store. The admin UI uses SetSecret, ListSecretNames,
+// DeleteSecret and Enabled. The CI dispatcher uses Secrets to build the trigger
+// env.
 type Service struct {
 	kr    *Keyring
 	store Store
@@ -31,12 +32,13 @@ func NewService(kr *Keyring, store Store) *Service {
 	return &Service{kr: kr, store: store}
 }
 
-// Enabled reports whether a master key is configured (so the UI can gate the
-// set form and injection is meaningful).
+// Enabled reports whether a master key is configured. The UI uses it to gate
+// the set form. Injection is meaningful only when it is true.
 func (s *Service) Enabled() bool { return s.kr.Enabled() }
 
-// nameRe constrains a secret name to a shell/env-safe identifier so it can be
-// injected as a runner env var without quoting surprises.
+// nameRe constrains a secret name to an identifier that is safe in a shell and
+// in an env. The runner can then inject it as an env var without quoting
+// problems.
 var nameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // validName rejects malformed names and names that would shadow the runner's own
@@ -74,10 +76,11 @@ func (s *Service) DeleteSecret(ctx context.Context, repoID int64, name string) e
 	return s.store.DeleteSecret(ctx, repoID, name)
 }
 
-// Secrets decrypts a repo's secrets into a name→value map for the trigger env.
-// It fails closed: if any envelope can't be opened (missing key version,
-// tampering), it returns the error rather than a partial map, so the dispatcher
-// can decide to run without secrets rather than with a silently incomplete set.
+// Secrets decrypts a repo's secrets into a map from name to value for the
+// trigger env. It fails closed. If any envelope can't be opened, for example
+// because of a missing key version or tampering, it returns the error. It never
+// returns a partial map. So the dispatcher can decide to run without secrets,
+// not with a silently incomplete set.
 func (s *Service) Secrets(ctx context.Context, repoID int64) (map[string]string, error) {
 	stored, err := s.store.GetSecrets(ctx, repoID)
 	if err != nil {

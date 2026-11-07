@@ -9,8 +9,8 @@ import (
 	"sync"
 )
 
-// Mem is an in-memory Store for tests. It must stay in lockstep with the S3
-// implementation — the conformance suite runs against both.
+// Mem is an in-memory Store for tests. It must behave the same as the S3
+// implementation. The conformance suite runs against both.
 type Mem struct {
 	mu      sync.RWMutex
 	objects map[string][]byte

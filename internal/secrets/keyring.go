@@ -1,13 +1,16 @@
-// Package secrets encrypts per-repo CI secrets at rest with a server-held master
-// key, so a compromise of the S3 replica / DB snapshot (the litestream WAL, the
-// object bucket) does not leak secret values — the master key lives only in the
-// process env, not in the replicated DB. It is **not** a defense against a
-// compromised running server, which holds the key by necessity to inject secrets
-// into the runner (see docs/architecture/safety.md and docs/architecture/ci.md).
+// Package secrets encrypts per-repo CI secrets at rest with a master key that
+// the server holds. A compromise of the S3 replica or a database snapshot then
+// does not leak secret values. Examples are the litestream WAL or the object
+// bucket.
+// The master key lives only in the process env, not in the replicated
+// database. It is **not** a defense against a compromised running server. The
+// server must hold the key to inject secrets into the runner (see
+// docs/architecture/safety.md and docs/architecture/ci.md).
 //
-// keyring.go is pure crypto: no meta, no I/O beyond reading keys from the env at
-// construction — unit-testable in isolation. The meta-backed store and the
-// encrypt/decrypt service live alongside it.
+// keyring.go is pure crypto. It uses no meta and does no I/O beyond reading
+// keys from the env at construction. So it is unit-testable in isolation. The
+// store backed by meta and the service that encrypts and decrypts live beside
+// it.
 package secrets
 
 import (
@@ -25,13 +28,15 @@ import (
 )
 
 const (
-	// keyEnvPrefix is the env-var stem for a master key; the version number
-	// follows (GITMOTE_CI_SECRET_KEY_V1, …). The value is base64 of 32 raw bytes.
+	// keyEnvPrefix is the env var stem for a master key. The version number
+	// follows it, as in GITMOTE_CI_SECRET_KEY_V1. The value is base64 of 32
+	// raw bytes.
 	keyEnvPrefix = "GITMOTE_CI_SECRET_KEY_V"
 	masterKeyLen = 32 // AES-256
 	ivLen        = 12 // GCM standard nonce
-	// subkeyInfo is the HKDF info stem; the repo id follows, giving a distinct
-	// per-repo subkey from one master (repo isolation for free).
+	// subkeyInfo is the HKDF info stem. The repo id follows it, which gives a
+	// distinct per-repo subkey from one master key. This isolates the repos
+	// at no extra cost.
 	subkeyInfo = "ci-secret:"
 )
 
@@ -43,20 +48,21 @@ type Envelope struct {
 	CT      []byte
 }
 
-// Keyring holds the server-held master keys, one per version. The highest
-// version present is *current*: new secrets seal under it, while existing
-// envelopes decrypt under their own version — lazy, O(1) rotation with no
-// re-encryption. It is immutable after construction, so safe for concurrent use.
+// Keyring holds the server's master keys, one per version. The highest version
+// present is *current*. New secrets seal under it. Existing envelopes decrypt
+// under their own version. This gives lazy, O(1) rotation with no
+// re-encryption. Keyring is immutable after construction, so it is safe for
+// concurrent use.
 type Keyring struct {
 	keys    map[int][masterKeyLen]byte
 	current int
 }
 
-// NewKeyringFromEnv builds the keyring from GITMOTE_CI_SECRET_KEY_V<n> env vars
-// (base64 of 32 bytes each). With none set it returns a disabled keyring
-// (Enabled() == false) rather than an error, so an instance without CI secrets
-// runs unchanged. A present-but-malformed key is a hard error — fail loud rather
-// than silently drop a key version.
+// NewKeyringFromEnv builds the keyring from the GITMOTE_CI_SECRET_KEY_V<n> env
+// vars. Each one holds base64 of 32 bytes. When none is set, it returns a
+// disabled keyring (Enabled() == false), not an error. So an instance without
+// CI secrets runs unchanged. A key that is present but malformed is a hard
+// error. Failing loudly is better than silently dropping a key version.
 func NewKeyringFromEnv() (*Keyring, error) {
 	kr := &Keyring{keys: map[int][masterKeyLen]byte{}}
 	for _, kv := range os.Environ() {
@@ -65,7 +71,7 @@ func NewKeyringFromEnv() (*Keyring, error) {
 			continue
 		}
 		if strings.TrimSpace(val) == "" {
-			continue // an empty/cleared var is "unset", not a malformed key
+			continue // an empty or cleared var is "unset", not a malformed key
 		}
 		v, err := strconv.Atoi(strings.TrimPrefix(name, keyEnvPrefix))
 		if err != nil || v < 1 {
@@ -88,14 +94,14 @@ func NewKeyringFromEnv() (*Keyring, error) {
 	return kr, nil
 }
 
-// Enabled reports whether any master key is configured. When false, Encrypt
-// fails and the secrets UI/injection are inert.
+// Enabled reports whether any master key is configured. When it is false,
+// Encrypt fails, and the secrets UI and the injection are inert.
 func (k *Keyring) Enabled() bool { return len(k.keys) > 0 }
 
 // Encrypt seals plaintext for (repoID, name) under the current key version. The
 // IV is fresh per call, so two encryptions of the same value differ. The AAD
-// binds the envelope to (repoID, name, version): a ciphertext moved to a
-// different repo/name/version fails to open.
+// binds the envelope to (repoID, name, version). A ciphertext moved to a
+// different repo, name or version fails to open.
 func (k *Keyring) Encrypt(repoID int64, name, plaintext string) (Envelope, error) {
 	if !k.Enabled() {
 		return Envelope{}, errors.New("secrets: no master key configured (set GITMOTE_CI_SECRET_KEY_V1)")
@@ -112,10 +118,14 @@ func (k *Keyring) Encrypt(repoID int64, name, plaintext string) (Envelope, error
 	return Envelope{Version: k.current, IV: iv, CT: ct}, nil
 }
 
-// Decrypt opens an envelope for (repoID, name). It fails closed: an absent key
-// version, a bad IV, or a tag mismatch (wrong repo/name/version, or tampering)
-// all return an error — never a silent empty value or a panic. The error carries
-// the repo/name (not secret) but never the plaintext.
+// Decrypt opens an envelope for (repoID, name). It fails closed. Each of these
+// cases returns an error, never a silent empty value or a panic:
+//   - an absent key version
+//   - a bad IV
+//   - a tag mismatch, from a wrong repo, name or version, or from tampering
+//
+// The error carries the repo and the name, which are not secret. It never
+// carries the plaintext.
 func (k *Keyring) Decrypt(repoID int64, name string, e Envelope) (string, error) {
 	if len(e.IV) != ivLen {
 		return "", fmt.Errorf("secrets: bad IV length %d for repo %d secret %q", len(e.IV), repoID, name)

@@ -15,8 +15,8 @@ const (
 	PermAdmin Perm = "admin"
 )
 
-// SetACL grants (or updates) user's permission on repo. It is an upsert: a
-// second call for the same (repo, user) replaces the level.
+// SetACL grants or updates the permission of user on repo. It is an upsert.
+// A second call for the same repo and user replaces the level.
 func (m *Metadata) SetACL(ctx context.Context, repoID, userID int64, perm Perm) error {
 	_, err := m.db.ExecContext(ctx,
 		`INSERT INTO acls (repo_id, user_id, perm) VALUES (?, ?, ?)
@@ -58,18 +58,19 @@ func (m *Metadata) ListACLs(ctx context.Context, repoID int64) ([]ACL, error) {
 	return acls, rows.Err()
 }
 
-// DeleteACL revokes user's grant on repo. It is idempotent — revoking an absent
-// grant is not an error.
+// DeleteACL revokes the grant of user on repo. It is idempotent. Revoking an
+// absent grant is not an error.
 func (m *Metadata) DeleteACL(ctx context.Context, repoID, userID int64) error {
 	_, err := m.db.ExecContext(ctx,
 		`DELETE FROM acls WHERE repo_id = ? AND user_id = ?`, repoID, userID)
 	return err
 }
 
-// CanRead reports whether a viewer may read repo: a public repo is readable by
-// anyone (userID 0 = anonymous); a private repo needs any ACL grant (read,
-// write, or admin). It is the visibility-aware repo-read shared by the git-read
-// and browse paths (docs/architecture/urls.md, auth.md).
+// CanRead reports whether a viewer may read repo. Anyone may read a public
+// repo, including the anonymous viewer (userID 0). A private repo needs an ACL
+// grant of any level: read, write or admin. The git read path and the browse
+// path share this check, which respects visibility (docs/architecture/urls.md,
+// docs/architecture/auth.md).
 func (m *Metadata) CanRead(ctx context.Context, repo *Repo, userID int64) (bool, error) {
 	if repo.Public() {
 		return true, nil
@@ -87,8 +88,8 @@ func (m *Metadata) CanRead(ctx context.Context, repo *Repo, userID int64) (bool,
 	return true, nil
 }
 
-// GetACL returns user's permission on repo, or ErrNotFound when none is set
-// (no access).
+// GetACL returns the permission of user on repo. It returns ErrNotFound when
+// no permission is set, which means no access.
 func (m *Metadata) GetACL(ctx context.Context, repoID, userID int64) (Perm, error) {
 	var perm string
 	err := m.db.QueryRowContext(ctx,
