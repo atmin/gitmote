@@ -41,7 +41,7 @@ or `MB`.
 Tune the limits from the logs.
 
 **Scale:** `min-scale = 0` lets the container idle to zero. A remote gets pushes
-now and then, so it is idle almost always. Even at 1024 MB, an always-on container
+rarely, so it is idle almost always. Even at 1024 MB, an always-on container
 exceeds Scaleway's free tier: about 2.6M GB-s per month against 400k.
 
 - The cost of scale to zero is a cold start of a few seconds on the first request
@@ -154,7 +154,7 @@ scw jobs definition update <JOB_DEFINITION_ID> image-uri=ghcr.io/atmin/gitmote-r
 
 ## Deploy
 
-Every green push to `master` deploys, through the `deploy` job in
+Every push to `master` whose CI checks pass deploys, through the `deploy` job in
 `.github/workflows/ci.yml`:
 
 1. `ci` runs lint, test and build.
@@ -259,5 +259,5 @@ line. This LogQL query extracts the token. A gitmote token is
   so the query needs no `| json`.
 - `regexp` captures the token, and `line_format` reduces each match to it.
 
-Set the time range to cover the last start of the container, because the token is
-minted once at start. Sort newest first, so the top line is the current token.
+Set the time range to cover the last start of the container, because gitmote mints
+the token once at start. Sort newest first, so the top line is the current token.

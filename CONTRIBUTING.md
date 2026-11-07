@@ -56,11 +56,13 @@ Safety comes first ([safety.md](docs/architecture/safety.md)), so every change
 comes with tests:
 
 - Test the success path and the failure path. A rejection matters as much as a
-  success: a non-fast-forward push that gitmote accepts is as bad as a lost
+  success. A non-fast-forward push that gitmote accepts is as bad as a lost
   commit.
-- Test the safety invariants explicitly: the ref compare-and-swap under
-  concurrent pushes, the content-before-pointer order, and the atomic multi-ref
-  push. A change to the write path proves that each invariant still holds.
+- Test the safety invariants explicitly. A change to the write path proves that
+  each invariant still holds:
+  - the ref compare-and-swap under concurrent pushes
+  - the content-before-pointer order
+  - the atomic multi-ref push
 - Drive real `git` (clone, fetch, push) against the server in integration tests.
   The protocol is the contract.
 
@@ -72,7 +74,7 @@ golangci-lint run    # lint, including vet
 go test ./...        # test
 ```
 
-`make fmt` formats the code, and `make all` runs lint, test and build. CI runs
+`make fmt` formats the code. `make all` runs lint, then test, then build. CI runs
 `make all` and the end-to-end suites.
 
 ## Commit messages
@@ -99,7 +101,7 @@ Optional body explaining why, not what.
 ## Docs
 
 - [docs/architecture/](docs/architecture/) holds the design and its reasons. A
-  decision and its reason live in the architecture doc they affect; there are no
+  decision and its reason live in the architecture doc they affect. There are no
   separate decision records. To change a decision, edit the doc so that it stays
   true. Do not append history.
 - The repo holds only what is true now. It holds no plans, roadmap, open

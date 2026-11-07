@@ -22,7 +22,7 @@ The candidates are `s3fs`, `mountpoint-s3` and JuiceFS.
 ## Native S3 object backend
 
 Examples are JGit DFS and the gitoxide ODB. This is the pure version: git serves
-objects and packs straight from S3, with no local materialization. It is proven
-on the JVM, in Gerrit. But it is more than this scale needs, and the server side
+objects and packs straight from S3, with no local materialization. Gerrit runs
+this design in production on the JVM. But it is more than this scale needs, and the server side
 of gitoxide is immature. Stock git on ephemeral disk gives correctness with no
 extra work.

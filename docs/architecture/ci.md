@@ -4,9 +4,19 @@ gitmote runs a repo's `.gitmote/workflows` on push. After a successful ref
 advance, it runs each workflow in an isolated container. It keeps the logs,
 reports pass or fail, and shows the status in the UI.
 
-CI is deliberately limited but real. It covers about 80% of personal CI: on push,
-run steps in a container, pass or fail, keep logs. It has no matrix builds,
-marketplace, service containers or caching.
+CI is deliberately limited. It still covers about 80% of personal CI:
+
+- run on push
+- run steps in a container
+- report pass or fail
+- keep logs
+
+It has none of these:
+
+- matrix builds
+- a marketplace
+- service containers
+- caching
 
 The engine is [`act`](https://github.com/nektos/act). It runs GitHub-Actions YAML,
 so a workflow written for Actions runs unchanged under gitmote's runner. Actions
@@ -48,7 +58,13 @@ sequenceDiagram
 ```
 
 The runner ([`internal/runner`](../../internal/runner)) makes one linear pass:
-claim, clone, act, complete. It holds only a scoped clone token and the injected
+
+1. claim
+2. clone
+3. act
+4. complete
+
+It holds only a scoped clone token and the injected
 secrets. It reports over the authenticated API. It never touches s3lite or S3
 directly.
 
@@ -101,8 +117,11 @@ Serverless Jobs have no Docker daemon. So on the cloud runner, `act` runs in
 self-hosted mode (`GITMOTE_ACT_PLATFORMS` in
 [`Dockerfile.runner`](../../Dockerfile.runner)). Steps run directly in the
 ephemeral Job container. The Job is the sandbox, and there is no Docker-in-Docker.
-So the runner image must hold every tool a workflow needs, such as git, node and
-bash.
+So the runner image must hold every tool a workflow needs, for example:
+
+- git
+- node
+- bash
 
 Locally, a real daemon exists. There, `GITMOTE_ACT_PLATFORMS` is unset, and `act`
 keeps its default behavior of nested containers.
@@ -110,8 +129,12 @@ keeps its default behavior of nested containers.
 ## Data model
 
 Three tables in [`internal/meta`](../../internal/meta) hold the CI state:
-`ci_runs`, `ci_jobs` and `ci_secrets`. They are leader-only, and litestream
-replicates them.
+
+- `ci_runs`
+- `ci_jobs`
+- `ci_secrets`
+
+They are leader-only, and litestream replicates them.
 
 Logs are append-only blobs under the `ci/` key space of the storage root, at
 `ci/{repoID}/{runID}/{jobID}.log`. gitmote PUTs a log before it records the
@@ -133,9 +156,9 @@ ticker sweeps jobs stuck in `running` to `error`.
 
 ## Live logs
 
-The durable log ships once, at completion. So while a job runs, nothing else
-shows its output. A best-effort live tail fills that gap, and does not touch the
-durable path:
+The runner uploads the durable log once, at completion. So the durable log
+cannot show the output of a running job. A best-effort live tail shows that
+output. The live tail does not touch the durable path:
 
 1. The runner tees the combined output of `act`. About every 1 s, it POSTs the
    new output to `…/log`.
@@ -147,9 +170,9 @@ durable path:
    `{bytes, next, done}`.
 4. On `done`, the page reloads to the rendered durable log.
 
-The live tail is deliberately never replicated or persisted. A lost chunk or a
-leader restart only interrupts the live view. The runner still ships the whole
-log at completion, so the durable record is unaffected. This follows the
+gitmote deliberately never replicates or persists the live tail. A lost chunk or
+a leader restart only interrupts the live view. The runner still uploads the
+whole log at completion, so the durable record does not change. This follows the
 fire-and-forget rule: the tail is a convenience, never a correctness path.
 
 The buffer is leader-only, because the browser polls the same instance that the
@@ -157,7 +180,7 @@ runner streams to. The reconcile tick sweeps a buffer after a short idle TTL.
 
 ## Secrets
 
-Per-repo CI secrets are encrypted at rest. gitmote decrypts them only to inject
+gitmote encrypts per-repo CI secrets at rest. It decrypts them only to inject
 them at trigger time. [safety.md §5](safety.md) gives the crypto and its narrow
 threat model:
 
@@ -214,11 +237,21 @@ Image builds depend on the substrate, and they are off by default.
 ### Scaleway cannot build
 
 The Serverless Job sandbox has no user namespaces. It also drops the capabilities
-that image builders need. So these all fail: `docker build`, `buildah`,
-`podman build`, and kaniko as a step.
+that image builders need. So each of these fails as a step:
 
-On the cloud runner, CI can compile, test, lint and produce file artifacts in any
-language. It cannot build an OCI image. Such a step must run on the GitHub mirror,
+- `docker build`
+- `buildah`
+- `podman build`
+- kaniko
+
+On the cloud runner, CI can do these steps in any language:
+
+- compile
+- test
+- lint
+- produce file artifacts
+
+It cannot build an OCI image. Such a step must run on the GitHub mirror,
 which is a real builder. For the static-binary case, the step can instead assemble
 the image through the registry API, with `ko` or `crane`.
 
@@ -288,8 +321,12 @@ A local instance is a real builder. So it can deploy gitmote as a fallback, and
 
 The push triggers
 [`.gitmote/workflows/deploy.yml`](../../.gitmote/workflows/deploy.yml). This is
-the GitHub deploy job, gated on `self-deploy` instead of `master`. It builds the
-amd64 image, pushes it to GHCR, and runs the same `scw container update`.
+the GitHub deploy job, gated on `self-deploy` instead of `master`. It has three
+steps:
+
+1. It builds the amd64 image.
+2. It pushes the image to GHCR.
+3. It runs the same `scw container update`.
 
 The workflow runs only on the `self-deploy` branch. So it never overlaps the
 GitHub path, and nothing deploys twice. The same writer lease makes its rolling

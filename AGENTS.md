@@ -3,12 +3,12 @@
 ## 1. Think Before Coding
 
 - Never make assumptions about undocumented APIs or configurations.
-- Ask clarifying questions if a task's requirements are ambiguous.
+- If the requirements of a task are ambiguous, ask clarifying questions.
 
 ## 2. Surgical Changes
 
 - Modify only the minimum necessary lines of code to achieve the goal.
-- Avoid refactoring adjacent or unrelated files unless explicitly asked.
+- Unless explicitly asked, avoid refactoring adjacent or unrelated files.
 - Match existing style, even if you would write it differently.
 
 ## 3. Simplicity First

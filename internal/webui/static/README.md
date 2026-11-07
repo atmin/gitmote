@@ -1,15 +1,20 @@
 # Vendored static assets
 
-Third-party assets served by the browse UI, embedded into the binary via
-`//go:embed` (see [`../webui.go`](../webui.go)) and served same-origin from
-`/ui/static/…`. Vendored — not fetched at runtime — so diagram rendering needs
-no CDN, works offline, and pulls in no supply-chain dependency at request time.
+This directory holds third-party assets for the browse UI. `//go:embed` embeds
+them into the binary (see [`../webui.go`](../webui.go)). The server serves them
+from its own origin, under `/ui/static/`. The repo includes these assets, and
+the server never fetches them at runtime. So diagram rendering:
+
+- needs no CDN
+- works offline
+- adds no supply-chain dependency at request time
 
 ## `mermaid.min.js`
 
-Client-side [Mermaid](https://mermaid.js.org) renderer for ` ```mermaid ` blocks
-in rendered markdown (the browse layout includes it only on pages that have a
-diagram, and initializes it with `securityLevel: 'strict'`).
+This file is the [Mermaid](https://mermaid.js.org) renderer for ` ```mermaid `
+blocks in rendered Markdown. It runs in the browser. The browse layout includes
+it only on pages that have a diagram. It initializes Mermaid with
+`securityLevel: 'strict'`.
 
 - **Version:** 11.16.0
 - **Source:** `https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.min.js`
@@ -20,8 +25,9 @@ diagram, and initializes it with `securityLevel: 'strict'`).
 ```sh
 curl -fsSL "https://cdn.jsdelivr.net/npm/mermaid@<version>/dist/mermaid.min.js" \
   -o internal/webui/static/mermaid.min.js
-shasum -a 256 internal/webui/static/mermaid.min.js   # record above
+shasum -a 256 internal/webui/static/mermaid.min.js   # record the hash above
 ```
 
-Bump the version and hash here in the same change. The single-file build exposes
-`globalThis.mermaid`, so a plain `<script src>` tag is all the layout needs.
+Update the version and the hash in this file in the same change. The single-file
+build exposes `globalThis.mermaid`, so the layout needs only a plain
+`<script src>` tag.

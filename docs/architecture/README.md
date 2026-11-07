@@ -12,9 +12,8 @@ The container itself is disposable, because S3 and s3lite hold all durable state
 So gitmote runs as a single writer that scales to zero. It wakes on a request,
 serves it, and goes idle again.
 
-gitmote is for self-hosting a handful of repos. The design leaves room to invite
-a few collaborators, and to accept commits authored in a web UI. gitmote does not
-try to be GitHub at scale.
+gitmote is for self-hosting a few repos, with a few invited collaborators.
+gitmote does not try to be GitHub at scale.
 
 The design priorities, in order, are:
 

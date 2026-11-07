@@ -117,8 +117,11 @@ rewrites the relative links in rendered markdown:
 - A navigation link gets the precise verb and the current ref. The verb is
   `blob` for a file and `tree` for a directory, and a tree lookup decides which.
 
-The renderer leaves three kinds of link untouched: absolute URLs, external
-`http(s)` links and in-page anchors (`#…`).
+The renderer leaves three kinds of link untouched:
+
+- absolute URLs
+- external `http(s)` links
+- in-page anchors (`#…`)
 
 ## Access and visibility
 
@@ -155,12 +158,12 @@ force-push or delete any branch other than the default. A non-fast-forward or a
 deletion of the default branch requires `admin`.
 
 This protects the history of the branch that everyone tracks from a rewrite by a
-collaborator. The everyday push, a fast-forward, is not affected.
+collaborator. The rule does not affect the everyday push, a fast-forward.
 
 The write path enforces this rule. There, gitmote knows how the old SHA relates
 to the new SHA. The check runs at the ref compare-and-swap (CAS), in the
-pre-receive hook ([safety.md](safety.md)). It does not run when the request is
-first authorized.
+pre-receive hook ([safety.md](safety.md)). It does not run when gitmote first
+authorizes the request.
 
 ### No per-repo owner
 
@@ -279,4 +282,4 @@ and `tree` are tolerant, an imprecise link still reaches a valid page instead of
 
 A relative link drops a ref that sits in the query, such as `?ref=master`. So an
 in-repo markdown link loses the ref and shows an empty tree. A ref in the path
-survives relative resolution, and the URL can be shared.
+survives relative resolution, and a user can share the URL.

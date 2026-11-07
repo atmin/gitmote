@@ -1,7 +1,13 @@
 # Configuration
 
-This file covers what every gitmote deployment needs: the storage root, the
-single writer, the env vars, CI and the first admin.
+This file covers what every gitmote deployment needs:
+
+- the storage root
+- the single writer
+- the env vars
+- CI
+- the first admin
+
 [deploy-scaleway.md](deploy-scaleway.md) covers one cloud deployment.
 
 ## Storage root
@@ -81,9 +87,7 @@ deletes them. A ref never points
 at a missing object.
 
 The ref compare-and-swap is a SQL transaction in the metadata database, and needs
-no S3 precondition. The escape hatch in [safety.md §4](architecture/safety.md)
-would move refs to a conditional PUT on object storage. It would need the same
-primitive as the lease.
+no S3 precondition.
 
 ## Environment variables
 
@@ -104,14 +108,14 @@ always wins.
 
 | Variable | Meaning |
 | --- | --- |
-| `GITMOTE_COOKIE_KEY` | Signs the session cookies of the web UI. By default, gitmote generates it on the first start and keeps it in the metadata database, so it survives restarts and scale to zero. |
+| `GITMOTE_COOKIE_KEY` | Signs the session cookies of the web UI. By default, gitmote generates it on the first start and keeps it in the metadata database. So it survives restarts and scale to zero. |
 | `WORKER_SECRET` | Authenticates the reports of the CI runner. By default, gitmote generates it and keeps it in the metadata database when a CI trigger is on. |
-| `GITMOTE_DATA` | The directory for the database (`meta.sqlite3`), the cache and the socket. The image sets `/data`; elsewhere the default is `gitmote` in the system temp directory. Mount a volume on it to keep the cache across restarts. |
+| `GITMOTE_DATA` | The directory for the database (`meta.sqlite3`). It also holds the cache and the socket. The image sets `/data`. Elsewhere, the default is `gitmote` in the system temp directory. Mount a volume on it to keep the cache across restarts. |
 | `GITMOTE_LISTEN_ADDR` | The address the server listens on. The default is `:8080`. |
 
 The data directory is a cache. The object store and the litestream replica hold
-the durable state. On a cold start, such as a wake from scale to zero or a
-redeploy, gitmote restores the database from the replica. Then it rebuilds the
+the durable state. Cold starts include wakes from scale to zero and redeploys. On a
+cold start, gitmote restores the database from the replica. Then it rebuilds the
 repos from the bucket. `make e2e-restore` tests this path.
 
 **CI.** CI is off by default. gitmote still records runs, but nothing executes them
@@ -123,10 +127,10 @@ until one of these variables turns a trigger on (see [CI](#ci)).
 | `GITMOTE_URL` | The public base URL, such as `https://git.example.com`, where the runner clones and reports. Every CI trigger needs it. Set without a job definition, it runs jobs locally with `act`. |
 | `SCW_SECRET_KEY` | Secret. The Scaleway API secret key, a UUID, that starts the jobs. The deploy pipeline uses the same key. |
 | `SCW_REGION` | The region where jobs start. The default is `AWS_REGION`. |
-| `GITMOTE_CI_SECRET_KEY_V<n>` | Secret. The master key for per-repo CI secrets: base64 of 32 bytes. It lives only in the env and is never stored ([safety.md §5](architecture/safety.md)). To rotate it, add `_V2` and so on. The highest number is current, and old envelopes still decrypt. Without a key, the secrets UI is off and jobs get no secrets. |
+| `GITMOTE_CI_SECRET_KEY_V<n>` | Secret. The master key for per-repo CI secrets: base64 of 32 bytes. It lives only in the env, and gitmote never stores it ([safety.md §5](architecture/safety.md)). To rotate it, add `_V2` and so on. The highest number is current, and old envelopes still decrypt. Without a key, the secrets UI is off and jobs get no secrets. |
 | `GITMOTE_REPO_SECRET_<REPO>__<NAME>` | A CI secret for one repo, set in the env. gitmote never stores it, and it needs no master key: the host env is already the trust boundary ([safety.md §5](architecture/safety.md)). |
-| `GITMOTE_CI_ALLOW_BUILDS` | `1` or `true` lets workflows build container images on a local or VPS runner with a Docker daemon (see [Image builds](#image-builds)). Use it with trusted repos only ([safety.md §7](architecture/safety.md)). It has no effect on Scaleway. |
-| `GITMOTE_ACT_DAEMON_SOCKET` | The Docker socket path, as the daemon sees it, that jobs mount when builds are on. The default is `/var/run/docker.sock`, which fits native Docker, colima and Docker Desktop. Change it only for another daemon, such as rootless Docker. |
+| `GITMOTE_CI_ALLOW_BUILDS` | `1` or `true` lets workflows build container images. It works on a local or VPS runner with a Docker daemon (see [Image builds](#image-builds)). Use it with trusted repos only ([safety.md §7](architecture/safety.md)). It has no effect on Scaleway. |
+| `GITMOTE_ACT_DAEMON_SOCKET` | The Docker socket path, as the daemon sees it, that jobs mount when builds are on. The default is `/var/run/docker.sock`. This default fits native Docker and colima. It also fits Docker Desktop. Change it only for another daemon, such as rootless Docker. |
 
 ## CI
 
@@ -141,14 +145,16 @@ executes the run ([ci.md](architecture/ci.md)):
    uses this trigger.
 3. Otherwise, CI is off. gitmote records runs and jobs, but nothing executes them.
 
-Both executing triggers need a Docker or podman daemon, because the runner runs
-`.gitmote/workflows` with [act](https://github.com/nektos/act). On Scaleway, the
-job image provides the daemon. Locally, it is the daemon on the host.
+The runner runs `.gitmote/workflows` with [act](https://github.com/nektos/act).
+On Scaleway, `act` runs in self-hosted mode, so the steps run directly in the Job
+container, with no daemon. The local trigger needs a Docker or podman daemon on
+the host. There, `act` runs each job in a container.
 
-Without a daemon, every run fails visibly. The job is dispatched and recorded, and
-`act` fails at its "Set up job" step with a `check if … the daemon is running`
-error. No workflow step runs, and no build. A ticker on the writer marks jobs that
-stay `running` for about an hour as `error`.
+Without a daemon, every local run fails visibly. gitmote dispatches and records
+the job. Then `act` fails at its "Set up job" step. The error is
+`check if … the daemon is running`. No workflow step runs, and no build runs. A
+ticker on the writer marks a job as `error` when it stays `running` for about an
+hour.
 
 ### Image builds
 
@@ -173,10 +179,10 @@ has no daemon.
 ## First admin
 
 An empty storage root has no users. When the server holds the lease and finds no
-admin, it creates the user `admin`, mints a token and prints it once in the logs.
+admin, it creates the user `admin`. It mints a token and prints it once in the logs.
 So a new forge needs no setup command.
 
-The token passes through the logs, and the operator can read them, as they can
+The token passes through the logs. The operator can read the logs, as they can
 read the env and the bucket. Treat the token as a one-time credential. After the
 first sign-in, mint your own token in the UI and revoke the first one.
 
@@ -190,7 +196,11 @@ already controls the forge, so it adds no risk.
 
 Both commands open the metadata in `RoleWriter`. They take the lease, and fail when
 a server holds it, so they never race a live writer. Run them while no instance is
-busy: before the server starts, while it is scaled to zero, or after 5 s of idle.
+busy:
+
+- before the server starts
+- while it is scaled to zero
+- after 5 s of idle
 
 With the compose file from the [README](../README.md), stop the server and run
 the command in a one-off container:
@@ -217,5 +227,5 @@ gitmote bootstrap -reissue -handle admin   # a new token for the existing admin
 
 Each command prints the token once, so save it. On exit, it flushes the new state
 to `{root}/meta`. The server reads that state when it next takes the lease.
-gitmote stores only a hash of each token, so a lost token cannot be recovered,
-only replaced.
+gitmote stores only a hash of each token. So gitmote can mint a new token, but it
+cannot show a lost one.

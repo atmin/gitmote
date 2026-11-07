@@ -18,8 +18,8 @@ litestream's `s3.Leaser`, a compare-and-swap (CAS) by conditional write. It work
 on `lock.json` beside the replica, at `{root}/meta/lock.json`.
 
 So the S3 backend must support atomic conditional writes: a CAS with
-`If-None-Match` and `If-Match`. This is a correctness requirement, because the
-lease cannot be enforced without it. A provider that lacks this primitive cannot
+`If-None-Match` and `If-Match`. This is a correctness requirement, because gitmote
+cannot enforce the lease without it. A provider that lacks this primitive cannot
 safely back gitmote.
 
 ### Every metadata request needs the lease
@@ -64,7 +64,7 @@ More instances add no read capacity, so the container pins `max-scale = 1`.
 
 ## 2. An in-process mutex linearizes writes
 
-Git's own lockfiles cannot be trusted across a synced or object backend. So a
+gitmote cannot trust git's own lockfiles across a synced or object backend. So a
 per-repo mutex in the process linearizes the writes. At the scale of "a few
 users", contention is about zero.
 
@@ -82,35 +82,32 @@ corruption. So gitmote always PUTs the objects first, and advances the ref after
 
 ## 4. The write-loss window of s3lite is accepted
 
-s3lite has a window in which writes can be lost. gitmote accepts it, because it is
-benign for git. litestream replicates the SQLite WAL to S3 asynchronously. So a
-committed ref update can be lost if the container dies within a window of under a
-second.
+s3lite has a window in which it can lose writes. gitmote accepts it, because it is
+benign for git. litestream replicates the SQLite WAL to S3 asynchronously. So if
+the container dies within a window of under a second, s3lite can lose a committed
+ref update.
 
 Because of the order in §3, the loss always leaves objects without a ref, which is
 garbage. It never leaves a ref without an object, which is corruption.
 
 To the user, the loss is a lost acknowledgment. The client still holds its
-commits. A re-push is cheap, because the objects are already uploaded. The orphans
-stay as harmless garbage (§3). Git is content-addressed and idempotent, so it heals itself in a way
-that a ledger does not. So gitmote accepts the window.
-
-An escape hatch exists, if it is ever needed. It would move the refs to plain S3,
-behind a synchronous CAS by conditional PUT. s3lite would keep only the softer
-metadata.
+commits. A re-push is cheap, because the objects are already in S3. The orphans
+stay as harmless garbage (§3). Git is content-addressed and idempotent. So a
+re-push of the same commits succeeds, and it restores the lost ref update. A
+ledger cannot recover in this way. So gitmote accepts the window.
 
 ## 5. CI secrets are encrypted at rest, against a narrow threat
 
 gitmote seals each per-repo CI secret with AES-256-GCM, under a master key that the
 server holds. The master key is `GITMOTE_CI_SECRET_KEY_V<n>`, a container env var
-beside the AWS keys. It lives only in the env, and is never persisted (see §6).
+beside the AWS keys. It lives only in the env, and gitmote never persists it (see §6).
 HKDF-SHA256 derives a subkey for each repo. The AAD of each envelope binds
-`(repoID, name, version)`. So a stolen ciphertext cannot be replayed under another
-repo, name or version.
+`(repoID, name, version)`. So an attacker cannot replay a stolen ciphertext under
+another repo, name or version.
 
 Only the sealed `{v, iv, ct}` lives in s3lite, never the plaintext or the key. This
-buys one property: a compromise of the S3 replica or a DB snapshot does not leak
-secret values. This covers the litestream WAL and the object bucket.
+gives one protection: a compromise of the S3 replica or a DB snapshot does not
+leak secret values. This covers the litestream WAL and the object bucket.
 
 The threat model is narrow. The encryption is explicitly not a defense against a
 compromised running server. That server holds the master key by necessity. It must
@@ -135,7 +132,7 @@ authenticated. A key per boot would log everyone out and orphan the runs.
 
 This is acceptable for three reasons:
 
-- The replica already holds users, tokens and ACLs.
+- The replica already holds users and tokens. It also holds the ACLs.
 - Sessions are short-lived.
 - The worker secret only authorizes CI report submission, never decryption.
 
@@ -155,19 +152,21 @@ lease and creates the secret. It never writes as a follower.
 Image builds are off by default. Workflow code is untrusted, because an attacker
 can control it. The job container is the isolation boundary. Building an image
 needs a container builder. The pragmatic path is the nested mode of `act`, which
-mounts the host Docker socket into the job container. That hands the untrusted
-code root on the host, through a trivial container escape.
+mounts the host Docker socket into the job container. That grants the untrusted
+code root privileges on the host, through a trivial container escape.
 
 So by default, gitmote suppresses the mount with `act --container-daemon-socket -`,
 in [`internal/runner/act.go`](../../internal/runner/act.go). It restores the mount
-only when `GITMOTE_CI_ALLOW_BUILDS` is set. The flag is deliberately not per-repo.
-It is a trust decision at the host level. The operator makes it for a machine that
+only when the operator sets `GITMOTE_CI_ALLOW_BUILDS`. The flag is deliberately
+not per-repo. It is a trust decision at the host level. The operator makes it for a machine that
 runs only repos they trust. An example is a personal or VPS forge that builds its
 own code.
 
 The flag has no effect on the Scaleway substrate. There, jobs run in self-hosted
 mode, with no daemon and no socket to mount. Scaleway cannot build images anyway.
-The server logs a loud warning at startup when the flag is on.
+When the flag is on, the server logs a warning at startup. The warning says that
+CI can reach the host Docker daemon, which is host root. It also says that the
+flag is for trusted repos only.
 
 ### Why Docker-in-Docker does not replace the flag
 
@@ -190,7 +189,7 @@ builds is rootless against rootful. On a rootful daemon, anything the build
 reaches is real host root. A rootless engine caps the whole container tree at the
 invoking unprivileged user, privileged nesting included.
 
-So "always DinD where supported" would add machinery and buy no safety:
+So "always DinD where supported" would add machinery and add no safety:
 
 - gitmote would have to provision, wire and manage a privileged daemon, and detect
   support for it.

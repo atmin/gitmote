@@ -51,5 +51,5 @@ ACLs.
 ## No SSH
 
 gitmote serves git only over smart HTTP. An SSH connection is stateful, which is
-awkward for a container that sleeps. The `ssh_keys` table exists, but no code
+awkward for a container that scales to zero. The `ssh_keys` table exists, but no code
 reads it.

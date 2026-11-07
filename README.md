@@ -6,14 +6,17 @@ gitmote is a git remote that keeps all its state in one S3 bucket. You run it as
 container on your own machine, and only while you need it. The bucket is the
 forge, so no server has to stay up.
 
-gitmote has run in production since July 2026. It is built for a few repositories
-and a few people, not for scale.
+gitmote has run in production since July 2026. gitmote targets a few repositories
+and a few people, not scale.
 
 gitmote provides:
 
-- git over HTTP: clone, fetch and push, with access tokens
+- git over HTTP for clone, fetch and push, with access tokens
 - public and private repositories, with read or write access for invited users
-- a web UI to browse code and to manage users, tokens, access and CI secrets
+- a web UI to browse code and to manage:
+  - users and tokens
+  - access
+  - CI secrets
 - CI for `.gitmote/workflows` in GitHub Actions syntax, once you set up a runner
   ([docs/configuration.md](docs/configuration.md#ci))
 
@@ -38,7 +41,7 @@ aws_access_key_id = …
 aws_secret_access_key = …
 ```
 
-Save this file beside it as `compose.yaml`:
+Save the following configuration as `compose.yaml`, beside `s3-credentials`:
 
 ```yaml
 services:
@@ -97,16 +100,26 @@ docker compose run --rm gitmote bootstrap -reissue
 docker compose start
 ```
 
-To use the forge from another machine, set the same bucket, endpoint and region
-there. Sign in with your token, and do not bootstrap again. With a different
-bucket, gitmote starts a new, empty forge.
+To use the forge from another machine, set the same values there as here:
+
+- the bucket
+- the endpoint
+- the region
+
+Sign in with your token, and do not bootstrap again. With a different bucket,
+gitmote starts a new, empty forge.
 
 ## How it works
 
-The bucket holds all the state. Git objects are files in it. Refs, users and
-access rules live in SQLite, which [s3lite](https://github.com/atmin/s3lite)
-replicates to the same bucket. A push updates its refs in one SQL transaction, so
-the push is atomic.
+The bucket holds all the state. Git objects are files in it. SQLite holds the
+rest:
+
+- the refs
+- the users
+- the access rules
+
+[s3lite](https://github.com/atmin/s3lite) replicates SQLite to the same bucket.
+A push updates its refs in one SQL transaction, so the push is atomic.
 
 The container holds only a cache. Delete the container and its volume, and the
 next start restores the forge from the bucket.

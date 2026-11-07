@@ -101,8 +101,10 @@ The channel has three parts:
   parent mints the nonce for each push, and binds it to the locked operation. The
   nonce works once: its first use deletes it. So a stray local process cannot
   forge a ref update.
-- Fail closed. Any error on the hook side rejects the push. Examples are a
-  missing env var, a failed dial and a bad verdict.
+- Fail closed. Any error on the hook side rejects the push. Examples are:
+  - a missing env var
+  - a failed dial
+  - a bad verdict
 
 ### One SQL transaction makes a push of many refs atomic
 

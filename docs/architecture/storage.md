@@ -58,9 +58,10 @@ rebuilds the repo.
 
 The S3 layout mirrors the immutable directories of the bare repo on disk. It lives
 under the storage root: the whole bucket, or a `bucket/base` sub-path (see
-[configuration.md](../configuration.md#storage-root)). Refs are deliberately
-excluded. They live in s3lite, which is also under the root, at `meta/`. So
-objects and metadata share fate. The keys below are relative to the root.
+[configuration.md](../configuration.md#storage-root)). The layout deliberately
+excludes refs. They live in s3lite, which is also under the root, at `meta/`.
+Objects and metadata live under the same storage root. So one bucket holds all
+durable state. The keys below are relative to the root.
 
 | Key | Contents |
 | --- | --- |
@@ -69,13 +70,13 @@ objects and metadata share fate. The keys below are relative to the root.
 | `ci/{repo}/{run}/{job}.log` | CI run logs, append-only |
 
 gitmote syncs with the S3 SDK directly. So it stays a single static binary, with
-no external dependency. `rclone` is a fallback that needs no code. New objects and
-packs are PUT after `receive-pack` receives them. On a fetch, gitmote pulls the
+no external dependency. `rclone` is a fallback that needs no code. gitmote PUTs new
+objects and packs after `receive-pack` receives them. On a fetch, gitmote pulls the
 missing objects for that request.
 
 ### s3lite schema: mutable, the reason s3lite is here
 
-The schema is defined once, in
+One file defines the schema:
 [`internal/meta/schema.sql`](../../internal/meta/schema.sql). That file is the
 single source of truth. Every `Open` applies it idempotently, with
 `CREATE ... IF NOT EXISTS`. The store has no schema version, so `schema.sql` alone
@@ -96,7 +97,7 @@ into four groups:
 The rules below live here, not in the DDL.
 
 `HEAD` is not a row. It derives from `repos.default_branch`. Every `refs` row holds
-a concrete object id. Symbolic refs other than `HEAD` are not stored.
+a concrete object id. gitmote stores no symbolic refs other than `HEAD`.
 
 `users.is_admin` is the global administrator flag. This role may create users and
 repos, and manage ACLs. `gitmote bootstrap` mints the first admin. The server
@@ -105,8 +106,8 @@ runs the same bootstrap on an empty storage root. The flag is distinct from
 repo access.
 
 A PAT is a `selector.secret` pair. The selector is a lookup key that is not
-secret, unique and indexed. Only the verifier is stored: the `SHA-256` of the
-secret half. Verification looks the row up by selector, then compares the verifier
+secret, unique and indexed. gitmote stores only the verifier: the `SHA-256` of
+the secret half. Verification looks the row up by selector, then compares the verifier
 in constant time. So neither a timing side channel on the lookup nor a database
 leak yields a usable token. The user sees the raw `selector.secret` exactly once,
 at mint time, and gitmote never persists it.
