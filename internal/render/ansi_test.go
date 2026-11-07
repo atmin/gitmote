@@ -13,7 +13,7 @@ func TestANSIPlainText(t *testing.T) {
 }
 
 func TestANSIColorBecomesSpan(t *testing.T) {
-	// red "err" then reset.
+	// A red "err", then a reset.
 	got := string(ANSI([]byte("\x1b[31merr\x1b[0m ok")))
 	if !strings.Contains(got, "<span style=\"color:#c0392b;\">err</span>") {
 		t.Errorf("colored run not wrapped: %q", got)
@@ -31,7 +31,7 @@ func TestANSIBold(t *testing.T) {
 }
 
 func TestANSIEscapesHTML(t *testing.T) {
-	// Untrusted log content must be escaped — no raw tags reach the output.
+	// Untrusted log content must be escaped. No raw tags reach the output.
 	got := string(ANSI([]byte("<script>alert(1)</script>")))
 	if strings.Contains(got, "<script>") {
 		t.Errorf("HTML not escaped (injection): %q", got)

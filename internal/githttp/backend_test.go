@@ -24,8 +24,8 @@ const repoName = "dotfiles"
 // failing the test on a nonzero exit.
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	// Disable any credential helper so a token in one URL is never cached and
-	// silently reused by a later "anonymous" request to the same host:port.
+	// Disable any credential helper. Then no helper caches a token from one
+	// URL. A later "anonymous" request to the same host:port never reuses it.
 	cmd := exec.CommandContext(context.Background(), "git", append([]string{"-c", "credential.helper="}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
@@ -41,8 +41,9 @@ func git(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// loadObjects mirrors a source repo's loose/packed objects into the store under
-// the repo's prefix — the durable objects a read hydrates from.
+// loadObjects mirrors the loose and packed objects of a source repo into the
+// store, under the prefix of the repo. These are the durable objects that a
+// read hydrates from.
 func loadObjects(t *testing.T, s store.Store, src, name string) {
 	t.Helper()
 	objRoot := filepath.Join(src, ".git", "objects")
@@ -65,8 +66,8 @@ func loadObjects(t *testing.T, s store.Store, src, name string) {
 	}
 }
 
-// newServer wires meta + mem store + materializer behind a guarded read-path
-// handler on an httptest server.
+// newServer starts an httptest server for the read path. Its guarded handler
+// wraps meta, a mem store and a materializer.
 func newServer(t *testing.T) (*httptest.Server, *meta.Metadata, store.Store) {
 	t.Helper()
 	m, err := meta.Open(context.Background(), meta.Config{
@@ -91,8 +92,8 @@ func newServer(t *testing.T) (*httptest.Server, *meta.Metadata, store.Store) {
 	return srv, m, s
 }
 
-// seedRepo builds a one-commit source repo, loads its objects, and records the
-// repo + main ref, returning (repoID, headSHA).
+// seedRepo builds a source repo with one commit and loads its objects. It
+// records the repo and the main ref, and returns (repoID, headSHA).
 func seedRepo(t *testing.T, m *meta.Metadata, s store.Store, src string) (int64, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -116,7 +117,7 @@ func seedRepo(t *testing.T, m *meta.Metadata, s store.Store, src string) (int64,
 }
 
 // mintUser creates a user with a fresh token and returns the raw token. When
-// perm is non-empty it also grants that permission on repoID.
+// perm is non-empty, it also grants that permission on repoID.
 func mintUser(t *testing.T, m *meta.Metadata, repoID int64, handle string, perm meta.Perm) string {
 	t.Helper()
 	ctx := context.Background()
@@ -139,7 +140,8 @@ func mintUser(t *testing.T, m *meta.Metadata, repoID int64, handle string, perm 
 	return raw
 }
 
-// authedURL embeds Basic credentials (git's native HTTP auth) into a base URL.
+// authedURL embeds Basic credentials into a base URL. Basic is the native HTTP
+// auth of git.
 func authedURL(base, raw string) string {
 	return strings.Replace(base, "://", "://git:"+raw+"@", 1)
 }
@@ -152,7 +154,7 @@ func TestCloneAndFetch(t *testing.T) {
 	repoID, head1 := seedRepo(t, m, s, src)
 	raw := mintUser(t, m, repoID, "atmin", meta.PermRead)
 
-	// Golden path: a real clone over HTTP with a read token.
+	// The success path: a real clone over HTTP with a read token.
 	dst := filepath.Join(t.TempDir(), "clone")
 	git(t, "", "clone", authedURL(srv.URL, raw)+"/"+repoName, dst)
 
@@ -164,7 +166,7 @@ func TestCloneAndFetch(t *testing.T) {
 	}
 	git(t, dst, "fsck", "--strict")
 
-	// Seed a second commit server-side.
+	// Seed a second commit on the server side.
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("hello\nworld\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +178,8 @@ func TestCloneAndFetch(t *testing.T) {
 		t.Fatalf("CASRef advance: %v", err)
 	}
 
-	// An incremental fetch pulls the new commit (explicit URL carries creds).
+	// An incremental fetch pulls the new commit. The explicit URL carries the
+	// credentials.
 	git(t, dst, "fetch", authedURL(srv.URL, raw)+"/"+repoName, "main")
 	if got := git(t, dst, "rev-parse", "FETCH_HEAD"); got != head2 {
 		t.Errorf("FETCH_HEAD after fetch = %q, want %q", got, head2)
@@ -237,7 +240,8 @@ func TestWrongSecretRejected(t *testing.T) {
 	repoID, _ := seedRepo(t, m, s, t.TempDir())
 	raw := mintUser(t, m, repoID, "reader", meta.PermRead)
 
-	// Same selector, tampered secret: the constant-time verifier compare fails.
+	// Use the same selector with a tampered secret. The constant-time compare
+	// of the verifier fails.
 	selector, _, _ := strings.Cut(strings.TrimPrefix(raw, "gmt_"), ".")
 	forged := "gmt_" + selector + ".deadbeefdeadbeef"
 	if got := infoRefs(t, srv.URL, forged); got != http.StatusUnauthorized {
@@ -250,8 +254,8 @@ func TestReceivePackNotServed(t *testing.T) {
 	repoID, _ := seedRepo(t, m, s, t.TempDir())
 	raw := mintUser(t, m, repoID, "reader", meta.PermRead)
 
-	// The write service advertisement is not part of the read path —
-	// 404 even for an authorized reader.
+	// The advertisement of the write service is not part of the read path. It
+	// is a 404, even for an authorized reader.
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/"+repoName+"/info/refs?service=git-receive-pack", nil)
 	req.Header.Set("Authorization", "Bearer "+raw)
 	resp, err := http.DefaultClient.Do(req)

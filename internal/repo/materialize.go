@@ -1,8 +1,8 @@
-// Package repo materializes on-disk bare git repositories from the durable
-// sources of truth: refs from the metadata layer, objects from the object
-// store. A materialized repo is a disposable cache (docs/architecture/storage.md
-// → ephemeral disk), never authoritative — deleting the cache dir and
-// rebuilding must reproduce an equivalent repo.
+// Package repo materializes bare git repositories on local disk from the
+// durable sources of truth. Refs come from the metadata layer, and objects
+// come from the object store. A materialized repo is a disposable cache on
+// ephemeral disk (docs/architecture/storage.md). It is never authoritative:
+// deleting the cache directory and rebuilding must give an equivalent repo.
 package repo
 
 import (
@@ -34,23 +34,26 @@ func New(m *meta.Metadata, s store.Store, root string) *Materializer {
 	return &Materializer{meta: m, store: s, root: root}
 }
 
-// Root is the cache directory under which repos materialize; a repo named
-// "a/b" lands at Root()/a/b. It is the git-http-backend GIT_PROJECT_ROOT.
+// Root is the cache directory under which repos materialize. A repo named
+// "app" lands at Root()/app. It is the GIT_PROJECT_ROOT of git-http-backend.
 func (mz *Materializer) Root() string { return mz.root }
 
-// Materialize ensures a valid on-disk bare repo for name exists under the cache
-// root and returns its path. It creates the repo on a cache miss (rebuild-on-
-// miss), hydrates the object closure from the store, and writes refs from the
-// metadata layer — so a warm repo is refreshed to the current refs and a cold
-// one is built from scratch. Returns meta.ErrNotFound if the repo is unknown.
+// Materialize ensures that a valid bare repo for name exists on disk under the
+// cache root, and returns its path. It does these steps:
+//   - It creates the repo on a cache miss (rebuild on miss).
+//   - It hydrates the object closure from the store.
+//   - It writes refs from the metadata layer.
 //
-// Hydration policy is full-hydrate (see docs/architecture/storage.md):
-// every object under the repo's store prefix
-// is pulled. This is the path for the data POSTs (upload-pack / receive-pack)
-// that actually transfer history; the info/refs advertisement is served
-// objectless via MaterializeRefs. gitmote's own repo is tiny, so full-hydrate
-// on the data path is the safe, simple first cut; bounded per-operation
-// closures are a later optimization.
+// So a warm repo is refreshed to the current refs, and a cold repo is built
+// from scratch. It returns meta.ErrNotFound if the repo is unknown.
+//
+// The hydration policy is full hydration (see docs/architecture/storage.md).
+// It pulls every object under the store prefix of the repo. This is the path
+// for the data POSTs (upload-pack or receive-pack) that transfer history.
+// MaterializeRefs serves the info/refs advertisement with no objects.
+//
+// The repo of gitmote itself is tiny. So full hydration on the data path is
+// safe and simple. Bounded closures per operation are not implemented.
 func (mz *Materializer) Materialize(ctx context.Context, name string) (string, error) {
 	r, err := mz.meta.GetRepo(ctx, name)
 	if err != nil {
@@ -71,18 +74,22 @@ func (mz *Materializer) Materialize(ctx context.Context, name string) (string, e
 	return dir, nil
 }
 
-// MaterializeRefs ensures a bare repo for name exists and makes its ref
-// advertisement current — without hydrating a single object. It writes
-// packed-refs directly from the metadata layer (not update-ref, which requires
-// each target object present) and points HEAD at the default branch. This
-// serves the info/refs GET, which lists refs but transfers no history — the
-// first slice of bounded hydration. Returns
+// MaterializeRefs ensures that a bare repo for name exists, and makes its ref
+// advertisement current. It points HEAD at the default branch. It returns
 // meta.ErrNotFound if the repo is unknown.
 //
-// MVP omits annotated-tag ^{} peel lines: git still advertises the tag ref and
-// merely drops the peel hint (a lost negotiation optimization, not a
-// correctness issue). Like Materialize, it mirrors the metadata refs exactly
-// (see mirrorRefs), so no loose ref left on disk can override them.
+// It does not hydrate a single object. It writes packed-refs directly from the
+// metadata layer. It does not use update-ref, which requires each target
+// object to be present.
+//
+// This serves the info/refs GET, which lists refs but transfers no history. It
+// is a case of bounded hydration.
+//
+// It omits the ^{} peel lines of annotated tags. Git still advertises the tag
+// ref and only drops the peel hint. That loses a negotiation optimization,
+// but it is not a correctness issue. Like Materialize, it mirrors the metadata
+// refs exactly (see mirrorRefs). So no loose ref left on disk can override
+// them.
 func (mz *Materializer) MaterializeRefs(ctx context.Context, name string) (string, error) {
 	r, err := mz.meta.GetRepo(ctx, name)
 	if err != nil {
@@ -104,8 +111,9 @@ func (mz *Materializer) MaterializeRefs(ctx context.Context, name string) (strin
 	return dir, setHEAD(ctx, dir, r.DefaultBranch)
 }
 
-// ensureRepo maps name to its cache dir and guarantees a bare repo exists there,
-// creating one on a cache miss (rebuild-on-miss). It touches no refs or objects.
+// ensureRepo maps name to its cache directory and guarantees that a bare repo
+// exists there. It creates one on a cache miss (rebuild on miss). It touches no
+// refs or objects.
 func (mz *Materializer) ensureRepo(ctx context.Context, name string) (string, error) {
 	dir, err := mz.repoDir(name)
 	if err != nil {
@@ -124,8 +132,9 @@ func (mz *Materializer) ensureRepo(ctx context.Context, name string) (string, er
 	return dir, nil
 }
 
-// repoDir maps a repo name to its cache path, rejecting names that would escape
-// the cache root (absolute paths, "..", or anything filepath.Clean rewrites).
+// repoDir maps a repo name to its cache path. It rejects a name that would
+// escape the cache root: an absolute path, "..", or any name that
+// filepath.Clean rewrites.
 func (mz *Materializer) repoDir(name string) (string, error) {
 	if name == "" || filepath.IsAbs(name) ||
 		filepath.ToSlash(filepath.Clean(name)) != name ||
@@ -136,17 +145,18 @@ func (mz *Materializer) repoDir(name string) (string, error) {
 }
 
 // hydrateConcurrency bounds the parallel object copies during hydration. Each
-// missing object is one S3 GET, and this is the cold-start / first-request cost;
-// fetching them concurrently turns N serial
-// round-trips into N/hydrateConcurrency. Kept modest to bound open sockets and
-// file descriptors against a large repo.
+// missing object is one S3 GET. This is the cost of a cold start or a first
+// request. Concurrent fetches turn N serial round trips into
+// N/hydrateConcurrency. The value is modest, to bound the open sockets and
+// file descriptors for a large repo.
 const hydrateConcurrency = 16
 
-// hydrateObjects copies every object under the repo's store prefix onto disk,
-// mirroring the store's {repo}/objects/… layout into the bare repo's objects/
-// dir. Objects are immutable and content-addressed, so an object already on
-// disk is left untouched, and copies are independent — hydrateConcurrency run
-// in parallel. A copy error cancels the group and aborts the rest.
+// hydrateObjects copies every object under the store prefix of the repo onto
+// disk. It mirrors the {repo}/objects/… layout of the store into the objects/
+// directory of the bare repo. Objects are immutable and content-addressed. So
+// an object already on disk is left untouched, and the copies are independent.
+// Up to hydrateConcurrency copies run in parallel. A copy error cancels the
+// group and aborts the rest.
 func (mz *Materializer) hydrateObjects(ctx context.Context, name, dir string) error {
 	prefix := name + "/objects/"
 	keys, err := mz.store.List(ctx, prefix)
@@ -156,7 +166,7 @@ func (mz *Materializer) hydrateObjects(ctx context.Context, name, dir string) er
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(hydrateConcurrency)
 	for _, key := range keys {
-		rel := strings.TrimPrefix(key, name+"/") // e.g. "objects/ab/cdef…"
+		rel := strings.TrimPrefix(key, name+"/") // for example "objects/ab/cdef…"
 		dst := filepath.Join(dir, filepath.FromSlash(rel))
 		if _, err := os.Stat(dst); err == nil {
 			continue
@@ -168,8 +178,8 @@ func (mz *Materializer) hydrateObjects(ctx context.Context, name, dir string) er
 	return g.Wait()
 }
 
-// copyObject streams one store object to dst, writing to a temp file first and
-// renaming into place so a reader never observes a partial object.
+// copyObject streams one store object to dst. It writes to a temp file first,
+// and then renames it into place. So a reader never observes a partial object.
 func (mz *Materializer) copyObject(ctx context.Context, key, dst string) error {
 	rc, err := mz.store.Get(ctx, key)
 	if err != nil {
@@ -201,9 +211,9 @@ func (mz *Materializer) copyObject(ctx context.Context, key, dst string) error {
 	return nil
 }
 
-// writeRefs makes the on-disk refs mirror the metadata layer (see mirrorRefs)
-// and points HEAD at the repo's default branch. Hydration runs first, so the
-// object behind every ref is on disk.
+// writeRefs makes the on-disk refs mirror the metadata layer (see mirrorRefs).
+// It points HEAD at the default branch of the repo. Hydration runs first, so
+// the object behind every ref is on disk.
 func (mz *Materializer) writeRefs(ctx context.Context, dir string, r *meta.Repo) error {
 	refs, err := mz.meta.ListRefs(ctx, r.ID)
 	if err != nil {
@@ -215,13 +225,16 @@ func (mz *Materializer) writeRefs(ctx context.Context, dir string, r *meta.Repo)
 	return setHEAD(ctx, dir, r.DefaultBranch)
 }
 
-// mirrorRefs makes the on-disk refs equal the metadata layer's: it writes
-// packed-refs from refs, then removes every loose ref. A loose ref overrides
-// packed-refs, and a ref deleted in the metadata layer would otherwise linger —
-// so after a lease handoff, a cache made stale by the other instance's pushes
-// would advertise a ref that has moved or no longer exists. packed-refs goes
-// first, so a concurrent reader sees the old loose value or the new packed one,
-// never neither.
+// mirrorRefs makes the on-disk refs equal the refs of the metadata layer. It
+// writes packed-refs from refs, and then removes every loose ref.
+//
+// A loose ref overrides packed-refs. Without the removal, a ref deleted in the
+// metadata layer would stay on disk. After a lease handoff, the pushes of the
+// other instance can make a cache stale. That cache would then advertise a ref
+// that has moved or does not exist.
+//
+// packed-refs is written first. So a concurrent reader sees the old loose
+// value or the new packed value, never neither.
 func mirrorRefs(dir string, refs []meta.Ref) error {
 	if err := writePackedRefs(dir, refs); err != nil {
 		return err
@@ -230,7 +243,7 @@ func mirrorRefs(dir string, refs []meta.Ref) error {
 }
 
 // removeLooseRefs deletes every loose ref file under dir/refs. It keeps the
-// directories and any *.lock file, which belongs to a git process at work, and
+// directories and any *.lock file, which belongs to a git process at work. It
 // ignores an entry that vanishes during the walk.
 func removeLooseRefs(dir string) error {
 	return filepath.WalkDir(filepath.Join(dir, "refs"), func(p string, d os.DirEntry, err error) error {
@@ -250,12 +263,17 @@ func removeLooseRefs(dir string) error {
 	})
 }
 
-// writePackedRefs overwrites the repo's packed-refs file from refs, atomically
-// (temp file + rename, so a concurrent reader never sees a torn file). Each line
-// is "<sha> <refname>"; the MVP writes no ^{} peel lines and no traits header,
-// so git peels from the objects when present and simply omits the peel hint when
-// they are absent — exactly the objectless-advertisement behavior we want. git
-// advertises refs whose target objects are absent, which is the whole point.
+// writePackedRefs overwrites the packed-refs file of the repo from refs. The
+// write is atomic: a temp file and a rename. So a concurrent reader never sees
+// a torn file.
+//
+// Each line is "<sha> <refname>". It writes no ^{} peel lines and no traits
+// header. So git peels from the objects when they are present. When they are
+// absent, git omits the peel hint.
+//
+// The advertisement without objects needs exactly this behavior. Git
+// advertises refs whose target objects are absent, and the advertisement
+// without objects depends on that.
 func writePackedRefs(dir string, refs []meta.Ref) error {
 	var b strings.Builder
 	for _, ref := range refs {
@@ -267,16 +285,16 @@ func writePackedRefs(dir string, refs []meta.Ref) error {
 	return writeFileAtomic(filepath.Join(dir, "packed-refs"), []byte(b.String()))
 }
 
-// setHEAD points the repo's HEAD at the default branch. HEAD is derived from
-// default_branch, not stored as a ref (storage.md); symbolic-ref is happy to
-// point at a branch that has no commits yet.
+// setHEAD points the HEAD of the repo at the default branch. HEAD is derived
+// from default_branch, and is not stored as a ref (storage.md). symbolic-ref
+// accepts a branch that has no commits yet.
 func setHEAD(ctx context.Context, dir, defaultBranch string) error {
 	return runGit(ctx, dir, "symbolic-ref", "HEAD", path.Join("refs/heads", defaultBranch))
 }
 
-// writeFileAtomic writes data to path via a temp file in the same directory
-// followed by a rename, so a reader observes either the old file or the complete
-// new one, never a partial write.
+// writeFileAtomic writes data to path through a temp file in the same
+// directory, followed by a rename. So a reader observes either the old file or
+// the complete new file, never a partial write.
 func writeFileAtomic(dst string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".packed-refs-*")
 	if err != nil {

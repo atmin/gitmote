@@ -10,8 +10,13 @@ import (
 	"testing"
 )
 
-// browseFixture builds a real repo with two commits, a subdirectory, a binary
-// blob, and a tag, and returns its dir plus the two commit SHAs (first, head).
+// browseFixture builds a real repo with these:
+//   - two commits
+//   - a subdirectory
+//   - a binary blob
+//   - a tag
+//
+// It returns the directory of the repo and the two commit SHAs (first, head).
 func browseFixture(t *testing.T) (dir, first, head string) {
 	t.Helper()
 	dir = t.TempDir()
@@ -198,7 +203,7 @@ func TestShow(t *testing.T) {
 		t.Fatalf("Show(head) diff missing added line:\n%s", diff)
 	}
 
-	// --root makes the initial commit diff against the empty tree.
+	// With --root, the initial commit diffs against the empty tree.
 	_, diff, err = Show(ctx, dir, first)
 	if err != nil {
 		t.Fatalf("Show(first): %v", err)
@@ -212,7 +217,7 @@ func TestCompare(t *testing.T) {
 	ctx := context.Background()
 	dir, first, head := browseFixture(t)
 
-	// first..head: the second commit is the one head adds, and its diff adds "world".
+	// In first..head, head adds the second commit. Its diff adds "world".
 	commits, diff, err := Compare(ctx, dir, first, head)
 	if err != nil {
 		t.Fatalf("Compare(first, head): %v", err)
@@ -224,7 +229,7 @@ func TestCompare(t *testing.T) {
 		t.Fatalf("Compare(first, head) diff missing added line:\n%s", diff)
 	}
 
-	// Identical revs: no commits, empty diff (not an error).
+	// Identical revs give no commits and an empty diff, not an error.
 	commits, diff, err = Compare(ctx, dir, head, head)
 	if err != nil {
 		t.Fatalf("Compare(head, head): %v", err)

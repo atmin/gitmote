@@ -63,14 +63,17 @@ func openMeta(t *testing.T) *meta.Metadata {
 	return m
 }
 
-// newWriteServer wires meta + mem store + materializer + write coordinator
-// behind a guarded handler on an httptest server.
+// newWriteServer puts these behind a guarded handler on an httptest server:
+//   - meta
+//   - a mem store
+//   - a materializer
+//   - the write coordinator
 func newWriteServer(t *testing.T) (*httptest.Server, *meta.Metadata, store.Store, *Writer) {
 	t.Helper()
 	m := openMeta(t)
 	s := store.NewMem()
-	// A short socket dir: unix socket paths are limited to ~104 bytes, and
-	// t.TempDir() embeds the (long) test name.
+	// Use a short socket directory. Unix socket paths are limited to about 104
+	// bytes, and t.TempDir() embeds the test name, which is long.
 	sockDir, err := os.MkdirTemp("", "gm")
 	if err != nil {
 		t.Fatal(err)
@@ -97,8 +100,9 @@ func newWriteServer(t *testing.T) (*httptest.Server, *meta.Metadata, store.Store
 	return srv, m, s, writer
 }
 
-// newGatedServer is newWriteServer with a controllable writer-lease gate
-// (backend Config.IsWritable), to exercise a follower's push refusal.
+// newGatedServer is newWriteServer with a gate on the writer lease that the
+// test controls (backend Config.IsWritable). It exercises the push refusal of
+// a follower.
 func newGatedServer(t *testing.T, isWritable func() bool) (*httptest.Server, *meta.Metadata, store.Store) {
 	t.Helper()
 	m := openMeta(t)
@@ -128,10 +132,11 @@ func newGatedServer(t *testing.T, isWritable func() bool) (*httptest.Server, *me
 	return srv, m, s
 }
 
-// TestWriteGateFollowerRefusesPush exercises the writer-lease gate: a follower
-// (IsWritable false) refuses receive-pack while still serving reads; promoting
-// back to leader accepts the same push. Mirrors the deploy-handoff window where
-// a new instance is up read-only before it acquires the lease (safety.md §1).
+// TestWriteGateFollowerRefusesPush exercises the gate on the writer lease. A
+// follower (IsWritable false) refuses receive-pack but still serves reads.
+// After promotion back to leader, it accepts the same push. This mirrors the
+// window in a deploy handoff (safety.md §1). In that window, a new instance is
+// up read-only before it acquires the lease.
 func TestWriteGateFollowerRefusesPush(t *testing.T) {
 	ctx := context.Background()
 	leader := true
@@ -144,7 +149,7 @@ func TestWriteGateFollowerRefusesPush(t *testing.T) {
 	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
 	remote := authedURL(srv.URL, raw) + "/" + repoName
 
-	// Golden path: the leader accepts the first push.
+	// The success path: the leader accepts the first push.
 	src := initCommit(t, "hello\n")
 	head1 := git(t, src, "rev-parse", "HEAD")
 	git(t, src, "push", remote, "main")
@@ -152,7 +157,8 @@ func TestWriteGateFollowerRefusesPush(t *testing.T) {
 		t.Fatalf("after leader push, server main = %q, want %q", got, head1)
 	}
 
-	// Become a follower: reads still serve, pushes are refused, ref unchanged.
+	// Become a follower. Reads are still served, pushes are refused, and the
+	// ref does not change.
 	leader = false
 	dst := filepath.Join(t.TempDir(), "clone")
 	git(t, "", "clone", remote, dst) // a read succeeds on a follower
@@ -176,7 +182,7 @@ func TestWriteGateFollowerRefusesPush(t *testing.T) {
 		t.Errorf("follower push advanced ref to %q, want unchanged %q", got, head1)
 	}
 
-	// Promote back to leader: the same push now succeeds.
+	// Promote back to leader. The same push then succeeds.
 	leader = true
 	git(t, src, "push", remote, "main")
 	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head2 {
@@ -184,10 +190,11 @@ func TestWriteGateFollowerRefusesPush(t *testing.T) {
 	}
 }
 
-// TestPushChunkedLargePack pushes a pack larger than git's default
-// http.postBuffer (1 MiB) with the client at its defaults, so git sends the body
-// with chunked transfer-encoding (no Content-Length). The server must buffer it
-// to a length before the CGI hand-off; without that, git http-backend 400s.
+// TestPushChunkedLargePack pushes a pack larger than the default
+// http.postBuffer of git (1 MiB). The client keeps its defaults, so git sends
+// the body with chunked transfer-encoding (no Content-Length). The server must
+// buffer it to a known length before the CGI hand-off. Without that, git
+// http-backend returns 400.
 func TestPushChunkedLargePack(t *testing.T) {
 	ctx := context.Background()
 	srv, m, s, _ := newWriteServer(t)
@@ -199,8 +206,9 @@ func TestPushChunkedLargePack(t *testing.T) {
 	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
 	remote := authedURL(srv.URL, raw) + "/" + repoName
 
-	// A 3 MiB incompressible blob → a pack well over the 1 MiB postBuffer, so the
-	// client streams it chunked (the harness git uses default config: no override).
+	// A 3 MiB incompressible blob gives a pack well over the 1 MiB postBuffer.
+	// So the client streams it chunked. The git of the harness uses the default
+	// config, with no override.
 	src := t.TempDir()
 	git(t, src, "init", "-b", "main", ".")
 	big := make([]byte, 3<<20)
@@ -214,7 +222,7 @@ func TestPushChunkedLargePack(t *testing.T) {
 	git(t, src, "commit", "-m", "big")
 	head := git(t, src, "rev-parse", "HEAD")
 
-	git(t, src, "push", remote, "main") // fails (HTTP 400) before the server-side buffering
+	git(t, src, "push", remote, "main") // fails (HTTP 400) without the buffering on the server
 
 	if got := serverRefSHA(t, m, r.ID, "refs/heads/main"); got != head {
 		t.Fatalf("server main = %q, want %q", got, head)
@@ -225,15 +233,15 @@ func TestPushChunkedLargePack(t *testing.T) {
 	}
 }
 
-// noopTrigger is a ci.Trigger that does nothing — the write-path tests only care
-// that runs/jobs are recorded, not that a runner starts.
+// noopTrigger is a ci.Trigger that does nothing. The tests of the write path
+// check only that runs and jobs are recorded, not that a runner starts.
 type noopTrigger struct{}
 
 func (noopTrigger) Trigger(context.Context, map[string]string) error { return nil }
 
-// wireDispatcher points the writer's after-commit hook at a real ci.Dispatcher
-// reading workflow config through a materializer over store s, mirroring the
-// main.go wiring.
+// wireDispatcher points the after-commit hook of the writer at a real
+// ci.Dispatcher. The dispatcher reads the workflow config through a
+// materializer over store s. This mirrors the wiring in main.go.
 func wireDispatcher(t *testing.T, w *Writer, m *meta.Metadata, s store.Store) {
 	t.Helper()
 	d := ci.NewDispatcher(ci.Config{
@@ -257,7 +265,8 @@ func wireDispatcher(t *testing.T, w *Writer, m *meta.Metadata, s store.Store) {
 }
 
 // initWorkflowCommit makes a source repo whose first commit carries a valid
-// workflow, so a push through the dispatcher discovers work and enqueues a run.
+// workflow. A push through the dispatcher then discovers work and enqueues a
+// run.
 func initWorkflowCommit(t *testing.T) string {
 	t.Helper()
 	src := t.TempDir()
@@ -277,9 +286,10 @@ func initWorkflowCommit(t *testing.T) string {
 	return src
 }
 
-// TestAfterCommitEnqueuesRun drives a real git push of a repo with a workflow
-// and asserts the after-commit seam discovers it and records one queued run and
-// job for the advanced branch tip.
+// TestAfterCommitEnqueuesRun drives a real git push of a repo with a workflow.
+// It asserts that the after-commit seam discovers the workflow. It also
+// asserts that the seam records one queued run and one job for the advanced
+// branch tip.
 func TestAfterCommitEnqueuesRun(t *testing.T) {
 	ctx := context.Background()
 	srv, m, s, writer := newWriteServer(t)
@@ -312,7 +322,7 @@ func TestAfterCommitEnqueuesRun(t *testing.T) {
 	}
 }
 
-// TestAfterCommitNoWorkflowNoRun confirms the discovery gate end-to-end: a real
+// TestAfterCommitNoWorkflowNoRun confirms the discovery gate end to end. A real
 // push of a repo without .gitmote/workflows records no run.
 func TestAfterCommitNoWorkflowNoRun(t *testing.T) {
 	ctx := context.Background()
@@ -331,8 +341,9 @@ func TestAfterCommitNoWorkflowNoRun(t *testing.T) {
 	}
 }
 
-// TestRejectedPushEnqueuesNoRun asserts a non-fast-forward push — refused at the
-// CAS — never fires the after-commit seam, so no run is recorded for it.
+// TestRejectedPushEnqueuesNoRun asserts that a non-fast-forward push never
+// fires the after-commit seam. The push is ordinary, with no force. Git
+// rejects the divergence before any CAS, so no run is recorded for it.
 func TestRejectedPushEnqueuesNoRun(t *testing.T) {
 	ctx := context.Background()
 	srv, m, s, writer := newWriteServer(t)
@@ -342,11 +353,12 @@ func TestRejectedPushEnqueuesNoRun(t *testing.T) {
 	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
 	remote := authedURL(srv.URL, raw) + "/" + repoName
 
-	// Establish main with a workflow (one accepted push → one run).
+	// Establish main with a workflow. One accepted push gives one run.
 	src := initWorkflowCommit(t)
 	git(t, src, "push", remote, "main")
 
-	// A stale clone diverges and pushes a non-fast-forward, which is rejected.
+	// A stale clone diverges and pushes a non-fast-forward. The push is
+	// rejected.
 	stale := filepath.Join(t.TempDir(), "stale")
 	git(t, "", "clone", remote, stale)
 	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
@@ -363,7 +375,7 @@ func TestRejectedPushEnqueuesNoRun(t *testing.T) {
 		t.Fatalf("stale push succeeded, want rejection\n%s", out)
 	}
 
-	// Two accepted pushes → two runs; the rejected push adds none.
+	// Two accepted pushes give two runs. The rejected push adds none.
 	runs, err := m.ListRuns(ctx, r.ID, 0)
 	if err != nil {
 		t.Fatalf("ListRuns: %v", err)
@@ -373,9 +385,10 @@ func TestRejectedPushEnqueuesNoRun(t *testing.T) {
 	}
 }
 
-// TestAfterCommitPanicLeavesPushGreen is the safety invariant: an after-commit
-// hook that panics must not fail the push — the ref still advances and the
-// client sees a green push (content-before-pointer applied to CI).
+// TestAfterCommitPanicLeavesPushGreen tests the safety invariant. An
+// after-commit hook that panics must not fail the push. The ref still
+// advances, and the client sees a green push. This is content-before-pointer
+// applied to CI.
 func TestAfterCommitPanicLeavesPushGreen(t *testing.T) {
 	ctx := context.Background()
 	srv, m, _, writer := newWriteServer(t)
@@ -398,10 +411,12 @@ func TestAfterCommitPanicLeavesPushGreen(t *testing.T) {
 }
 
 // tryGit runs a git command hermetically and returns its combined output and
-// error without failing the test — for operations expected to be rejected.
+// error. It does not fail the test. Use it for operations that are expected
+// to be rejected.
 func tryGit(dir string, args ...string) (string, error) {
-	// Disable any credential helper so a token from an earlier authed push is not
-	// cached and reused, keeping an "anonymous" request genuinely anonymous.
+	// Disable any credential helper. Then a token from an earlier authenticated
+	// push is not cached and reused, and an "anonymous" request stays
+	// anonymous.
 	cmd := exec.CommandContext(context.Background(), "git", append([]string{"-c", "credential.helper="}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
@@ -414,8 +429,8 @@ func tryGit(dir string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// initCommit makes a fresh source repo with one commit on main and returns its
-// dir and head sha.
+// initCommit makes a fresh source repo with one commit on main. It returns
+// the directory of the repo.
 func initCommit(t *testing.T, content string) string {
 	t.Helper()
 	src := t.TempDir()
@@ -428,7 +443,8 @@ func initCommit(t *testing.T, content string) string {
 	return src
 }
 
-// serverRefSHA returns the sha meta holds for a ref, or "" if absent.
+// serverRefSHA returns the sha that meta holds for a ref, or "" if the ref
+// is absent.
 func serverRefSHA(t *testing.T, m *meta.Metadata, repoID int64, name string) string {
 	t.Helper()
 	refs, err := m.ListRefs(context.Background(), repoID)
@@ -454,7 +470,7 @@ func TestPushThenClone(t *testing.T) {
 	raw := mintUser(t, m, r.ID, "atmin", meta.PermWrite)
 	remote := authedURL(srv.URL, raw) + "/" + repoName
 
-	// Golden path: push a new repo's first commits.
+	// The success path: push the first commits of a new repo.
 	src := initCommit(t, "hello\n")
 	head := git(t, src, "rev-parse", "HEAD")
 	git(t, src, "push", remote, "main")
@@ -515,8 +531,9 @@ func TestNonFastForwardRejected(t *testing.T) {
 	git(t, src, "push", remote, "main")
 	advanced := git(t, src, "rev-parse", "HEAD")
 
-	// The stale client commits on top of base and pushes — a non-fast-forward
-	// against the advanced tip. It must be rejected, main unchanged.
+	// The stale client commits on top of base and pushes. This is a
+	// non-fast-forward against the advanced tip. It must be rejected, and main
+	// must not change.
 	if err := os.WriteFile(filepath.Join(stale, "file.txt"), []byte("one\ndivergent\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -554,7 +571,7 @@ func TestConcurrentPushOneWins(t *testing.T) {
 		heads[i] = git(t, d, "rev-parse", "HEAD")
 	}
 
-	// Push both concurrently; exactly one must win.
+	// Push both concurrently. Exactly one must win.
 	var wg sync.WaitGroup
 	errs := [2]error{}
 	for i, d := range dirs {
@@ -592,7 +609,7 @@ func TestAtomicMultiRefRollback(t *testing.T) {
 	src := initCommit(t, "one\n")
 	git(t, src, "push", remote, "main")
 
-	// Stale clone still at the original tip.
+	// A stale clone that is still at the original tip.
 	stale := filepath.Join(t.TempDir(), "stale")
 	git(t, "", "clone", remote, stale)
 
@@ -604,9 +621,9 @@ func TestAtomicMultiRefRollback(t *testing.T) {
 	git(t, src, "push", remote, "main")
 	advanced := git(t, src, "rev-parse", "HEAD")
 
-	// The stale client builds a new commit and a brand-new branch, then pushes
-	// both atomically. The main update is a non-fast-forward (fails); with
-	// --atomic the feature create must roll back too.
+	// The stale client builds a new commit and a new branch. It then pushes both
+	// atomically. The update of main is a non-fast-forward, so it fails. With
+	// --atomic, the creation of feature must roll back too.
 	if err := os.WriteFile(filepath.Join(stale, "file.txt"), []byte("one\ndivergent\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -624,10 +641,15 @@ func TestAtomicMultiRefRollback(t *testing.T) {
 	}
 }
 
-// TestDefaultBranchForcePushGuard is the admin-only default-branch protection: a
-// write collaborator may fast-forward the default branch and force-push a
-// non-default branch, but a non-fast-forward of the default branch is refused;
-// an admin may force-push it. (Golden + failure both, per CONTRIBUTING.)
+// TestDefaultBranchForcePushGuard tests the protection of the default branch,
+// which is admin-only. These are the cases:
+//   - A write collaborator may fast-forward the default branch.
+//   - A write collaborator may force-push a non-default branch.
+//   - A non-fast-forward of the default branch by that collaborator is refused.
+//   - An admin may force-push the default branch.
+//
+// It tests both the success path and the failure path, as CONTRIBUTING.md
+// requires.
 func TestDefaultBranchForcePushGuard(t *testing.T) {
 	ctx := context.Background()
 	srv, m, _, _ := newWriteServer(t)
@@ -637,7 +659,8 @@ func TestDefaultBranchForcePushGuard(t *testing.T) {
 	writeRemote := authedURL(srv.URL, writeRaw) + "/" + repoName
 	adminRemote := authedURL(srv.URL, adminRaw) + "/" + repoName
 
-	// The collaborator establishes main (a create) and fast-forwards it — allowed.
+	// The collaborator establishes main (a create) and fast-forwards it. This is
+	// allowed.
 	src := initCommit(t, "one\n")
 	base := git(t, src, "rev-parse", "HEAD")
 	git(t, src, "push", writeRemote, "main")
@@ -648,8 +671,8 @@ func TestDefaultBranchForcePushGuard(t *testing.T) {
 	git(t, src, "push", writeRemote, "main")
 	ff := git(t, src, "rev-parse", "HEAD")
 
-	// The collaborator rewrites history off base and force-pushes the DEFAULT
-	// branch — refused; main stays at the fast-forward tip.
+	// The collaborator rewrites history from base and force-pushes the DEFAULT
+	// branch. This is refused, and main stays at the fast-forward tip.
 	git(t, src, "reset", "--hard", base)
 	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("one\nrewritten\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -663,8 +686,8 @@ func TestDefaultBranchForcePushGuard(t *testing.T) {
 		t.Errorf("main after refused force = %q, want unchanged %q", got, ff)
 	}
 
-	// The same rewrite is fine on a NON-default branch: create feature at the
-	// fast-forward tip, then force-push the rewrite over it — allowed.
+	// The same rewrite is allowed on a NON-default branch. Create feature at
+	// the fast-forward tip, and then force-push the rewrite over it.
 	git(t, src, "push", writeRemote, ff+":refs/heads/feature")
 	if out, err := tryGit(src, "push", "--force", writeRemote, "HEAD:refs/heads/feature"); err != nil {
 		t.Fatalf("collaborator force-push of a non-default branch failed, want ok: %v\n%s", err, out)
@@ -682,8 +705,8 @@ func TestDefaultBranchForcePushGuard(t *testing.T) {
 	}
 }
 
-// TestPublicRepoAnonymousReadWriteRefused proves visibility on the transport: a
-// public repo clones with no credentials, but an anonymous push is refused.
+// TestPublicRepoAnonymousReadWriteRefused proves visibility on the transport.
+// A public repo clones with no credentials, but an anonymous push is refused.
 func TestPublicRepoAnonymousReadWriteRefused(t *testing.T) {
 	ctx := context.Background()
 	srv, m, _, _ := newWriteServer(t)
@@ -698,14 +721,14 @@ func TestPublicRepoAnonymousReadWriteRefused(t *testing.T) {
 	git(t, src, "push", authedURL(srv.URL, writeRaw)+"/"+repoName, "main")
 	head := git(t, src, "rev-parse", "HEAD")
 
-	// Anonymous clone (no credentials) succeeds and matches.
+	// An anonymous clone (no credentials) succeeds and matches.
 	dst := filepath.Join(t.TempDir(), "clone")
 	git(t, "", "clone", srv.URL+"/"+repoName, dst)
 	if got := git(t, dst, "rev-parse", "HEAD"); got != head {
 		t.Errorf("anon clone HEAD = %q, want %q", got, head)
 	}
 
-	// Anonymous push is refused, main unchanged.
+	// An anonymous push is refused, and main does not change.
 	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("hello\nmore\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -731,11 +754,11 @@ func TestPrivateRepoSpectatorCannotPush(t *testing.T) {
 	git(t, src, "push", authedURL(srv.URL, writeRaw)+"/"+repoName, "main")
 	head := git(t, src, "rev-parse", "HEAD")
 
-	// The spectator can clone (read ACL on a private repo).
+	// The spectator can clone, with a read ACL on a private repo.
 	dst := filepath.Join(t.TempDir(), "clone")
 	git(t, "", "clone", authedURL(srv.URL, readRaw)+"/"+repoName, dst)
 
-	// But cannot push.
+	// The spectator cannot push.
 	if err := os.WriteFile(filepath.Join(dst, "file.txt"), []byte("hello\nedit\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -756,8 +779,8 @@ func TestOrderingInvariantObjectsBeforeRef(t *testing.T) {
 	remote := authedURL(srv.URL, raw) + "/" + repoName
 
 	// Inject a CAS failure that fires *after* the object PUT. This models a ref
-	// CAS that loses the race (or any post-PUT failure): objects are already
-	// durable, and the ref must never advance.
+	// CAS that loses the race, or any failure after the PUT. The objects are
+	// already durable, and the ref must never advance.
 	writer.beforeCAS = func() error { return errors.New("injected cas failure") }
 
 	src := initCommit(t, "hello\n")
@@ -765,8 +788,9 @@ func TestOrderingInvariantObjectsBeforeRef(t *testing.T) {
 		t.Fatalf("push succeeded despite injected CAS failure\n%s", out)
 	}
 
-	// Ordering invariant: the objects reached the store (harmless orphans that
-	// gc reclaims), but the ref never advanced (no corruption).
+	// The ordering invariant: the objects reached the store, but the ref never
+	// advanced. The objects remain as harmless orphans, because gitmote never
+	// deletes them. There is no corruption.
 	objs, _ := s.List(ctx, repoName+"/objects/")
 	if len(objs) == 0 {
 		t.Error("expected orphan objects in the store (content-before-pointer)")

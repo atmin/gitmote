@@ -1,14 +1,21 @@
-// Package githttp serves git smart-HTTP. It materializes the target repo (refs
-// from s3lite, objects hydrated from the object store) and delegates protocol
-// work — ref advertisement, pack negotiation, receive-pack — to stock
-// `git http-backend` over CGI, per the request flows in
-// docs/architecture/request-flows.md.
+// Package githttp serves git smart-HTTP. It materializes the target repo:
+// refs come from s3lite, and objects are hydrated from the object store. It
+// delegates the protocol work to stock `git http-backend` over CGI:
+//   - the ref advertisement
+//   - the pack negotiation
+//   - receive-pack
 //
-// The read path (clone / fetch, upload-pack) needs only a materialized repo.
-// The write path (push, receive-pack) additionally serializes per repo, mints a
-// per-push nonce, and installs the pre-receive hook that RPCs the parent to
-// enforce the content-before-pointer CAS; that machinery lives in the Writer
-// (receive.go) and is engaged only when the handler is built with one.
+// The request flows are in docs/architecture/request-flows.md.
+//
+// The read path (clone or fetch, upload-pack) needs only a materialized repo.
+// The write path (push, receive-pack) does three more things:
+//   - It serializes pushes per repo.
+//   - It mints a nonce for each push.
+//   - It installs the pre-receive hook, which calls the parent over RPC to
+//     enforce the content-before-pointer CAS.
+//
+// The Writer (receive.go) holds this machinery. The handler uses it only when
+// it is built with a Writer.
 package githttp
 
 import (
@@ -27,9 +34,11 @@ import (
 	"github.com/atmin/gitmote/internal/repo"
 )
 
-// Authorizer guards a request before it is served: it authenticates the PAT and
-// checks the user holds perm on repoName, returning auth's error sentinels
-// (ErrUnauthorized / ErrForbidden), meta.ErrNotFound, or an internal error.
+// Authorizer guards a request before it is served. It authenticates the PAT
+// and checks that the user holds perm on repoName. It returns one of these:
+//   - an error sentinel of auth (ErrUnauthorized or ErrForbidden)
+//   - meta.ErrNotFound
+//   - an internal error
 type Authorizer interface {
 	Authorize(r *http.Request, repoName string, perm meta.Perm) (*meta.User, error)
 }
@@ -40,21 +49,21 @@ type Config struct {
 	Materializer *repo.Materializer
 	// Authorizer guards every request. Required.
 	Authorizer Authorizer
-	// Writer enables the push path. Nil serves the read path only; write
-	// endpoints then 404.
+	// Writer enables the push path. Nil serves the read path only. The write
+	// endpoints then return 404.
 	Writer *Writer
-	// IsWritable reports whether this instance may serve writes — it holds the
-	// litestream lease (see meta.Metadata.IsLeader). Nil means always writable
-	// (unreplicated / tests). A follower refuses receive-pack with a retryable
-	// 503; reads are unaffected.
+	// IsWritable reports whether this instance may serve writes. That is, it
+	// holds the litestream lease (see meta.Metadata.IsLeader). Nil means always
+	// writable, as in an unreplicated setup or in tests. A follower refuses
+	// receive-pack with a retryable 503. Reads are not affected.
 	IsWritable func() bool
-	// Logger is optional; nil discards.
+	// Logger is optional. Nil discards the logs.
 	Logger *slog.Logger
 }
 
 // Handler serves the git smart-HTTP endpoints for any repo, dispatching on the
-// git URL suffix. Mount it at "/"; more specific routes (e.g. /healthz) still
-// win under http.ServeMux.
+// git URL suffix. Mount it at "/". Under http.ServeMux, more specific routes
+// (for example /healthz) still win.
 type Handler struct {
 	mz         *repo.Materializer
 	authz      Authorizer
@@ -101,10 +110,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// Only the lease-holding writer serves receive-pack; a read-only follower
-	// refuses pushes (safety.md §1) with a retryable 503 so the client can try
-	// again once the leader is up. This gates both the advertisement and the
-	// push POST. Reads (upload-pack) are served in either role.
+	// Only the writer that holds the lease serves receive-pack. A read-only
+	// follower refuses pushes (safety.md §1) with a retryable 503. The client
+	// can then try again once the leader is up. This gates both the
+	// advertisement and the push POST. Both roles serve reads (upload-pack).
 	if isReceive && h.isWritable != nil && !h.isWritable() {
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, "gitmote: not the current writer, retry shortly", http.StatusServiceUnavailable)
@@ -122,12 +131,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read, or a receive-pack advertisement: materialize then hand off to
-	// http-backend. The receive advertisement needs http.receivepack enabled.
+	// For a read or a receive-pack advertisement, materialize the repo and then
+	// hand off to http-backend. The receive advertisement needs
+	// http.receivepack enabled.
 	//
 	// The info/refs advertisement only lists refs, so it materializes refs
-	// alone — no object hydration (docs/architecture/storage.md).
-	// The upload-pack POST that transfers history still full-hydrates.
+	// alone, with no object hydration (docs/architecture/storage.md).
+	// The upload-pack POST that transfers history still hydrates fully.
 	materialized := h.materialize
 	if endpoint == "info/refs" {
 		materialized = h.materializeRefs
@@ -142,10 +152,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.serveCGI(w, r, extra)
 }
 
-// serveReceivePack runs a push under the per-repo write lock: refresh the repo
-// from the sources of truth, mint a nonce, and hand off to receive-pack with the
-// pre-receive hook wired to call back on the socket. The hook's callback does
-// the object PUT + ref CAS (see Writer.handle).
+// serveReceivePack runs a push under the per-repo write lock. It does these
+// steps:
+//   - Refresh the repo from the sources of truth.
+//   - Mint a nonce.
+//   - Hand off to receive-pack, with the pre-receive hook set to call back on
+//     the socket.
+//
+// The callback of the hook does the object PUT and the ref CAS (see
+// Writer.handle).
 func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, repoName string, pusherID int64) {
 	push, err := h.writer.Begin(r.Context(), repoName, pusherID)
 	if err != nil {
@@ -159,8 +174,8 @@ func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, repoN
 	}
 	defer push.Release()
 
-	// Materialize under the lock so receive-pack's fast-forward check runs
-	// against the authoritative tip.
+	// Materialize under the lock, so that the fast-forward check of
+	// receive-pack runs against the authoritative tip.
 	if !h.materialize(w, r, repoName) {
 		return
 	}
@@ -175,10 +190,11 @@ func (h *Handler) serveReceivePack(w http.ResponseWriter, r *http.Request, repoN
 	)
 	h.serveCGI(w, r, extra)
 
-	// receive-pack has finished (response flushed, on-disk refs updated). Fire the
-	// after-commit hook now, so a CI dispatch reads a warm, consistent repo — never
-	// racing receive-pack's ref finalization. Fire-and-forget: it never fails the
-	// already-committed push.
+	// receive-pack has finished: the response is flushed, and the on-disk refs
+	// are updated. Fire the after-commit hook at this point. A CI dispatch then
+	// reads a warm, consistent repo. It never races the ref finalization of
+	// receive-pack. The hook is fire-and-forget. It never fails the push, which
+	// is already committed.
 	h.writer.FireAfterCommit(pusherID, push.Committed())
 }
 
@@ -189,9 +205,9 @@ func (h *Handler) materialize(w http.ResponseWriter, r *http.Request, repoName s
 	return h.finishMaterialize(w, r, repoName, err)
 }
 
-// materializeRefs makes the repo's ref advertisement current without hydrating
-// objects — the info/refs path. It has the same signature and error handling as
-// materialize.
+// materializeRefs makes the ref advertisement of the repo current without
+// hydrating objects. The info/refs path uses it. It has the same signature and
+// error handling as materialize.
 func (h *Handler) materializeRefs(w http.ResponseWriter, r *http.Request, repoName string) bool {
 	_, err := h.mz.MaterializeRefs(r.Context(), repoName)
 	return h.finishMaterialize(w, r, repoName, err)
@@ -213,15 +229,16 @@ func (h *Handler) finishMaterialize(w http.ResponseWriter, r *http.Request, repo
 }
 
 // serveCGI delegates to git-http-backend. PATH_INFO carries the full request
-// path (empty CGI Root) and GIT_PROJECT_ROOT is the cache root, so http-backend
-// resolves the repo dir the materializer just wrote.
+// path, because the CGI Root is empty. GIT_PROJECT_ROOT is the cache root. So
+// http-backend resolves the repo directory that the materializer just wrote.
 func (h *Handler) serveCGI(w http.ResponseWriter, r *http.Request, extraEnv []string) {
 	// git http-backend runs via CGI and needs CONTENT_LENGTH. A request with an
-	// unknown length — chunked transfer-encoding, which git uses for a pack larger
-	// than the client's http.postBuffer (default 1 MiB) — carries none, and
-	// http-backend rejects it with 400. Buffer such a body to a temp file to give
-	// it a fixed length before handing off, so a large push works with no client
-	// http.postBuffer tuning. Bodies with a known length stream through unchanged.
+	// unknown length carries none, and http-backend rejects it with 400. Git
+	// sends such a request (chunked transfer-encoding) for a pack larger than
+	// the http.postBuffer of the client (default 1 MiB). Buffer such a body to a
+	// temp file to give it a fixed length before the hand-off. A large push
+	// then works with no client http.postBuffer tuning. Bodies with a known
+	// length stream through unchanged.
 	if r.Body != nil && r.ContentLength < 0 {
 		cleanup, err := bufferBodyToFile(r)
 		if err != nil {
@@ -245,11 +262,12 @@ func (h *Handler) serveCGI(w http.ResponseWriter, r *http.Request, extraEnv []st
 	backend.ServeHTTP(w, r)
 }
 
-// bufferBodyToFile drains r.Body to a temp file and rewires the request to read
-// from it with a known ContentLength, turning a length-unknown (chunked) body
-// into a fixed-length one for the CGI child. It returns a cleanup that closes and
-// removes the file after the response is served. Spilling to disk (not memory)
-// keeps a large pack off the heap.
+// bufferBodyToFile drains r.Body to a temp file. It then sets the request to
+// read from that file with a known ContentLength. This turns a body of unknown
+// length (chunked) into a body of fixed length for the CGI child. It returns a
+// cleanup function that closes and removes the file after the response is
+// served. The body goes to disk, not to memory, so a large pack stays off the
+// heap.
 func bufferBodyToFile(r *http.Request) (func(), error) {
 	f, err := os.CreateTemp("", "gitmote-body-*")
 	if err != nil {
@@ -272,9 +290,12 @@ func bufferBodyToFile(r *http.Request) (func(), error) {
 	return cleanup, nil
 }
 
-// writeAuthError maps an Authorize error to the HTTP response git expects: a
-// 401 carries the Basic challenge so git (and its credential helpers) retry
-// with credentials; a 403 is a hard stop; a missing repo is a 404.
+// writeAuthError maps an Authorize error to the HTTP response that git
+// expects:
+//   - A 401 carries the Basic challenge, so git and its credential helpers
+//     retry with credentials.
+//   - A 403 is a hard stop.
+//   - A missing repo is a 404.
 func (h *Handler) writeAuthError(w http.ResponseWriter, r *http.Request, repoName string, err error) {
 	switch {
 	case errors.Is(err, auth.ErrForbidden):
@@ -290,9 +311,12 @@ func (h *Handler) writeAuthError(w http.ResponseWriter, r *http.Request, repoNam
 	}
 }
 
-// classify determines, for a parsed endpoint and request, the required
-// permission and whether it targets receive-pack (isReceive) and mutates
-// (isPush). ok=false rejects a wrong method or unknown service.
+// classify takes a parsed endpoint and a request, and determines these:
+//   - perm: the required permission
+//   - isReceive: whether the request targets receive-pack
+//   - isPush: whether the request mutates the repo
+//
+// ok=false rejects a wrong method or an unknown service.
 func classify(endpoint string, r *http.Request) (perm meta.Perm, isReceive, isPush, ok bool) {
 	switch endpoint {
 	case "info/refs":
@@ -324,7 +348,8 @@ func classify(endpoint string, r *http.Request) (perm meta.Perm, isReceive, isPu
 
 // parseGitPath splits a git smart-HTTP URL into the repo name and the endpoint
 // suffix ("info/refs", "git-upload-pack", or "git-receive-pack"). The repo name
-// — which may contain slashes ("atmin/dotfiles") — must be non-empty.
+// must be non-empty. The parser accepts slashes, but meta rejects a repo name
+// with a slash, so no such repo exists.
 func parseGitPath(urlPath string) (repoName, endpoint string, ok bool) {
 	p := strings.TrimPrefix(urlPath, "/")
 	for _, ep := range []string{"info/refs", "git-upload-pack", "git-receive-pack"} {
@@ -339,9 +364,13 @@ func parseGitPath(urlPath string) (repoName, endpoint string, ok bool) {
 	return "", "", false
 }
 
-// gitConfigEnv renders config overrides as the GIT_CONFIG_COUNT/KEY/VALUE
-// environment git honors in every process, so they reach the spawned
-// receive-pack (and its hooks).
+// gitConfigEnv renders config overrides as git environment variables:
+//   - GIT_CONFIG_COUNT, the number of pairs.
+//   - GIT_CONFIG_KEY_<n>, the key of pair n.
+//   - GIT_CONFIG_VALUE_<n>, the value of pair n.
+//
+// Git honors them in every process, so they reach the spawned receive-pack
+// and its hooks.
 func gitConfigEnv(pairs ...[2]string) []string {
 	env := []string{fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(pairs))}
 	for i, p := range pairs {

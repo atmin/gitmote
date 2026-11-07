@@ -11,7 +11,7 @@ func TestHighlightByExtension(t *testing.T) {
 		t.Fatalf("Highlight: %v", err)
 	}
 	s := string(out)
-	// Class-based output: keywords wrapped in class spans, no inline styles.
+	// Class-based output wraps keywords in class spans, with no inline styles.
 	if !strings.Contains(s, "<pre") || !strings.Contains(s, `class="`) {
 		t.Fatalf("go highlight missing class spans:\n%s", s)
 	}
@@ -45,7 +45,7 @@ func TestHighlightCSS(t *testing.T) {
 	if css == "" || !strings.Contains(css, ".chroma") {
 		t.Fatalf("HighlightCSS looks wrong:\n%s", css)
 	}
-	// A dark-mode override ships alongside the light theme.
+	// A dark-mode override comes with the light theme.
 	if !strings.Contains(css, "prefers-color-scheme: dark") {
 		t.Fatalf("HighlightCSS missing dark-mode variant:\n%s", css)
 	}
@@ -60,7 +60,7 @@ func TestMarkdownGFM(t *testing.T) {
 	if !strings.Contains(out, "<table") {
 		t.Fatalf("GFM table not rendered:\n%s", out)
 	}
-	// Fenced code highlighted via goldmark-highlighting → chroma class spans.
+	// goldmark-highlighting highlights fenced code into chroma class spans.
 	if !strings.Contains(out, `class="`) {
 		t.Fatalf("fenced code not highlighted:\n%s", out)
 	}
@@ -81,8 +81,8 @@ func TestMarkdownSanitizesXSS(t *testing.T) {
 }
 
 func TestMarkdownLinks(t *testing.T) {
-	// A stat callback: doc.md and CONTRIBUTING.md are files, "sub" and "docs" are
-	// directories, everything else is absent.
+	// A stat callback. doc.md and CONTRIBUTING.md are files. "sub" and "docs"
+	// are directories. Everything else is absent.
 	lc := &LinkContext{
 		Repo: "app",
 		Ref:  "main",
@@ -100,15 +100,15 @@ func TestMarkdownLinks(t *testing.T) {
 	}
 
 	src := []byte(strings.Join([]string{
-		"[sib](./doc.md)",          // sibling file → blob
-		"[dir](sub/)",              // subdir → tree
-		"[up](../CONTRIBUTING.md)", // ../ up-link → blob at repo root
-		"![img](diagram.png)",      // image → raw (no stat)
-		"[ext](https://x.example)", // external → unchanged
-		"[mail](mailto:a@b.co)",    // mailto → unchanged
-		"[anchor](#section)",       // in-page anchor → unchanged
-		"[abs](/other/thing)",      // site-absolute → unchanged
-		"[gone](./missing.md)",     // missing target → unchanged
+		"[sib](./doc.md)",          // a sibling file maps to blob
+		"[dir](sub/)",              // a subdirectory maps to tree
+		"[up](../CONTRIBUTING.md)", // a ../ link up maps to blob at the repo root
+		"![img](diagram.png)",      // an image maps to raw (no stat)
+		"[ext](https://x.example)", // an external link stays unchanged
+		"[mail](mailto:a@b.co)",    // a mailto link stays unchanged
+		"[anchor](#section)",       // an in-page anchor stays unchanged
+		"[abs](/other/thing)",      // a site-absolute link stays unchanged
+		"[gone](./missing.md)",     // a missing target stays unchanged
 	}, "\n\n"))
 	out := string(MarkdownLinks(src, lc))
 
@@ -121,14 +121,14 @@ func TestMarkdownLinks(t *testing.T) {
 		`href="mailto:a@b.co"`,
 		`href="#section"`,
 		`href="/other/thing"`,
-		`href="./missing.md"`, // dangling, left as-is
+		`href="./missing.md"`, // dangling, left unchanged
 	}
 	for _, w := range wantContains {
 		if !strings.Contains(out, w) {
 			t.Errorf("output missing %q:\n%s", w, out)
 		}
 	}
-	// A missing nav target must never be fabricated into a blob/tree URL.
+	// A missing navigation target must never become a blob or tree URL.
 	if strings.Contains(out, "missing.md\"") && strings.Contains(out, "/app/blob/main/docs/missing.md") {
 		t.Errorf("missing target was rewritten into a false blob URL:\n%s", out)
 	}
@@ -195,16 +195,17 @@ func TestDiffEscapesAndEmpty(t *testing.T) {
 func TestMarkdownMermaid(t *testing.T) {
 	src := []byte("# Diagram\n\n```mermaid\ngraph TD\n  A --> B\n```\n")
 	out := string(Markdown(src))
-	// The fence becomes a mermaid container (client-side render), not chroma output.
+	// The fence becomes a mermaid container, rendered on the client. It is not
+	// chroma output.
 	if !strings.Contains(out, `class="mermaid"`) {
 		t.Fatalf("mermaid block not emitted as a mermaid container:\n%s", out)
 	}
-	// The diagram source survives inside it (HTML-escaped: --> becomes --&gt;).
+	// The diagram source stays inside it, HTML-escaped (--> becomes --&gt;).
 	if !strings.Contains(out, "graph TD") || !strings.Contains(out, "--&gt;") {
 		t.Fatalf("diagram source missing/unescaped:\n%s", out)
 	}
-	// No script is emitted here — the layout includes our own embedded one, and the
-	// sanitizer would strip any injected <script> regardless.
+	// No script is emitted here. The layout includes its own embedded script.
+	// The sanitizer would strip any injected <script> in any case.
 	if strings.Contains(out, "<script") {
 		t.Fatalf("mermaid render leaked a <script>:\n%s", out)
 	}

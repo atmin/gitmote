@@ -16,8 +16,9 @@ import (
 	"github.com/atmin/gitmote/internal/store"
 )
 
-// git runs a git command hermetically (no user/system config, fixed identity)
-// and returns its trimmed combined output, failing the test on a nonzero exit.
+// git runs a git command hermetically, with no user or system config and a
+// fixed identity. It returns the trimmed combined output. It fails the test on
+// a nonzero exit.
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	return gitStdin(t, dir, nil, args...)
@@ -55,10 +56,10 @@ func openMeta(t *testing.T) *meta.Metadata {
 	return m
 }
 
-// seedRepo builds a real repo with two commits, loads its objects into the
-// store under name's prefix, records the repo + branch ref in meta, and returns
-// (branch, headSHA). When repack is set the source is packed first, so the
-// store holds a packfile instead of loose objects.
+// seedRepo builds a real repo with two commits. It loads the objects into the
+// store under the prefix of name. It records the repo and the branch ref in
+// meta, and returns (branch, headSHA). When repack is set, the source is
+// packed first. The store then holds a packfile instead of loose objects.
 func seedRepo(t *testing.T, m *meta.Metadata, s store.Store, name string, repack bool) (string, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -135,8 +136,8 @@ func TestMaterialize(t *testing.T) {
 
 			assertRepo(t, dir, branch, head)
 
-			// Cold rebuild: drop the cache dir and rematerialize — must
-			// reproduce an equivalent repo at the same path.
+			// A cold rebuild: drop the cache directory and materialize again.
+			// It must reproduce an equivalent repo at the same path.
 			if err := os.RemoveAll(dir); err != nil {
 				t.Fatal(err)
 			}
@@ -152,9 +153,11 @@ func TestMaterialize(t *testing.T) {
 	}
 }
 
-// assertRepo checks the materialized repo the way the transport layer will:
-// the ref resolves, the head object is present and typed, HEAD tracks the
-// branch, and fsck finds no corruption or missing objects.
+// assertRepo checks the materialized repo the way the transport layer does:
+//   - The ref resolves.
+//   - The head object is present and typed.
+//   - HEAD tracks the branch.
+//   - fsck finds no corruption or missing objects.
 func assertRepo(t *testing.T, dir, branch, head string) {
 	t.Helper()
 	if got := git(t, dir, "rev-parse", branch); got != head {
@@ -167,10 +170,10 @@ func assertRepo(t *testing.T, dir, branch, head string) {
 	if got := git(t, dir, "symbolic-ref", "HEAD"); got != "refs/heads/"+branch {
 		t.Errorf("HEAD = %q, want refs/heads/%s", got, branch)
 	}
-	git(t, dir, "fsck", "--strict") // fails the test on any corruption/missing object
+	git(t, dir, "fsck", "--strict") // fails the test on any corruption or missing object
 }
 
-// spyStore wraps a Store and counts Get calls, so a test can assert the
+// spyStore wraps a Store and counts Get calls. A test can then assert that the
 // advertisement path never touches an object.
 type spyStore struct {
 	store.Store
@@ -182,8 +185,9 @@ func (s *spyStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	return s.Store.Get(ctx, key)
 }
 
-// advertise runs `git upload-pack --advertise-refs` against dir — exactly what
-// the info/refs GET serves — and returns its output, failing on a nonzero exit.
+// advertise runs `git upload-pack --advertise-refs` against dir. That is
+// exactly what the info/refs GET serves. It returns the output, and fails on a
+// nonzero exit.
 func advertise(t *testing.T, dir string) string {
 	t.Helper()
 	return git(t, "", "upload-pack", "--advertise-refs", dir)
@@ -196,7 +200,7 @@ func TestMaterializeRefsNoObjects(t *testing.T) {
 	const repoName = "dotfiles"
 	branch, head := seedRepo(t, m, s, repoName, false)
 
-	// An annotated tag: meta points the ref at the tag object, which is never
+	// An annotated tag. Meta points the ref at the tag object, which is never
 	// hydrated. The advertisement must still list it.
 	tag := "refs/tags/v1"
 	r, err := m.GetRepo(ctx, repoName)
@@ -218,8 +222,8 @@ func TestMaterializeRefsNoObjects(t *testing.T) {
 		t.Errorf("MaterializeRefs called store.Get %d times, want 0", s.gets)
 	}
 
-	// The advertisement lists exactly the meta refs and their SHAs, with HEAD
-	// tracking the default branch — all with no objects on disk.
+	// The advertisement lists exactly the meta refs and their SHAs. HEAD tracks
+	// the default branch. There are no objects on disk.
 	adv := advertise(t, dir)
 	for _, want := range []string{
 		head + " refs/heads/" + branch,
@@ -230,7 +234,8 @@ func TestMaterializeRefsNoObjects(t *testing.T) {
 			t.Errorf("advertisement missing %q\n%s", want, adv)
 		}
 	}
-	// MVP omits the annotated-tag peel line (the tag object is absent).
+	// The peel line of the annotated tag is omitted, because the tag object is
+	// absent.
 	if strings.Contains(adv, tag+"^{}") {
 		t.Errorf("advertisement unexpectedly carries a peel line for %s\n%s", tag, adv)
 	}
@@ -242,10 +247,11 @@ func TestMaterializeRefsNoObjects(t *testing.T) {
 	}
 }
 
-// TestMaterializeMirrorsMetaRefs covers a cache made stale by another instance:
-// after a lease handoff, the other instance moved one branch and deleted another,
-// while this cache still holds the loose refs its own receive-pack wrote. Both the
-// advertisement and the full materialize must show exactly the metadata refs.
+// TestMaterializeMirrorsMetaRefs covers a cache that another instance made
+// stale. After a lease handoff, the other instance moved one branch and
+// deleted another. This cache still holds the loose refs that its own
+// receive-pack wrote. The advertisement and the full materialize must both
+// show exactly the metadata refs.
 func TestMaterializeMirrorsMetaRefs(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -269,7 +275,8 @@ func TestMaterializeMirrorsMetaRefs(t *testing.T) {
 				t.Fatalf("CASRef doomed: %v", err)
 			}
 
-			// This instance materializes, and its receive-pack leaves loose refs.
+			// This instance materializes, and its receive-pack leaves loose
+			// refs.
 			mz := New(m, s, t.TempDir())
 			dir, err := mz.Materialize(ctx, repoName)
 			if err != nil {
@@ -311,10 +318,10 @@ func TestMaterializeUnknownRepo(t *testing.T) {
 	}
 }
 
-// TestRepoDirRejectsUnsafeName guards the cache-root escape defense directly:
-// CreateRepo now forbids "/" in a name, so such a name can't reach the
-// materializer through meta, but repoDir stays defense-in-depth against any name
-// that would resolve outside the cache root.
+// TestRepoDirRejectsUnsafeName tests directly the defense against an escape
+// from the cache root. CreateRepo forbids "/" in a name. So such a name can't
+// reach the materializer through meta. But repoDir stays as defense in depth
+// against any name that would resolve outside the cache root.
 func TestRepoDirRejectsUnsafeName(t *testing.T) {
 	mz := New(openMeta(t), store.NewMem(), t.TempDir())
 	for _, name := range []string{"../evil", "/etc/passwd", "a/../../b", ""} {
@@ -325,17 +332,20 @@ func TestRepoDirRejectsUnsafeName(t *testing.T) {
 }
 
 // TestMaterializeManyObjectsParallel drives hydrateObjects with far more loose
-// objects than hydrateConcurrency, so the bounded pool actually queues, and
-// asserts the concurrent copies still reproduce a byte-identical, fsck-clean
-// repo (no torn objects, no lost keys) at the right head.
+// objects than hydrateConcurrency, so the bounded pool queues. It asserts that
+// the concurrent copies still reproduce a correct repo at the right head:
+//   - The repo is byte-identical.
+//   - fsck finds it clean.
+//   - It has no torn objects and no lost keys.
 func TestMaterializeManyObjectsParallel(t *testing.T) {
 	ctx := context.Background()
 	m := openMeta(t)
 	s := store.NewMem()
 	const repoName = "many"
 
-	// One commit touching 60 distinct files → 60 blobs + trees + a commit, well
-	// past hydrateConcurrency (16), forcing the pool to block and drain.
+	// One commit that touches 60 distinct files gives 60 blobs, the trees, and a
+	// commit. That is well past hydrateConcurrency (16). It forces the pool to
+	// block and drain.
 	src := t.TempDir()
 	git(t, src, "init", "-b", "main", ".")
 	for i := 0; i < 60; i++ {
@@ -345,7 +355,7 @@ func TestMaterializeManyObjectsParallel(t *testing.T) {
 		}
 	}
 	git(t, src, "add", "-A")
-	git(t, src, "commit", "-m", "many files") // no repack: keep objects loose
+	git(t, src, "commit", "-m", "many files") // no repack, so objects stay loose
 	branch := git(t, src, "rev-parse", "--abbrev-ref", "HEAD")
 	head := git(t, src, "rev-parse", "HEAD")
 

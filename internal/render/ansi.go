@@ -7,9 +7,9 @@ import (
 )
 
 // ansiFG maps SGR foreground color codes (standard 30–37, bright 90–97) to CSS
-// colors. Backgrounds and 256/truecolor are intentionally unsupported — CI logs
-// use the basic palette, and a fixed table keeps the output injection-proof (the
-// color never comes from the log).
+// colors. Backgrounds, 256-color and truecolor are intentionally unsupported.
+// CI logs use the basic palette. A fixed table keeps the output safe from
+// injection, because the color never comes from the log.
 var ansiFG = map[int]string{
 	30: "#555555", 31: "#c0392b", 32: "#27ae60", 33: "#b7950b",
 	34: "#2980b9", 35: "#8e44ad", 36: "#17a2a2", 37: "#aaaaaa",
@@ -17,11 +17,15 @@ var ansiFG = map[int]string{
 	94: "#3498db", 95: "#9b59b6", 96: "#1abc9c", 97: "#ecf0f1",
 }
 
-// ANSI converts a byte stream carrying ANSI SGR escapes into HTML safe to embed
-// in a <pre>. All text is HTML-escaped; SGR color/bold escapes become <span>
-// wrappers with styles drawn only from the fixed palette; every other escape
-// sequence (cursor moves, etc.) is dropped. Because the styles are ours and the
-// text is escaped, the untrusted log can't inject markup.
+// ANSI converts a byte stream that carries ANSI SGR escapes into HTML that is
+// safe to embed in a <pre>:
+//   - All text is HTML-escaped.
+//   - SGR color and bold escapes become <span> wrappers. Their styles come
+//     only from the fixed palette.
+//   - Every other escape sequence, such as a cursor move, is dropped.
+//
+// The styles come from this package, and the text is escaped. So the
+// untrusted log can't inject markup.
 func ANSI(b []byte) template.HTML {
 	var out strings.Builder
 	color := ""
@@ -62,7 +66,7 @@ func ANSI(b []byte) template.HTML {
 			for j < n && (b[j] < 0x40 || b[j] > 0x7e) {
 				j++
 			}
-			if j >= n { // unterminated — drop the rest
+			if j >= n { // unterminated, so drop the rest
 				i = n
 			} else {
 				if b[j] == 'm' {
@@ -71,7 +75,7 @@ func ANSI(b []byte) template.HTML {
 				i = j + 1
 			}
 		} else {
-			i++ // lone ESC — skip it
+			i++ // lone ESC, so skip it
 		}
 		start = i
 	}
@@ -79,8 +83,8 @@ func ANSI(b []byte) template.HTML {
 	return template.HTML(out.String())
 }
 
-// applySGR updates the current color/bold from a semicolon-separated SGR
-// parameter list. Unknown codes are ignored.
+// applySGR updates the current color and bold state from a
+// semicolon-separated SGR parameter list. Unknown codes are ignored.
 func applySGR(params string, color *string, bold *bool) {
 	if params == "" { // ESC[m is a reset
 		*color, *bold = "", false
