@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Prove the litestream cold-start path before trusting it in production: push a
-# repo with metadata replication on, gracefully stop the server (flushing the WAL
-# to S3), then DELETE the metadata volume — simulating a fresh container on
-# ephemeral disk — and bring it back. The clone must still succeed, which is only
-# possible if refs were restored from the object store, not local disk.
+# Test the litestream cold-start path before production trusts it:
+#   - Push a repo with metadata replication on.
+#   - Stop the server gracefully, which flushes the WAL to S3.
+#   - DELETE the metadata volume. This simulates a fresh container on ephemeral
+#     disk.
+#   - Bring the server back.
+# The clone must still succeed. That is only possible if the refs were restored
+# from the object store, not from local disk.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -11,8 +14,9 @@ DC=(docker compose --project-directory "$ROOT" -f "$ROOT/compose/e2e.yml")
 BRANCH="$(git -C "$ROOT" symbolic-ref --quiet --short HEAD || echo master)"
 PUSHED="$(git -C "$ROOT" rev-parse HEAD)"
 
-# Replication is on whenever a bucket is set (the root derives the replica), so
-# there is nothing to turn on here — just the volume to wipe mid-run.
+# Replication is on whenever a bucket is set, because the storage root derives
+# the replica. So there is nothing to turn on here. There is only the volume to
+# wipe in the middle of the run.
 DB_VOLUME="gitmote-e2e_gitmote-data"
 
 export GIT_TERMINAL_PROMPT=0
@@ -58,9 +62,9 @@ wait_healthz
 "${GITC[@]}" -C "$ROOT" push "$REPO_URL" "HEAD:refs/heads/${BRANCH}" || fail "push failed"
 
 echo "--- graceful stop (flushes WAL to S3), then DESTROY the metadata volume ---"
-"${DC[@]}" stop gitmote                       # SIGTERM → graceful shutdown → replication flush
+"${DC[@]}" stop gitmote                       # SIGTERM starts a graceful shutdown, which flushes replication
 "${DC[@]}" rm -f gitmote                      # remove the container so the volume is free
-docker volume rm "$DB_VOLUME"          # simulate a fresh container: local DB is gone
+docker volume rm "$DB_VOLUME"          # simulate a fresh container: the local DB is gone
 docker volume ls --format '{{.Name}}' | grep -qx "$DB_VOLUME" \
   && fail "metadata volume still present — wipe did not take"
 

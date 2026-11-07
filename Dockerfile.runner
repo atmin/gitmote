@@ -1,11 +1,11 @@
-# CI runner image: gitmote-runner + nektos/act, run as a Scaleway Serverless Job
-# (one definition serves all repos; env injected per job at trigger, per stage 3).
+# CI runner image: gitmote-runner and nektos/act, run as a Scaleway Serverless
+# Job. One Job definition serves all repos. The trigger injects the env per job.
 #
-# act runs in SELF-HOSTED mode here (GITMOTE_ACT_PLATFORMS below): Serverless Jobs
-# have no Docker daemon, so act executes the workflow steps directly in THIS
-# container rather than nesting a per-job container. The Job is a fresh, ephemeral,
-# scale-to-zero container, so it is the sandbox. Tools workflows need (git, node,
-# bash) must therefore live in this image.
+# act runs in SELF-HOSTED mode here (GITMOTE_ACT_PLATFORMS below). Serverless Jobs
+# have no Docker daemon. So act executes the workflow steps directly in THIS
+# container, and it does not nest a container per job. The Job is a fresh,
+# ephemeral, scale-to-zero container, so the Job itself is the sandbox. The tools
+# that workflows need (git, node, bash) must therefore live in this image.
 
 # syntax=docker/dockerfile:1
 FROM golang:1.26-bookworm AS build
@@ -30,7 +30,7 @@ RUN apt-get update \
 
 COPY --from=build /out/gitmote-runner /usr/local/bin/gitmote-runner
 
-# Self-hosted execution for the common ubuntu labels — no Docker-in-Docker.
+# Self-hosted execution for the common ubuntu labels, with no Docker-in-Docker.
 ENV GITMOTE_ACT_PLATFORMS="ubuntu-latest=-self-hosted,ubuntu-22.04=-self-hosted,ubuntu-24.04=-self-hosted"
 
 ENTRYPOINT ["gitmote-runner"]

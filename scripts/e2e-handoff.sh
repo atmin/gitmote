@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Prove that two live instances on one storage root take turns as the writer
-# (docs/configuration.md, "Two instances take turns"). A receives a push, idles, and yields the
-# lease; B then serves that push. B moves one branch and deletes another, and A —
-# whose warm cache still holds the loose refs of its own push — must advertise
-# exactly B's refs. Whenever both are idle, no instance holds the lease.
+# (docs/configuration.md, "Two instances take turns"):
+#   - A receives a push, idles, and yields the lease. B then serves that push.
+#   - B moves one branch and deletes another.
+#   - The warm cache of A still holds the loose refs of its own push. A must
+#     still advertise exactly the refs of B.
+# Whenever both are idle, no instance holds the lease.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -109,7 +111,7 @@ clone_into "$A" "$CLONE_A"
 
 echo "--- both instances logged the yield ---"
 for svc in gitmote gitmote-b; do
-  # Capture first: under pipefail, grep -q closing the pipe early fails the logs call.
+  # Capture first. Under pipefail, grep -q closes the pipe early and fails the logs call.
   LOGS="$("${DC[@]}" logs "$svc" 2>/dev/null)"
   grep -q 'yielded the writer lease' <<<"$LOGS" || fail "$svc never logged a yield"
 done

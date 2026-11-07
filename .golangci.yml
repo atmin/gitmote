@@ -8,9 +8,9 @@ linters:
       exclude-functions:
         # Writes to an http.ResponseWriter have nowhere to report errors.
         - fmt.Fprintln(net/http.ResponseWriter)
-        # Deferred response-body closes in tests.
+        # Deferred closes of response bodies in tests.
         - (io.ReadCloser).Close
-        # Deferred row-set closes; iteration errors surface via rows.Err().
+        # Deferred closes of row sets. Iteration errors surface through rows.Err().
         - (*database/sql.Rows).Close
 
 formatters:

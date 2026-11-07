@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
 # End-to-end proof that GITMOTE_CI_ALLOW_BUILDS gates real container image builds.
 #
-# gitmote's runner (internal/runner/act.go, actArgs) runs `act` in nested mode and,
-# unless GITMOTE_CI_ALLOW_BUILDS is truthy, passes `--container-daemon-socket -` to
-# suppress act's default host-Docker-socket mount. The unit tests prove actArgs
-# emits exactly that flag (off) or omits it (on); this script proves those two
-# arg-states actually flip a real `docker build` from failing (no daemon access)
-# to succeeding — the other half of the chain.
+# The gitmote runner (internal/runner/act.go, actArgs) runs `act` in nested mode.
+# Unless GITMOTE_CI_ALLOW_BUILDS is truthy, it passes `--container-daemon-socket -`.
+# That flag suppresses the default mount of the host Docker socket by act. When
+# builds are on, actArgs passes the daemon socket path instead. The unit tests
+# prove both argument states. This script proves the other half of the chain.
+# Without the flag, act mounts a daemon socket. Then a real `docker build` flips
+# from failing (no daemon access) to succeeding.
 #
 # It runs everything inside one privileged docker-in-docker container with its own
-# rootful daemon — "a Linux VPS with docker" in a box — so it works even where the
-# host engine is rootless podman (whose socket-mount permissions otherwise block
-# the job container; that's a rootless-userns quirk, not a gitmote behaviour).
+# rootful daemon. That container acts as "a Linux VPS with docker". So the test
+# works even where the host engine is rootless podman. There, the socket-mount
+# permissions would block the job container. That is a quirk of rootless user
+# namespaces, not a gitmote behaviour.
 #
-# Requires a reachable Docker/podman daemon. Skips (exit 0) when none is present —
-# no daemon means no CI and no builds anyway, which is the point. Not part of
-# `make all`; run explicitly with `make e2e-build`.
+# Requires a reachable Docker or podman daemon. Skips (exit 0) when none is
+# present. With no daemon there is no CI and no build anyway, which is the point.
+# Not part of `make all`. Run it explicitly with `make e2e-build`.
 set -euo pipefail
 
 # Pin act to the version baked into the runner image (Dockerfile.runner).
 ACT_VERSION="v0.2.89"
 CN="gitmote-e2e-build"
-# A small job image that ships the docker CLI, so the build step can reach the
-# daemon without pulling act's ~1GB default runner image. The socket-mount gate
-# under test is identical regardless of which job image is used.
+# The job image is small, and it includes the docker CLI. So the build step
+# reaches the daemon without a pull of the default act runner image (about 1GB). The
+# socket-mount gate under test is the same for any job image.
 JOB_IMAGE="docker:cli"
 
 DOCKER="${DOCKER:-docker}"
@@ -81,8 +83,9 @@ jobs:
           docker build -t probe .
 YML'
 
-# actArgs always passes --workflows; the only difference between off and on is the
-# socket-suppression flag below.
+# actArgs always passes --workflows. Off passes `--container-daemon-socket -`.
+# On omits the flag here, so act mounts its default socket. actArgs passes the
+# socket path explicitly, which resolves to the same socket inside this daemon.
 act_off() { "$DOCKER" exec -w /repo "$CN" act --workflows .gitmote/workflows -P "ubuntu-latest=$JOB_IMAGE" --container-daemon-socket - push; }
 act_on()  { "$DOCKER" exec -w /repo "$CN" act --workflows .gitmote/workflows -P "ubuntu-latest=$JOB_IMAGE" push; }
 

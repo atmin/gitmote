@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# End-to-end proof that gitmote hosts itself: bring up MinIO + a gitmote
-# container, bootstrap an admin/token/repo, push this working tree to it, clone
-# it back, and assert the clone is byte-for-byte the pushed history. Then
-# force-recreate the container (wiping the ephemeral cache) and clone again to
-# prove durability comes from the object store + persisted refs, not local disk.
+# End-to-end test that gitmote hosts itself. The script does these steps:
+#   - Bring up MinIO and a gitmote container.
+#   - Bootstrap an admin, a token and a repo.
+#   - Push this working tree to it, clone it back, and assert that the clone is
+#     byte-for-byte the pushed history.
+#   - Force-recreate the container. The data volume, with its cache, stays.
+#   - Clone again. This proves that the data survives a container restart.
+#     make e2e-restore covers a restore without the volume.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 DC=(docker compose --project-directory "$ROOT" -f "$ROOT/compose/e2e.yml")
-# Fall back to a name when HEAD is detached (CI checkouts are), since the remote
-# branch we host under is our own choice anyway.
+# Fall back to a fixed name when HEAD is detached, as it is in CI checkouts. The
+# remote branch name is our own choice anyway.
 BRANCH="$(git -C "$ROOT" symbolic-ref --quiet --short HEAD || echo master)"
 PUSHED="$(git -C "$ROOT" rev-parse HEAD)"
 
@@ -39,7 +42,7 @@ wait_healthz() {
   fail "gitmote did not become healthy"
 }
 
-# assert_clone <label>: clone the repo fresh and check HEAD, fsck, and tree.
+# assert_clone <label>: clone the repo fresh, and check HEAD, fsck and the tree.
 assert_clone() {
   local label="$1" clone
   clone="$(mktemp -d)"

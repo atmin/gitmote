@@ -1,28 +1,31 @@
-# Local self-hosting stack: MinIO (object store) + gitmote (single writer).
-# Driven by `make e2e-local` (scripts/e2e-local.sh). A bucket alone derives the
-# metadata replica and single-writer lease, so refs survive both a restart (via
-# the gitmote-data volume) and a full wipe (restored from S3 — see e2e-restore).
+# Local self-hosting stack: MinIO as the object store, and gitmote as the single
+# writer. `make e2e-local` drives it (scripts/e2e-local.sh). A bucket alone
+# derives the metadata replica and the single-writer lease. So refs survive a
+# restart through the gitmote-data volume. They also survive a full wipe,
+# because gitmote restores them from S3 (see e2e-restore).
 name: gitmote-e2e
 
 services:
   minio:
-    # Silo — Pigsty's community fork of the MinIO server, pinned by release tag and
-    # digest. MinIO no longer publishes minio/minio or minio/mc; Silo keeps the
-    # protocol, the MINIO_* variables and S3 conditional writes (the writer lease
-    # needs them), and the same image answers to `mc` for the setup service.
+    # Silo is the community fork of the MinIO server by Pigsty. It is pinned by
+    # release tag and by digest. MinIO does not publish minio/minio or minio/mc.
+    # Silo keeps the protocol, the MINIO_* variables and S3 conditional writes,
+    # which the writer lease needs. The same image answers to `mc` for the setup
+    # service.
     image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     command: server /data --console-address :9001
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
-    # No host port: only the compose network (gitmote, mc) reaches MinIO, so we
-    # avoid colliding with anything already bound to :9000 on the host.
+    # No host port. Only the compose network (gitmote, mc) reaches MinIO. So
+    # MinIO does not collide with anything already bound to :9000 on the host.
     volumes:
       - minio-data:/data
 
-  # One-shot bucket creation; not started by `up` (setup profile), invoked with
-  # `docker compose run --rm mc`. MC_HOST_local configures the alias via env, so
-  # no interactive `mc alias set` is needed; it retries until MinIO is reachable.
+  # One-shot bucket creation. `up` does not start it (setup profile). Invoke it
+  # with `docker compose run --rm mc`. MC_HOST_local configures the alias through
+  # the env, so no interactive `mc alias set` is needed. The command retries until
+  # MinIO is reachable.
   mc:
     image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     profiles: ["setup"]
@@ -39,7 +42,7 @@ services:
     image: gitmote:e2e
     depends_on: [minio]
     environment: &gitmote-env
-      GITMOTE_S3_BUCKET: gitmote        # storage root; derives the replica (s3://gitmote/meta)
+      GITMOTE_S3_BUCKET: gitmote        # the storage root, which derives the replica (s3://gitmote/meta)
       GITMOTE_S3_ENDPOINT: http://minio:9000
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: minioadmin
@@ -49,10 +52,10 @@ services:
     volumes:
       - gitmote-data:/data
 
-  # A second instance on the same storage root, for `make e2e-handoff` only (the
-  # handoff profile, so a plain `up` leaves it alone). The two take turns as the
-  # writer: an idle writer yields the lease, and the next request on either one
-  # takes it (docs/configuration.md).
+  # A second instance on the same storage root, only for `make e2e-handoff`. It
+  # is in the handoff profile, so a plain `up` leaves it alone. The two instances
+  # take turns as the writer. An idle writer yields the lease, and the next
+  # request on either instance takes it (docs/configuration.md).
   gitmote-b:
     image: gitmote:e2e
     profiles: ["handoff"]

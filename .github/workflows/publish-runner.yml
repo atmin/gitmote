@@ -1,11 +1,13 @@
 name: publish-runner
 
-# The CI runner image (Dockerfile.runner) published publicly to GHCR, replacing
-# the by-hand push (docs/architecture/ci.md, docs/deploy-scaleway.md). Rebuilds when the
-# runner binary or its Dockerfile changes on master, on a release, or on demand.
-# New GHCR packages default to private — flip gitmote-runner to public once by
-# hand so Scaleway Serverless Jobs can pull it anonymously (the Job definition
-# references ghcr.io/atmin/gitmote-runner).
+# Publish the CI runner image (Dockerfile.runner) publicly to GHCR, in place of a
+# push by hand (docs/architecture/ci.md, docs/deploy-scaleway.md). It rebuilds:
+#   - when the runner binary or its Dockerfile changes on master
+#   - on a release
+#   - on demand
+# New GHCR packages are private by default. Make gitmote-runner public once by
+# hand, so Scaleway Serverless Jobs can pull it anonymously. The Job definition
+# references ghcr.io/atmin/gitmote-runner.
 on:
   push:
     branches: [master]
