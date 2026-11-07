@@ -1,5 +1,5 @@
 // Package bootstrap takes an empty instance to a usable one: the first admin
-// user and a token to authenticate as them — per docs/notes/bootstrap.md. The
+// user and a token to authenticate as them. The
 // schema itself is created by meta.Open; this fills in the day-one rows that
 // token auth otherwise makes a chicken-and-egg. Repos are created later in the
 // UI, so bootstrap no longer needs one (it stays optional for scripts/tests).

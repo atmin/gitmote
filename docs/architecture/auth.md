@@ -48,8 +48,8 @@ There is no sessions table, so the UI adds no new source of truth. The managemen
 UI needs the global-admin role (`users.is_admin`), which is distinct from per-repo
 ACLs.
 
-## SSH is deferred
+## No SSH
 
-Forge users expect SSH, and the `ssh_keys` schema is already in place. But an SSH
-connection is stateful, which is awkward for a container that sleeps. SSH waits
-until the HTTP transport is solid.
+gitmote serves git only over smart HTTP. An SSH connection is stateful, which is
+awkward for a container that sleeps. The `ssh_keys` table exists, but no code
+reads it.

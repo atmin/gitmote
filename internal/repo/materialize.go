@@ -44,8 +44,8 @@ func (mz *Materializer) Root() string { return mz.root }
 // metadata layer — so a warm repo is refreshed to the current refs and a cold
 // one is built from scratch. Returns meta.ErrNotFound if the repo is unknown.
 //
-// Hydration policy is full-hydrate for the MVP (see task 04 /
-// docs/notes/object-hydration.md): every object under the repo's store prefix
+// Hydration policy is full-hydrate (see docs/architecture/storage.md):
+// every object under the repo's store prefix
 // is pulled. This is the path for the data POSTs (upload-pack / receive-pack)
 // that actually transfer history; the info/refs advertisement is served
 // objectless via MaterializeRefs. gitmote's own repo is tiny, so full-hydrate
@@ -76,7 +76,7 @@ func (mz *Materializer) Materialize(ctx context.Context, name string) (string, e
 // packed-refs directly from the metadata layer (not update-ref, which requires
 // each target object present) and points HEAD at the default branch. This
 // serves the info/refs GET, which lists refs but transfers no history — the
-// first slice of bounded hydration (docs/notes/object-hydration.md). Returns
+// first slice of bounded hydration. Returns
 // meta.ErrNotFound if the repo is unknown.
 //
 // MVP omits annotated-tag ^{} peel lines: git still advertises the tag ref and
@@ -136,8 +136,8 @@ func (mz *Materializer) repoDir(name string) (string, error) {
 }
 
 // hydrateConcurrency bounds the parallel object copies during hydration. Each
-// missing object is one S3 GET, and this is the cold-start / first-request cost
-// (docs/notes/object-hydration.md); fetching them concurrently turns N serial
+// missing object is one S3 GET, and this is the cold-start / first-request cost;
+// fetching them concurrently turns N serial
 // round-trips into N/hydrateConcurrency. Kept modest to bound open sockets and
 // file descriptors against a large repo.
 const hydrateConcurrency = 16

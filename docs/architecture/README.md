@@ -52,11 +52,7 @@ Read the file for the part you are about to change:
 | [storage.md](storage.md) | Before you change a component of the container, the S3 object layout or the s3lite schema. |
 | [request-flows.md](request-flows.md) | Before you change the read path (clone, fetch) or the write path (push and its compare-and-swap). |
 | [safety.md](safety.md) | Before you change the single writer, the content-before-pointer order or the accepted write-loss window. |
-| [auth.md](auth.md) | Before you change authentication or transport: smart HTTP with personal access tokens, or the deferred SSH. |
+| [auth.md](auth.md) | Before you change authentication or transport: smart HTTP with personal access tokens. |
 | [urls.md](urls.md) | Before you change a URL route, the repo namespace or repo visibility. |
 | [ci.md](ci.md) | Before you change how a push runs `.gitmote/workflows` with `act`, or to learn why a Scaleway Job cannot build images. |
-| [alternatives.md](alternatives.md) | Before you propose a different storage design, to see what gitmote already rejected or deferred. |
-| [open-questions.md](open-questions.md) | Before you settle an open decision. It links to the notes in [`../notes/`](../notes/). |
-
-Read [`../evolution/`](../evolution/) to see directions the design may take.
-These files are ideas, not plans.
+| [alternatives.md](alternatives.md) | Before you propose a different storage design, to see what gitmote already rejected. |

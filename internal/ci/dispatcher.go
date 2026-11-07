@@ -4,8 +4,7 @@
 // records a run with one job per workflow file. It is fire-and-forget: dispatch
 // must never block or fail a push (a missed run is a missed deploy, not a failed
 // push — the content-before-pointer discipline applied to CI; see
-// docs/architecture/safety.md and tasks/16-ci.md). Later stages add the Scaleway
-// trigger.
+// docs/architecture/safety.md and docs/architecture/ci.md).
 package ci
 
 import (

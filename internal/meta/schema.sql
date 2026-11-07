@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS acls (
 );
 
 -- CI: a queued/running/finished workflow run per ref advance, written only by
--- the leader (like refs). See docs/evolution/ci-runner.md and tasks 16/17.
+-- the leader (like refs). See docs/architecture/ci.md.
 CREATE TABLE IF NOT EXISTS ci_runs (
   id         INTEGER PRIMARY KEY,
   repo_id    INTEGER NOT NULL REFERENCES repos(id),
@@ -83,8 +83,7 @@ CREATE TABLE IF NOT EXISTS ci_jobs (
 -- CI secrets: per-repo named values encrypted at rest with a server-held master
 -- key (never stored here). Only the sealed envelope lives in the DB — {version,
 -- iv, ciphertext} — so a replica/snapshot leak does not expose values. Values are
--- write-only from the UI; only names are ever listed. See internal/secrets and
--- tasks 16/22.
+-- write-only from the UI; only names are ever listed. See internal/secrets.
 CREATE TABLE IF NOT EXISTS ci_secrets (
   repo_id    INTEGER NOT NULL REFERENCES repos(id),
   name       TEXT NOT NULL,                    -- env var name injected at trigger

@@ -1,4 +1,4 @@
-# Rejected and deferred alternatives
+# Rejected alternatives
 
 > Part of the [gitmote architecture](README.md).
 

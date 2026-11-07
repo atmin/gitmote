@@ -4,7 +4,7 @@
 // pass/fail back. It is deliberately substrate-agnostic — the same code runs as
 // a local process (LocalTrigger, dev) and, later, inside a Scaleway Serverless
 // Job container (cloud). It never touches s3lite or S3: the leader writes the
-// log blob and status rows in response to the report calls (tasks/16-ci.md).
+// log blob and status rows in response to the report calls.
 package runner
 
 import (

@@ -151,7 +151,7 @@ func (g *Guard) verify(ctx context.Context, raw string) (*verifiedToken, error) 
 // MintScoped creates and persists a token with optional constraints — repoScope
 // (nil = all the owner's repos), readOnly (deny push), expiresAt (zero = never) —
 // and returns the raw token string, shown exactly once. It is the CI clone
-// credential mint (task 21) and any expiring/scoped PAT.
+// credential mint and any expiring/scoped PAT.
 func (g *Guard) MintScoped(ctx context.Context, userID int64, label string, repoScope *int64, readOnly bool, expiresAt time.Time) (string, error) {
 	raw, selector, verifier, err := Mint()
 	if err != nil {

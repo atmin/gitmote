@@ -3,7 +3,7 @@
 // object bucket) does not leak secret values — the master key lives only in the
 // process env, not in the replicated DB. It is **not** a defense against a
 // compromised running server, which holds the key by necessity to inject secrets
-// into the runner (see docs/architecture/safety.md and tasks/16-ci.md §Stage 0 #3).
+// into the runner (see docs/architecture/safety.md and docs/architecture/ci.md).
 //
 // keyring.go is pure crypto: no meta, no I/O beyond reading keys from the env at
 // construction — unit-testable in isolation. The meta-backed store and the

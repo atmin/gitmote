@@ -1,5 +1,5 @@
 // Package hookrpc is the control channel between git's pre-receive hook and the
-// gitmote parent process, per docs/notes/push-hook-channel.md. The hook runs as
+// gitmote parent process. The hook runs as
 // a child of receive-pack — a separate process that cannot touch the embedded
 // single-writer s3lite — so it RPCs the parent (the sole writer) over a unix
 // socket. The parent performs the S3 PUT + ref CAS and returns a verdict the

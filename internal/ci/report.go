@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	// logCap bounds a stored job log so a runaway workflow can't fill the store
-	// (epic §Stage 0 #5). Over the cap, the log is truncated with an explicit
+	// logCap bounds a stored job log so a runaway workflow can't fill the store.
+	// Over the cap, the log is truncated with an explicit
 	// marker — never silently.
 	logCap = 10 << 20 // 10 MiB
 	// logTruncationMarker is appended when a log is truncated at the cap.
@@ -46,7 +46,7 @@ type ReportMeta interface {
 // ReportAPI serves the runner's authenticated internal endpoints: claim a job
 // and report its completion. Runners never touch s3lite or S3 directly — the
 // parent (leader) writes the log blob and the status rows, matching the push-hook
-// discipline (tasks/16-ci.md). Auth is a constant-time WORKER_SECRET compare;
+// discipline (docs/architecture/ci.md). Auth is a constant-time WORKER_SECRET compare;
 // only the leader may write, so a follower returns a retryable 503.
 type ReportAPI struct {
 	meta     ReportMeta

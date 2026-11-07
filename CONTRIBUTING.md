@@ -14,9 +14,6 @@ docs/
   configuration.md     Every deployment: env vars, single writer, CI, first admin
   deploy-scaleway.md   One deployment: Scaleway, GitHub Actions, self-deploy
   architecture/        The design and its decisions, the source of truth
-  notes/               Open design questions, one per file
-  evolution/           Directions the design may take: ideas, not plans
-tasks/                 Work in progress or next; a task file is deleted once it lands
 ```
 
 ## Run it locally
@@ -99,31 +96,14 @@ Optional body explaining why, not what.
 - Add no trailers. Leave out `Co-Authored-By` and "Generated with" lines, also
   when an agent writes the commit.
 
-## Tasks
-
-`tasks/` holds one file for each unit of work that is in progress or next. Delete
-the file once the work lands: the commits are the record, so a task file is no
-changelog. Each file has four sections:
-
-```
-## Spec      What the change must achieve (link the docs/architecture/ section)
-## Current   How it works today (or "nothing yet")
-## Change    The plan: files, approach, trade-offs
-## Verify    The tests and checks that must pass
-```
-
-`tasks/README.md` lists the open work, one line per item. Remove an item when it
-lands, and never add "landed X" lines.
-
 ## Docs
 
 - [docs/architecture/](docs/architecture/) holds the design and its reasons. A
   decision and its reason live in the architecture doc they affect; there are no
   separate decision records. To change a decision, edit the doc so that it stays
   true. Do not append history.
-- [docs/notes/](docs/notes/) holds one open question per file. Each one feeds a
-  future task or a change to the architecture.
-- [docs/evolution/](docs/evolution/) is speculative. Never cite it as a spec.
+- The repo holds only what is true now. It holds no plans, roadmap, open
+  questions or ideas.
 
 Write every doc for a reader with no context, who may read in a second language:
 

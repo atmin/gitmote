@@ -250,7 +250,7 @@ func TestReceivePackNotServed(t *testing.T) {
 	repoID, _ := seedRepo(t, m, s, t.TempDir())
 	raw := mintUser(t, m, repoID, "reader", meta.PermRead)
 
-	// The write service advertisement is not part of the read path (task 07) —
+	// The write service advertisement is not part of the read path —
 	// 404 even for an authorized reader.
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/"+repoName+"/info/refs?service=git-receive-pack", nil)
 	req.Header.Set("Authorization", "Bearer "+raw)

@@ -47,7 +47,7 @@ const actDaemonSocketEnv = "GITMOTE_ACT_DAEMON_SOCKET"
 const defaultActDaemonSocket = "/var/run/docker.sock"
 
 // ActEngine runs the repo's workflows with nektos/act — the locked engine
-// (tasks/16-ci.md Stage 0 #1). act runs each job in a container via the local
+// (docs/architecture/ci.md). act runs each job in a container via the local
 // Docker/podman daemon and speaks GitHub-Actions YAML, so a workflow is
 // byte-identical whether it lives in .gitmote/workflows (run here) or
 // .github/workflows (run on the GitHub mirror — break-glass). It requires `act`

@@ -78,8 +78,8 @@ const (
 )
 
 func main() {
-	// Subcommands run without the server (single-writer admin, per
-	// docs/notes/bootstrap.md); the default (no subcommand) is the server.
+	// Subcommands run without the server (single-writer admin); the default
+	// (no subcommand) is the server.
 	if args := os.Args[1:]; len(args) > 0 && args[0] == "bootstrap" {
 		if err := runBootstrap(context.Background(), args[1:], os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "bootstrap:", err)
@@ -530,7 +530,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 
 	// Select the CI trigger. Cloud and local run the *same* runner code and env
 	// contract; only the substrate differs — Scaleway Serverless Jobs in
-	// production, a local process for dev (tasks/16-ci.md, tasks/21-ci-runner.md).
+	// production, a local process for dev (docs/architecture/ci.md).
 	// Both need a reachable GITMOTE_URL (the runner clones + reports back over it)
 	// and a WORKER_SECRET (authenticates the report API). With neither configured,
 	// runs still record but nothing executes.
@@ -576,7 +576,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 
 	// A successful, branch-advancing push discovers its workflows, records a run,
 	// and triggers a runner per job — fire-and-forget, so dispatch never fails the
-	// push (tasks/16-ci.md).
+	// push (docs/architecture/ci.md).
 	// Operator-supplied per-repo CI secrets from the process env
 	// (GITMOTE_REPO_SECRET_<REPO>__<NAME>): never stored, no master key needed —
 	// the automated self-deploy seeds them from a gitignored .env (docs/deploy-scaleway.md).

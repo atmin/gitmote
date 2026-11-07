@@ -59,10 +59,8 @@ overlap is also one writer and one follower:
 
 The overlap is safe by construction, so gitmote needs no stop-first drain.
 
-The lease is the writer half of
-[reader-writer-split](../evolution/reader-writer-split.md). The other half is
-followers that stay fresh and scale reads out. A follower serves only a restored
-snapshot, so the container pins `max-scale = 1`.
+A follower serves no reads, because it holds only the snapshot that it restored.
+More instances add no read capacity, so the container pins `max-scale = 1`.
 
 ## 2. An in-process mutex linearizes writes
 
@@ -70,16 +68,14 @@ Git's own lockfiles cannot be trusted across a synced or object backend. So a
 per-repo mutex in the process linearizes the writes. At the scale of "a few
 users", contention is about zero.
 
-This follows the pattern "in-process now, shared coordination later". The mutex is
-the linearization point. The ref CAS in SQL (§3) makes it possible to relax the
-single-writer assumption later. That change would not alter the storage contract.
+The mutex is the linearization point inside the one writer. The ref CAS in SQL
+(§3) does not depend on the mutex, so the storage contract holds without it.
 
 ## 3. Content comes before the pointer
 
 This is the ordering invariant. Objects become durable in S3 before the ref CAS in
 s3lite. With this order, the only failure mode is unreferenced objects in S3. They
-are harmless garbage. gitmote does not delete them;
-[open-questions.md](open-questions.md) covers a cleanup.
+are harmless garbage. gitmote never deletes them.
 
 With the reverse order, a ref can point at a missing object. That is the one true
 corruption. So gitmote always PUTs the objects first, and advances the ref after.
@@ -209,4 +205,4 @@ A real fix at the root needs one of two additions:
   escape lands as an unprivileged user
 - a VM boundary for each job, such as Kata or Firecracker
 
-Both are tracked as future work. The consent gate stays until one of them exists.
+gitmote has neither, so the consent gate is the only protection.

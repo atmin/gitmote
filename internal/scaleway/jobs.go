@@ -1,5 +1,5 @@
 // Package scaleway is a thin client for Scaleway Serverless Jobs — the CI runner
-// substrate (tasks/16-ci.md §Runner substrate). A job definition is created once
+// substrate (docs/architecture/ci.md). A job definition is created once
 // out of band; the app injects per-run env at start, so one definition serves
 // all repos. The client is fire-and-forget: the caller triggers a run and never
 // waits on it — the runner reports back over the internal API (stage 4).

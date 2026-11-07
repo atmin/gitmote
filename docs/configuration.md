@@ -76,8 +76,8 @@ most 30 s ends. Requests in that window get the retryable `503`.
 
 gitmote writes objects before it moves a ref
 ([safety.md §3](architecture/safety.md)). So even an overlap of two writers could
-only leave orphan objects. They take space but do no harm, and gitmote does not
-delete them ([open questions](architecture/open-questions.md)). A ref never points
+only leave orphan objects. They take space but do no harm, and gitmote never
+deletes them. A ref never points
 at a missing object.
 
 The ref compare-and-swap is a SQL transaction in the metadata database, and needs

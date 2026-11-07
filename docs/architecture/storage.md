@@ -20,7 +20,7 @@
       ┌───────────┐                     ┌───────────┐
       │    S3     │                     │  S3 (WAL) │  ← s3lite's backup target
       │ objects/  │                     └───────────┘
-      │ lfs/      │
+      │ ci/ logs  │
       └───────────┘
 ```
 
@@ -67,7 +67,6 @@ objects and metadata share fate. The keys below are relative to the root.
 | `{repo}/objects/…` | Loose git objects, in git's own `ab/cdef…` fan-out |
 | `{repo}/objects/pack/pack-*.pack` `.idx` | Packfiles and their indexes |
 | `ci/{repo}/{run}/{job}.log` | CI run logs, append-only |
-| `lfs/{repo}/{oid}` | Large-file blobs. Deferred, see [open questions](open-questions.md). |
 
 gitmote syncs with the S3 SDK directly. So it stays a single static binary, with
 no external dependency. `rclone` is a fallback that needs no code. New objects and

@@ -4,7 +4,7 @@
 // byte here originates from a repo and is shown to an admin — is unit-testable
 // in isolation.
 //
-// Two defenses guard the markdown path (task 15 safety): goldmark escapes raw
+// Two defenses guard the markdown path: goldmark escapes raw
 // HTML by default (WithUnsafe is never set), and bluemonday's UGCPolicy strips
 // what slips through — scripts, event-handler attributes, and javascript:/data:
 // URLs. chroma's class-based output is static markup (no scripts) and its

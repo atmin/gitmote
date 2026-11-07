@@ -11,7 +11,7 @@ import (
 
 // GitCloner clones over the normal git-HTTP path with a scoped token — the same
 // authenticated path any client uses, so there is no CI-only backdoor in the git
-// handler (tasks/16-ci.md Stage 0 #4).
+// handler.
 type GitCloner struct{}
 
 // Clone fetches repo into dest and checks out the exact sha. It authenticates by

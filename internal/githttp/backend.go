@@ -126,7 +126,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// http-backend. The receive advertisement needs http.receivepack enabled.
 	//
 	// The info/refs advertisement only lists refs, so it materializes refs
-	// alone — no object hydration (task 13 / docs/notes/object-hydration.md).
+	// alone — no object hydration (docs/architecture/storage.md).
 	// The upload-pack POST that transfers history still full-hydrates.
 	materialized := h.materialize
 	if endpoint == "info/refs" {
