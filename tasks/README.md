@@ -20,6 +20,10 @@ viewer-scoped dashboard with top-level globals and per-repo management. See
 
 Upcoming:
 
+- **Read-only followers** — a follower refreshes and serves reads while another
+  instance holds the lease; only writes need the lease. See
+  [read-only-followers.md](read-only-followers.md).
+
 - **Self-deploy loop** — a VPS runner can build gitmote's own image (opt-in
   above); wire build → push → redeploy with a latest-wins SHA guard and a restart
   mechanism. Design/reasoning in
