@@ -52,8 +52,8 @@ exceeds Scaleway's free tier: about 2.6M GB-s per month against 400k.
   cost.
 
 `max-scale = 1` stays, and every deploy sets it again. The lease already prevents
-two writers. But a follower serves no reads, so more instances add no read
-capacity.
+two writers. A follower serves reads, but it refuses every push. Nothing routes a
+push to the writer.
 
 ## GitHub Actions secrets
 

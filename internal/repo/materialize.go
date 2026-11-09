@@ -41,8 +41,14 @@ func (mz *Materializer) Root() string { return mz.root }
 // Materialize ensures that a valid bare repo for name exists on disk under the
 // cache root, and returns its path. It does these steps:
 //   - It creates the repo on a cache miss (rebuild on miss).
+//   - It reads the refs from the metadata layer.
 //   - It hydrates the object closure from the store.
-//   - It writes refs from the metadata layer.
+//   - It writes the refs that it read.
+//
+// The refs are read before the hydration. Objects reach the store before
+// their ref moves, so every ref read is backed by a listed object. A follower's
+// metadata can advance during the hydration. A ref read after it could then
+// point at an object that this call never hydrated.
 //
 // So a warm repo is refreshed to the current refs, and a cold repo is built
 // from scratch. It returns meta.ErrNotFound if the repo is unknown.
@@ -65,10 +71,14 @@ func (mz *Materializer) Materialize(ctx context.Context, name string) (string, e
 		return "", err
 	}
 
+	refs, err := mz.meta.ListRefs(ctx, r.ID)
+	if err != nil {
+		return "", err
+	}
 	if err := mz.hydrateObjects(ctx, name, dir); err != nil {
 		return "", err
 	}
-	if err := mz.writeRefs(ctx, dir, r); err != nil {
+	if err := writeRefs(ctx, dir, r, refs); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -211,14 +221,10 @@ func (mz *Materializer) copyObject(ctx context.Context, key, dst string) error {
 	return nil
 }
 
-// writeRefs makes the on-disk refs mirror the metadata layer (see mirrorRefs).
-// It points HEAD at the default branch of the repo. Hydration runs first, so
-// the object behind every ref is on disk.
-func (mz *Materializer) writeRefs(ctx context.Context, dir string, r *meta.Repo) error {
-	refs, err := mz.meta.ListRefs(ctx, r.ID)
-	if err != nil {
-		return err
-	}
+// writeRefs makes the on-disk refs mirror refs (see mirrorRefs). It points
+// HEAD at the default branch of the repo. Hydration runs first, so the object
+// behind every ref is on disk.
+func writeRefs(ctx context.Context, dir string, r *meta.Repo, refs []meta.Ref) error {
 	if err := mirrorRefs(dir, refs); err != nil {
 		return err
 	}

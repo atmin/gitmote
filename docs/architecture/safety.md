@@ -22,18 +22,27 @@ So the S3 backend must support atomic conditional writes: a CAS with
 cannot enforce the lease without it. A provider that lacks this primitive cannot
 safely back gitmote.
 
-### Every metadata request needs the lease
+### Writes need the lease, and reads do not
 
-gitmote gates every request that derives from metadata on the writer lease. A
-follower promotes on demand with `s3lite.TryPromote`, which uses the same CAS.
-Until it can promote, the follower refuses these requests with a retryable `503`.
-Only the liveness probes and static assets stay up. Gating them would deadlock a
-rolling deploy, because the new instance cannot promote until the old one drains.
+gitmote gates every request that may write metadata on the writer lease. These
+requests are writes:
 
-The lease gates writes for safety, and reads for freshness. A follower serves only
-the snapshot it restored at startup. It does not catch up until it promotes. So a
-read from a follower would return a stale ref. A file just pushed would appear
-missing, and a `fetch` would miss commits.
+- a push: the `git-receive-pack` advertisement and POST
+- a POST of the web UI, except sign-in and sign-out
+- any request under `/internal/ci/`, because the job claim is a `GET` that writes
+
+A follower promotes on demand with `s3lite.TryPromote`, which uses the same CAS.
+Until it can promote, the follower refuses a write with a retryable `503`.
+
+A read never takes the lease. A follower first catches up with `s3lite.Refresh`,
+and then serves the read. So a read on a follower lags the writer by at most the
+window of §4. When the catch-up fails, the read gets the retryable `503`. On the
+writer, the catch-up does nothing. A follower never writes for a read: a token
+check skips the `last_used` stamp there.
+
+The liveness probes and static assets need neither the lease nor the catch-up.
+Gating them would deadlock a rolling deploy, because the new instance cannot
+promote until the old one drains.
 
 ### Two instances take turns
 
@@ -55,12 +64,12 @@ overlap is also one writer and one follower:
 
 1. The new instance boots as a follower.
 2. On a graceful SIGTERM, the old instance releases the lease in `Close`.
-3. The new instance promotes on demand when the first request arrives.
+3. The new instance promotes on demand when the first write arrives.
 
 The overlap is safe by construction, so gitmote needs no stop-first drain.
 
-A follower serves no reads, because it holds only the snapshot that it restored.
-More instances add no read capacity, so the container pins `max-scale = 1`.
+The container pins `max-scale = 1`. A follower serves reads, but it refuses every
+push. Nothing routes a push to the writer behind one URL.
 
 ## 2. An in-process mutex linearizes writes
 

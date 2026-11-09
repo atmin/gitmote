@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Prove that two live instances on one storage root take turns as the writer
 # (docs/configuration.md, "Two instances take turns"):
-#   - A receives a push, idles, and yields the lease. B then serves that push.
+#   - A receives a push. While A holds the lease, B serves that push as a
+#     follower, and B refuses a push with a 503.
+#   - A idles and yields the lease. B then serves that push.
 #   - B moves one branch and deletes another.
 #   - The warm cache of A still holds the loose refs of its own push. A must
 #     still advertise exactly the refs of B.
@@ -17,8 +19,10 @@ export GIT_TERMINAL_PROMPT=0
 GITC=(git -c credential.helper= -c http.postBuffer=524288000 -c user.name=e2e -c user.email=e2e@example.com)
 
 CLONES=()
+KEEP=""
 cleanup() {
   local code=$?
+  if [ -n "$KEEP" ]; then kill "$KEEP" 2>/dev/null || true; fi
   echo "--- tearing down ---"
   ( cd "$ROOT" && "${DC[@]}" down -v --remove-orphans ) || true
   for d in "${CLONES[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done
@@ -85,6 +89,31 @@ wait_lease_free
 echo "--- push to A: $BRANCH and doomed @ $PUSHED ---"
 "${GITC[@]}" -C "$ROOT" push "$A" "${PUSHED}:refs/heads/${BRANCH}" "${PUSHED}:refs/heads/doomed" \
   || fail "push to A failed"
+
+echo "--- A keeps the lease; B, a follower, serves A's push and refuses a push ---"
+# A request to A every second keeps A busy, so A holds the lease throughout.
+# B never takes the lease for a read. B catches up to the replica before each
+# read, which lags A by the replication window, so poll briefly.
+( while :; do "${GITC[@]}" ls-remote "$A" >/dev/null 2>&1 || true; sleep 1; done ) &
+KEEP=$!
+SEEN=""
+for _ in $(seq 1 10); do
+  SEEN="$("${GITC[@]}" ls-remote "$B" "refs/heads/${BRANCH}" | cut -f1)" || fail "ls-remote against follower B failed"
+  [ "$SEEN" = "$PUSHED" ] && break
+  sleep 1
+done
+[ "$SEEN" = "$PUSHED" ] || fail "follower B advertises ${SEEN:-nothing}, want A's push $PUSHED"
+CLONE_F="$(mktemp -d)"; CLONES+=("$CLONE_F")
+clone_into "$B" "$CLONE_F"
+[ "$(git -C "$CLONE_F" rev-parse HEAD)" = "$PUSHED" ] || fail "follower B serves $(git -C "$CLONE_F" rev-parse HEAD), want A's push $PUSHED"
+LS="$("${DC[@]}" run --rm -T mc "mc ls local/gitmote/meta/" 2>/dev/null)" || fail "listing the lease failed"
+grep -q 'lock.json' <<<"$LS" || fail "no instance holds the lease while A is busy"
+"${GITC[@]}" -C "$CLONE_F" commit -q --allow-empty -m "e2e: follower push"
+if OUT="$("${GITC[@]}" -C "$CLONE_F" push "$B" "HEAD:refs/heads/${BRANCH}" 2>&1)"; then
+  fail "follower B accepted a push while A holds the lease"
+fi
+grep -q '503' <<<"$OUT" || fail "push to follower B failed without a 503: $OUT"
+kill "$KEEP"; wait "$KEEP" 2>/dev/null || true; KEEP=""
 
 echo "--- A yields when idle; B serves A's push ---"
 wait_lease_free

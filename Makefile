@@ -88,6 +88,7 @@ e2e-restore:
 	./scripts/e2e-restore.sh
 
 # Two live instances on one storage root take turns as the writer:
+#   - A follower serves reads while the other instance holds the lease.
 #   - Each instance yields the lease when idle.
 #   - Each instance serves the pushes that the other received.
 #   - A warm cache never advertises a ref that the other instance moved or

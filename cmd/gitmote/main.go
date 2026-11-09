@@ -223,7 +223,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 	defer stop()
 
 	act := newLeaseActivity()
-	gitHandler, ui, reportAPI, gate, closeMeta, err := buildGitHandler(ctx, logger, act)
+	gitHandler, ui, reportAPI, gate, refresh, closeMeta, err := buildGitHandler(ctx, logger, act)
 	if err != nil {
 		return err
 	}
@@ -235,7 +235,7 @@ func run(ctx context.Context, logger *slog.Logger, addr string) error {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: act.track(newHandler(gitHandler, ui, reportAPI, gate)),
+		Handler: act.track(newHandler(gitHandler, ui, reportAPI, gate, refresh)),
 	}
 
 	if reportAPI != nil {
@@ -399,12 +399,11 @@ func yieldWhenIdle(ctx context.Context, act *leaseActivity, md *meta.Metadata, l
 // gitHandler is non-nil, it serves the git smart-HTTP endpoints at "/". The
 // exact health and version routes stay more specific.
 //
-// gate decides whether this instance may answer a metadata-derived request (see
-// leaderGate). A follower serves a frozen, stale snapshot. This happens after a
-// deploy, or while another instance on the same storage root writes. So a
-// follower must not answer with stale refs. The gate promotes on demand when it
-// can. Otherwise, it refuses.
-func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.ReportAPI, gate func(context.Context) bool) http.Handler {
+// gate and refresh decide whether this instance may answer a metadata request
+// (see leaderGate). gate admits a write: it promotes on demand when it can, and
+// otherwise it refuses. refresh admits a read: a follower first catches up to
+// the replica, so it never answers with stale refs.
+func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.ReportAPI, gate, refresh func(context.Context) bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -421,14 +420,24 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.Report
 	if gitHandler != nil {
 		mux.Handle("/", gitHandler)
 	}
-	return leaderGate(mux, gate)
+	return leaderGate(mux, gate, refresh)
 }
 
-// leaderGate never serves stale data. Only the writer (leader) answers requests
-// that read or write the metadata DB. A follower restored a snapshot at startup.
-// It does not catch up until it promotes (s3lite RoleAuto), so its refs can lag
-// the true tip. A browse would show a just-pushed file as missing, and a fetch
-// would miss commits. So instead, a follower returns 503 with Retry-After.
+// leaderGate never serves stale data, and only the writer (leader) writes the
+// metadata DB. It splits requests by isWrite.
+//
+// A read never takes the lease. On a follower, refresh first catches up to the
+// replica, and then the read is served. So the read lags the writer by at most
+// the replication window. On the writer, refresh does nothing. When the refresh
+// fails, the read gets 503 with Retry-After.
+//
+// A write needs the lease, and gate promotes on demand. During a graceful
+// deploy, the old writer releases its lease before the first request reaches
+// the new instance. An idle writer also yields its lease (see leaseActivity).
+// In both cases, gate acquires the lease here, blocks for the restore, and
+// serves. It still returns 503 when another holder really has the lease:
+//   - Another instance is busy, until it is idle for idleYieldAfter.
+//   - An old instance was hard-killed, until its lease expires.
 //
 // These paths must stay up on a follower:
 //   - The liveness probes, which are Scaleway's health check. Gating them would
@@ -437,19 +446,24 @@ func newHandler(gitHandler http.Handler, ui *webui.Handler, reportAPI *ci.Report
 //   - Static assets, which carry no metadata.
 //
 // A nil gate (unreplicated dev, sole writer) means that this instance is always
-// the leader.
-//
-// The gate promotes on demand. During a graceful deploy, the old writer
-// releases its lease. It does so before the first request reaches the new
-// instance.
-// An idle writer also yields its lease (see leaseActivity). In both cases, the
-// gate acquires the lease here, blocks for the restore, and serves. It still
-// returns 503 when another holder really has the lease:
-//   - Another instance is busy, until it is idle for idleYieldAfter.
-//   - An old instance was hard-killed, until its lease expires.
-func leaderGate(next http.Handler, gate func(context.Context) bool) http.Handler {
+// the leader. Then refresh is nil too.
+func leaderGate(next http.Handler, gate, refresh func(context.Context) bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if alwaysServable(r.URL.Path) || gate == nil || gate(r.Context()) {
+		if alwaysServable(r.URL.Path) || gate == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !isWrite(r) {
+			if refresh(r.Context()) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			w.Header().Set("Retry-After", "2")
+			http.Error(w, "gitmote could not catch up to the writer — retry shortly",
+				http.StatusServiceUnavailable)
+			return
+		}
+		if gate(r.Context()) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -457,6 +471,33 @@ func leaderGate(next http.Handler, gate func(context.Context) bool) http.Handler
 		http.Error(w, "gitmote is not the writer right now (another instance holds the lease) — retry shortly",
 			http.StatusServiceUnavailable)
 	})
+}
+
+// isWrite reports whether a request may write the metadata DB, so that it needs
+// the writer lease. These requests are writes:
+//   - a git-receive-pack request: the info/refs advertisement and the push POST
+//   - any request under /internal/ci/: the job claim is a GET, and it writes
+//   - any other method than GET or HEAD, except the three POSTs below
+//
+// These POSTs are reads: the git-upload-pack POST of a fetch, /login and
+// /logout. A sign-in verifies a token, and TouchToken writes nothing on a
+// follower. The session lives in a signed cookie. Every UI GET page only reads.
+func isWrite(r *http.Request) bool {
+	p := r.URL.Path
+	switch {
+	case strings.HasPrefix(p, "/internal/ci/"):
+		return true
+	case strings.HasSuffix(p, "/git-receive-pack"):
+		return true
+	case strings.HasSuffix(p, "/info/refs") && r.URL.Query().Get("service") == "git-receive-pack":
+		return true
+	case r.Method == http.MethodGet || r.Method == http.MethodHead:
+		return false
+	case r.Method == http.MethodPost && (p == "/login" || p == "/logout" || strings.HasSuffix(p, "/git-upload-pack")):
+		return false
+	default:
+		return true
+	}
 }
 
 // alwaysServable reports whether a follower may answer a path. Those paths are
@@ -479,12 +520,12 @@ func alwaysServable(p string) bool {
 // metadata replicates to a replica derived from the storage root (see
 // replicaTarget). The push path installs the pre-receive hook binary,
 // gitmote-hook, which is beside this binary.
-func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivity) (http.Handler, *webui.Handler, *ci.ReportAPI, func(context.Context) bool, func() error, error) {
+func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivity) (http.Handler, *webui.Handler, *ci.ReportAPI, func(context.Context) bool, func(context.Context) bool, func() error, error) {
 	noop := func() error { return nil }
 
 	if os.Getenv("GITMOTE_S3_BUCKET") == "" {
 		logger.Warn("GITMOTE_S3_BUCKET unset; git endpoints disabled (health/version only)")
-		return nil, nil, nil, nil, noop, nil
+		return nil, nil, nil, nil, nil, noop, nil
 	}
 
 	// With RoleAuto, this instance becomes the writer when it can acquire the
@@ -495,7 +536,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	// writer. Tests and local dev therefore behave the same.
 	md, err := meta.Open(ctx, metaConfigFromEnv(logger, s3lite.RoleAuto))
 	if err != nil {
-		return nil, nil, nil, nil, noop, fmt.Errorf("metadata: %w", err)
+		return nil, nil, nil, nil, nil, noop, fmt.Errorf("metadata: %w", err)
 	}
 	md.OnPromote(func() {
 		logger.Info("became writer: acquired the lease", "generation", md.Generation())
@@ -504,8 +545,9 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 		logger.Warn("lost the writer lease; now read-only", "error", err)
 	})
 
-	// gate answers the question "may this instance serve a metadata request?".
-	// It also promotes on demand when it can. The metadata opens with
+	// gate answers the question "may this instance serve a write?". It also
+	// promotes on demand when it can. A read goes through refresh below
+	// instead, and never promotes. The metadata opens with
 	// OnDemandPromotion, so the gate is the only way that a follower becomes the
 	// writer after Open.
 	//
@@ -517,7 +559,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	//
 	// The IsLeader fast path in TryPromote makes the steady-state call free.
 	// TryPromote returns false, not an error, while another holder still has the
-	// lease. So a follower under a busy writer stays quiet and answers 503. The
+	// lease. So a follower under a busy writer refuses a write with 503. The
 	// call is bounded, so a slow restore falls back to 503 and does not hang the
 	// request.
 	gate := func(reqCtx context.Context) bool {
@@ -529,6 +571,18 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 		}
 		return ok
 	}
+	// refresh admits a read. It never promotes. On a follower, it catches up to
+	// the replica before the read is served. On the writer, it does nothing. The
+	// call has the same bound as a promotion, so a slow S3 falls back to 503.
+	refresh := func(reqCtx context.Context) bool {
+		rctx, cancel := context.WithTimeout(reqCtx, promoteTimeout)
+		defer cancel()
+		if err := md.Refresh(rctx); err != nil {
+			logger.Warn("follower refresh failed; refusing read", "error", err)
+			return false
+		}
+		return true
+	}
 
 	// Objects, CI logs, and the metadata replica all live under the storage root
 	// (GITMOTE_S3_BUCKET, as "bucket" or "bucket/base"). So they share fate. If
@@ -538,7 +592,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	objs, err := store.NewS3FromEnv(ctx)
 	if err != nil {
 		_ = md.Close()
-		return nil, nil, nil, nil, noop, fmt.Errorf("object store: %w", err)
+		return nil, nil, nil, nil, nil, noop, fmt.Errorf("object store: %w", err)
 	}
 
 	// The first-run auto-bootstrap makes a fresh instance on an empty bucket usable
@@ -549,7 +603,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	writer, err := githttp.NewWriter(md, objs, hookBinaryPath(), sockPath(), logger)
 	if err != nil {
 		_ = md.Close()
-		return nil, nil, nil, nil, noop, fmt.Errorf("write path: %w", err)
+		return nil, nil, nil, nil, nil, noop, fmt.Errorf("write path: %w", err)
 	}
 	materializer := repo.New(md, objs, cachePath())
 	guard := auth.NewGuard(md)
@@ -562,7 +616,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	if err != nil {
 		_ = writer.Close()
 		_ = md.Close()
-		return nil, nil, nil, nil, noop, fmt.Errorf("ci secrets: %w", err)
+		return nil, nil, nil, nil, nil, noop, fmt.Errorf("ci secrets: %w", err)
 	}
 	secretsSvc := secrets.NewService(keyring, md)
 
@@ -582,7 +636,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	if jobDefID != "" && gitmoteURL == "" {
 		_ = writer.Close()
 		_ = md.Close()
-		return nil, nil, nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but GITMOTE_URL is missing")
+		return nil, nil, nil, nil, nil, noop, fmt.Errorf("SCW_CI_JOB_DEFINITION_ID is set but GITMOTE_URL is missing")
 	}
 	// WORKER_SECRET authenticates the runner's report-back. It has no use without
 	// a CI substrate, so resolve it lazily, only when a substrate is configured.
@@ -598,7 +652,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 		if err != nil {
 			_ = writer.Close()
 			_ = md.Close()
-			return nil, nil, nil, nil, noop, fmt.Errorf("worker secret: %w", err)
+			return nil, nil, nil, nil, nil, noop, fmt.Errorf("worker secret: %w", err)
 		}
 	}
 	var trigger ci.Trigger = ci.NoopTrigger{}
@@ -690,13 +744,13 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 	})
 	if err != nil {
 		_ = cleanup()
-		return nil, nil, nil, nil, noop, err
+		return nil, nil, nil, nil, nil, noop, err
 	}
 
 	ui, err := buildUI(ctx, md, materializer, objs, liveLogs, guard, secretsSvc, logger)
 	if err != nil {
 		_ = cleanup()
-		return nil, nil, nil, nil, noop, err
+		return nil, nil, nil, nil, nil, noop, err
 	}
 
 	// Hand the lease back whenever this writer is idle. The loop stops before the
@@ -712,7 +766,7 @@ func buildGitHandler(ctx context.Context, logger *slog.Logger, act *leaseActivit
 		<-yieldDone
 		return cleanup()
 	}
-	return handler, ui, reportAPI, gate, closeAll, nil
+	return handler, ui, reportAPI, gate, refresh, closeAll, nil
 }
 
 // buildUI constructs the management UI. Its session cookie

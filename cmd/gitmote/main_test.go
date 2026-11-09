@@ -25,7 +25,7 @@ import (
 )
 
 func TestHealthz(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil, nil, nil, nil))
+	srv := httptest.NewServer(newHandler(nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/healthz")
@@ -40,7 +40,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil, nil, nil, nil))
+	srv := httptest.NewServer(newHandler(nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/version")
@@ -55,7 +55,7 @@ func TestVersion(t *testing.T) {
 }
 
 func TestUnknownRouteNotFound(t *testing.T) {
-	srv := httptest.NewServer(newHandler(nil, nil, nil, nil))
+	srv := httptest.NewServer(newHandler(nil, nil, nil, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/nope")
@@ -75,7 +75,7 @@ func TestGitHandlerMountedAtRoot(t *testing.T) {
 	gitHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	srv := httptest.NewServer(newHandler(gitHandler, nil, nil, nil))
+	srv := httptest.NewServer(newHandler(gitHandler, nil, nil, nil, nil))
 	defer srv.Close()
 
 	health, err := http.Get(srv.URL + "/healthz")
@@ -119,7 +119,7 @@ func TestUIRoutesDoNotShadowGitEndpoints(t *testing.T) {
 	gitHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	srv := httptest.NewServer(newHandler(gitHandler, ui, nil, nil))
+	srv := httptest.NewServer(newHandler(gitHandler, ui, nil, nil, nil))
 	defer srv.Close()
 
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -150,40 +150,145 @@ func TestUIRoutesDoNotShadowGitEndpoints(t *testing.T) {
 }
 
 func TestLeaderGate(t *testing.T) {
-	// A follower must not answer metadata-derived requests with a stale snapshot.
-	// So the catch-all for git and reads gets a 503. Health and version stay up,
-	// so a rolling deploy can still promote. Gating them would deadlock it.
+	// A follower serves a read after it catches up, and never promotes for it. A
+	// write needs the lease. Health and version stay up, so a rolling deploy can
+	// still promote. Gating them would deadlock it.
 	gitHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	leader := false
-	srv := httptest.NewServer(newHandler(gitHandler, nil, nil, func(context.Context) bool { return leader }))
+	var (
+		leaseFree    = false // whether gate can promote
+		refreshOK    = true  // whether refresh succeeds
+		gateCalls    = 0
+		refreshCalls = 0
+	)
+	gate := func(context.Context) bool { gateCalls++; return leaseFree }
+	refresh := func(context.Context) bool { refreshCalls++; return refreshOK }
+	srv := httptest.NewServer(newHandler(gitHandler, nil, nil, gate, refresh))
 	defer srv.Close()
 
-	get := func(path string) int {
-		resp, err := http.Get(srv.URL + path)
+	do := func(method, path string) *http.Response {
+		req, err := http.NewRequest(method, srv.URL+path, nil)
 		if err != nil {
-			t.Fatalf("GET %s: %v", path, err)
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
 		}
 		resp.Body.Close()
-		return resp.StatusCode
+		return resp
+	}
+	const (
+		fetchAdv = "/some/repo/info/refs?service=git-upload-pack"
+		fetch    = "/some/repo/git-upload-pack"
+		pushAdv  = "/some/repo/info/refs?service=git-receive-pack"
+		push     = "/some/repo/git-receive-pack"
+	)
+
+	// The probes stay up and touch neither the lease nor the replica.
+	for _, p := range []string{"/healthz", "/version"} {
+		if code := do(http.MethodGet, p).StatusCode; code != http.StatusOK {
+			t.Errorf("follower %s = %d, want 200 (must stay up for the deploy)", p, code)
+		}
+	}
+	if gateCalls != 0 || refreshCalls != 0 {
+		t.Errorf("probes called gate %d and refresh %d times, want 0 and 0", gateCalls, refreshCalls)
 	}
 
-	// As a follower, the probes stay up, and the git read path is refused.
-	if code := get("/healthz"); code != http.StatusOK {
-		t.Errorf("follower /healthz = %d, want 200 (must stay up for the deploy)", code)
+	// A follower refreshes, then serves a read. It never promotes for a read.
+	if code := do(http.MethodGet, fetchAdv).StatusCode; code != http.StatusTeapot {
+		t.Errorf("follower fetch advertisement = %d, want %d (served)", code, http.StatusTeapot)
 	}
-	if code := get("/version"); code != http.StatusOK {
-		t.Errorf("follower /version = %d, want 200", code)
+	if code := do(http.MethodPost, fetch).StatusCode; code != http.StatusTeapot {
+		t.Errorf("follower fetch POST = %d, want %d (served)", code, http.StatusTeapot)
 	}
-	if code := get("/some/repo/info/refs"); code != http.StatusServiceUnavailable {
-		t.Errorf("follower git read = %d, want 503", code)
+	if refreshCalls != 2 || gateCalls != 0 {
+		t.Errorf("reads called refresh %d and gate %d times, want 2 and 0", refreshCalls, gateCalls)
 	}
 
-	// After promotion, the same route is served.
-	leader = true
-	if code := get("/some/repo/info/refs"); code != http.StatusTeapot {
-		t.Errorf("leader git read = %d, want %d (served)", code, http.StatusTeapot)
+	// A failed refresh refuses the read with a retryable 503.
+	refreshOK = false
+	resp := do(http.MethodGet, fetchAdv)
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+		t.Errorf("read after a failed refresh = %d (Retry-After %q), want 503 with Retry-After",
+			resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	refreshOK = true
+
+	// A write with the lease held elsewhere gets a retryable 503. It never
+	// refreshes.
+	refreshCalls = 0
+	for _, p := range []string{pushAdv, push} {
+		method := http.MethodGet
+		if p == push {
+			method = http.MethodPost
+		}
+		resp := do(method, p)
+		if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+			t.Errorf("follower write %s %s = %d, want 503 with Retry-After", method, p, resp.StatusCode)
+		}
+	}
+	if gateCalls != 2 || refreshCalls != 0 {
+		t.Errorf("writes called gate %d and refresh %d times, want 2 and 0", gateCalls, refreshCalls)
+	}
+
+	// A write promotes when the lease is free, and is served.
+	leaseFree = true
+	if code := do(http.MethodPost, push).StatusCode; code != http.StatusTeapot {
+		t.Errorf("write with a free lease = %d, want %d (served)", code, http.StatusTeapot)
+	}
+}
+
+func TestIsWrite(t *testing.T) {
+	// A misclassified write would reach a follower's read-only database, so
+	// every request that may write must need the lease.
+	cases := []struct {
+		method, path string
+		want         bool
+	}{
+		// Git reads.
+		{"GET", "/repo/info/refs?service=git-upload-pack", false},
+		{"POST", "/repo/git-upload-pack", false},
+		// Git writes.
+		{"GET", "/repo/info/refs?service=git-receive-pack", true},
+		{"POST", "/repo/git-receive-pack", true},
+		// The CI report API. The claim is a GET, and it writes.
+		{"GET", "/internal/ci/jobs/7", true},
+		{"POST", "/internal/ci/jobs/7/log", true},
+		{"POST", "/internal/ci/jobs/7/complete", true},
+		// UI pages only read.
+		{"GET", "/", false},
+		{"GET", "/login", false},
+		{"GET", "/users", false},
+		{"GET", "/tokens", false},
+		{"GET", "/repo", false},
+		{"GET", "/repo/settings", false},
+		{"GET", "/repo/tree/main/docs", false},
+		{"GET", "/repo/runs/3", false},
+		{"HEAD", "/repo/raw/main/README.md", false},
+		// Sign-in and sign-out write nothing on a follower.
+		{"POST", "/login", false},
+		{"POST", "/logout", false},
+		// Every other UI POST writes.
+		{"POST", "/", true},
+		{"POST", "/users", true},
+		{"POST", "/tokens", true},
+		{"POST", "/tokens/revoke", true},
+		{"POST", "/repo/settings", true},
+		{"POST", "/repo/access", true},
+		{"POST", "/repo/access/revoke", true},
+		{"POST", "/repo/secrets", true},
+		{"POST", "/repo/secrets/delete", true},
+		// An unknown method counts as a write.
+		{"PUT", "/repo/settings", true},
+		{"DELETE", "/repo", true},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(c.method, c.path, nil)
+		if got := isWrite(r); got != c.want {
+			t.Errorf("isWrite(%s %s) = %v, want %v", c.method, c.path, got, c.want)
+		}
 	}
 }
 

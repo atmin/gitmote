@@ -311,6 +311,82 @@ func TestMaterializeMirrorsMetaRefs(t *testing.T) {
 	}
 }
 
+// afterListStore runs hook once, after the first List. It stands in for a
+// concurrent request whose refresh lands a push between hydration and the ref
+// read.
+type afterListStore struct {
+	store.Store
+	hook func()
+}
+
+func (s *afterListStore) List(ctx context.Context, prefix string) ([]string, error) {
+	keys, err := s.Store.List(ctx, prefix)
+	if s.hook != nil {
+		hook := s.hook
+		s.hook = nil
+		hook()
+	}
+	return keys, err
+}
+
+// TestMaterializeRefsHaveObjects covers a follower whose metadata advances
+// during a materialize. A push lands after the hydration lists the store. The
+// cache must not write a ref whose objects it never hydrated.
+func TestMaterializeRefsHaveObjects(t *testing.T) {
+	ctx := context.Background()
+	m := openMeta(t)
+	s := &afterListStore{Store: store.NewMem()}
+	const repoName = "dotfiles"
+	seedRepo(t, m, s, repoName, false)
+	r, err := m.GetRepo(ctx, repoName)
+	if err != nil {
+		t.Fatalf("GetRepo: %v", err)
+	}
+
+	// The late push is a commit with its own content, packed into one pack.
+	src := t.TempDir()
+	git(t, src, "init", "-b", "late", ".")
+	if err := os.WriteFile(filepath.Join(src, "late.txt"), []byte("late\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, src, "add", "late.txt")
+	git(t, src, "commit", "-m", "late")
+	git(t, src, "repack", "-ad")
+	late := git(t, src, "rev-parse", "HEAD")
+	packs, err := filepath.Glob(filepath.Join(src, ".git", "objects", "pack", "*"))
+	if err != nil || len(packs) == 0 {
+		t.Fatalf("late pack files: %v %v", packs, err)
+	}
+	s.hook = func() {
+		// Content first, then the pointer.
+		for _, p := range packs {
+			data, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatalf("read %s: %v", p, err)
+			}
+			if err := s.Put(ctx, repoName+"/objects/pack/"+filepath.Base(p), bytes.NewReader(data)); err != nil {
+				t.Fatalf("Put %s: %v", p, err)
+			}
+		}
+		if err := m.CASRef(ctx, r.ID, "refs/heads/late", meta.ZeroSHA, late); err != nil {
+			t.Fatalf("CASRef late: %v", err)
+		}
+	}
+
+	dir, err := New(m, s, t.TempDir()).Materialize(ctx, repoName)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	for _, line := range strings.Split(git(t, dir, "for-each-ref", "--format=%(objectname) %(refname)"), "\n") {
+		sha, ref, _ := strings.Cut(line, " ")
+		cmd := exec.Command("git", "cat-file", "-e", sha)
+		cmd.Dir = dir
+		if err := cmd.Run(); err != nil {
+			t.Errorf("%s points at %s, which is not on disk", ref, sha)
+		}
+	}
+}
+
 func TestMaterializeUnknownRepo(t *testing.T) {
 	mz := New(openMeta(t), store.NewMem(), t.TempDir())
 	if _, err := mz.Materialize(context.Background(), "nope"); !errors.Is(err, meta.ErrNotFound) {

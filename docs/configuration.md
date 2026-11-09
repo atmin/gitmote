@@ -38,11 +38,16 @@ otherwise. The lease is litestream's `s3.Leaser`: a compare-and-swap on
 So the S3 provider must support atomic conditional writes. AWS S3 and Scaleway
 do. A provider without them cannot safely back gitmote.
 
-`leaderGate` gates every response that reads metadata. On a follower, a request
-calls `s3lite.TryPromote` at once. When the instance gets the lease, it restores
-the latest state and serves the request. When another instance still holds the
-lease, the request gets a retryable `503`. Liveness probes and static assets never
-need the lease.
+`leaderGate` splits requests into reads and writes:
+
+- A write calls `s3lite.TryPromote` at once on a follower. With the lease, it
+  restores the latest state and serves. Without it, the write gets a retryable
+  `503`.
+- A read never takes the lease. A follower catches up with `s3lite.Refresh`, then
+  serves. The read lags the writer by under a second.
+
+A write is a push, a web UI POST other than sign-in and sign-out, or a CI report
+call. Liveness probes and static assets need neither the lease nor the catch-up.
 
 ### Two instances take turns
 
@@ -55,9 +60,9 @@ request.
 
 This lets a local container and a cloud instance share one storage root:
 
-- A request to one instance while the other is busy gets the `503`. It succeeds
-  once the other has been idle for 5 s.
-- The first request after an idle period takes the lease. The instance resumes in
+- A write to one instance while the other is busy gets the `503`. It succeeds
+  once the other has been idle for 5 s. A read succeeds at once.
+- The first write after an idle period takes the lease. The instance resumes in
   place when nobody else wrote, and restores when someone did.
 - The repo cache rewrites its refs from the metadata database on every request.
   So it never serves a ref that the other instance moved or deleted.
@@ -71,12 +76,13 @@ keeps the single writer:
 1. The new instance starts as a follower, because the old one holds the lease.
 2. On a graceful SIGTERM, the old instance's `Close` flushes the WAL and releases
    the lease last.
-3. The first metadata request to the new instance takes the free lease.
-   `TryPromote` blocks for at most `promoteTimeout` while it restores, then serves.
+3. The first write to the new instance takes the free lease. `TryPromote` blocks
+   for at most `promoteTimeout` while it restores, then serves. Reads on the new
+   instance never wait for the lease.
 
-A graceful deploy needs no drain step and returns no `503`: the first request
-waits for the restore. After a hard kill, the lease stays held until its TTL of at
-most 30 s ends. Requests in that window get the retryable `503`.
+A graceful deploy needs no drain step and returns no `503`: the first write waits
+for the restore. After a hard kill, the lease stays held until its TTL of at most
+30 s ends. Writes in that window get the retryable `503`, and reads succeed.
 
 ### Writes are ordered
 
