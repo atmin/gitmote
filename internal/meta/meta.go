@@ -183,6 +183,15 @@ func (m *Metadata) Generation() int64 { return m.db.Generation() }
 // promotes, so bound ctx.
 func (m *Metadata) TryPromote(ctx context.Context) (bool, error) { return m.db.TryPromote(ctx) }
 
+// Refresh brings a follower up to the latest committed state of the replica.
+// Call it before a read on a follower. It never promotes. On the writer, it
+// returns nil and makes no network call. After a failed Refresh, the follower
+// keeps its current state. Bound ctx.
+func (m *Metadata) Refresh(ctx context.Context) error {
+	_, err := m.db.Refresh(ctx)
+	return err
+}
+
 // YieldLease hands the writer lease back while this instance stays up as a
 // follower. Another instance on the same storage root can then write next.
 // The final sync runs before the lock is released, so the next writer sees

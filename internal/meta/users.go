@@ -231,8 +231,13 @@ func (m *Metadata) TokenBySelector(ctx context.Context, selector string) (*Token
 }
 
 // TouchToken stamps a token's last_used with the current time. Call it after a
-// successful verification.
+// successful verification. A follower serves reads on a read-only database, so
+// there it returns nil and writes nothing. last_used then records only the uses
+// that reached the writer.
 func (m *Metadata) TouchToken(ctx context.Context, tokenID int64) error {
+	if !m.db.IsLeader() {
+		return nil
+	}
 	_, err := m.db.ExecContext(ctx,
 		`UPDATE tokens SET last_used = ? WHERE id = ?`, now(), tokenID)
 	return err

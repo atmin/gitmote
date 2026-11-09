@@ -322,13 +322,22 @@ func TestTokenStorage(t *testing.T) {
 		t.Errorf("ListTokens = %+v, want one 'laptop' token with last_used unset", before)
 	}
 
-	// TouchToken stamps last_used.
+	// TouchToken stamps last_used. An unreplicated database is the sole writer,
+	// so IsLeader is true and the touch writes.
+	if !m.IsLeader() {
+		t.Fatal("IsLeader = false for an unreplicated database, want true")
+	}
 	if err := m.TouchToken(ctx, tok.ID); err != nil {
 		t.Fatalf("TouchToken: %v", err)
 	}
 	after, _ := m.ListTokens(ctx, u.ID)
 	if after[0].LastUsed == nil {
 		t.Error("last_used still unset after TouchToken")
+	}
+
+	// Refresh on the writer is a no-op that succeeds.
+	if err := m.Refresh(ctx); err != nil {
+		t.Errorf("Refresh on the writer = %v, want nil", err)
 	}
 
 	// An unknown selector is ErrNotFound.
