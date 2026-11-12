@@ -36,18 +36,14 @@ jobs:
       - run: make e2e-handoff
       - run: make e2e-build
 
-  # Deploy the single writer to Scaleway on every green push to master
-  # (docs/deploy-scaleway.md). The lease provides the safety, not a procedure.
-  # The server runs in s3lite RoleAuto. A rolling deploy runs the old and the new
-  # instance together for a short time. That overlap is one writer and one
-  # read-only follower, never two writers (docs/architecture/safety.md §1). The deploy also asserts max-scale=1,
-  # because read replicas need fresh followers first.
-  deploy:
+  # Publish the server image to GHCR on every green push to master. CI deploys
+  # nothing. An operator pulls the image (docs/deploy-scaleway.md#deploy).
+  publish:
     if: github.ref == 'refs/heads/master'
     needs: [ci, e2e]
     runs-on: ubuntu-latest
     # packages: write publishes the public image to GHCR through the built-in
-    # GITHUB_TOKEN. Scaleway then pulls it anonymously (docs/deploy-scaleway.md).
+    # GITHUB_TOKEN. Anyone then pulls it anonymously.
     # New GHCR packages are private by default. Make gitmote public once by hand.
     permissions:
       contents: read
@@ -64,7 +60,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push public image (amd64 for Scaleway + arm64 for local dev)
+      - name: Build & push public image (amd64 and arm64)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -75,35 +71,3 @@ jobs:
           tags: |
             ghcr.io/atmin/gitmote:master
             ghcr.io/atmin/gitmote:${{ github.sha }}
-
-      - name: Install Scaleway CLI
-        run: |
-          SCW_URL=$(curl -s https://api.github.com/repos/scaleway/scaleway-cli/releases/latest \
-            | grep -o '"browser_download_url": *"[^"]*linux_amd64"' | cut -d'"' -f4)
-          sudo curl -fsSL "$SCW_URL" -o /usr/local/bin/scw
-          sudo chmod +x /usr/local/bin/scw
-
-      # There is no drain step. The writer lease makes the rolling deploy safe by
-      # construction:
-      #   - The new instance boots as a read-only follower, because the old one
-      #     holds the lease.
-      #   - The old instance releases the lease on its graceful SIGTERM.
-      #   - The new instance then promotes itself.
-      # There are never two writers (docs/architecture/safety.md §1,
-      # docs/configuration.md).
-      #
-      # A unique image reference, tagged with the SHA, makes this a clean
-      # replacement. Every deploy re-asserts max-scale=1, the steady-state pin.
-      # min-scale=0 idles to zero between uses. --wait blocks until the new
-      # deployment serves. See docs/configuration.md for the rolling deploy.
-      - name: Deploy (single writer)
-        env:
-          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
-          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_ORGANIZATION_ID }}
-          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_PROJECT_ID }}
-          SCW_DEFAULT_REGION: fr-par
-        run: |
-          scw container container update ${{ secrets.SCW_CONTAINER_ID }} \
-            image=ghcr.io/atmin/gitmote:${{ github.sha }} \
-            min-scale=0 max-scale=1 --wait

@@ -131,7 +131,7 @@ until one of these variables turns a trigger on (see [CI](#ci)).
 | --- | --- |
 | `SCW_CI_JOB_DEFINITION_ID` | The Scaleway Serverless Job definition. When set, each CI job runs as a Scaleway job. It needs `GITMOTE_URL`. |
 | `GITMOTE_URL` | The public base URL, such as `https://git.example.com`, where the runner clones and reports. Every CI trigger needs it. Set without a job definition, it runs jobs locally with `act`. |
-| `SCW_SECRET_KEY` | Secret. The Scaleway API secret key, a UUID, that starts the jobs. The deploy pipeline uses the same key. |
+| `SCW_SECRET_KEY` | Secret. The Scaleway API secret key, a UUID, that starts the jobs. A deploy uses the same key. |
 | `SCW_REGION` | The region where jobs start. The default is `AWS_REGION`. |
 | `GITMOTE_CI_SECRET_KEY_V<n>` | Secret. The master key for per-repo CI secrets: base64 of 32 bytes. It lives only in the env, and gitmote never stores it ([safety.md §5](architecture/safety.md)). To rotate it, add `_V2` and so on. The highest number is current, and old envelopes still decrypt. Without a key, the secrets UI is off and jobs get no secrets. |
 | `GITMOTE_REPO_SECRET_<REPO>__<NAME>` | A CI secret for one repo, set in the env. gitmote never stores it, and it needs no master key: the host env is already the trust boundary ([safety.md §5](architecture/safety.md)). |

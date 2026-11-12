@@ -12,7 +12,7 @@ of them in the same change.
 docs/
   README.md            The index: which doc to read for which task
   configuration.md     Every deployment: env vars, single writer, CI, first admin
-  deploy-scaleway.md   One deployment: Scaleway, GitHub Actions, self-deploy
+  deploy-scaleway.md   One deployment: Scaleway, by hand or self-deploy
   architecture/        The design and its decisions, the source of truth
 ```
 

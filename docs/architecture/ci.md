@@ -31,7 +31,7 @@ runs it. A repo mirrored to GitHub uses the two directories this way:
 - A workflow in `.gitmote` runs only on gitmote.
 - A workflow in `.github` runs only on GitHub.
 
-So no workflow runs on both forges. gitmote's own repo keeps its GitHub deploy
+So no workflow runs on both forges. gitmote's own repo keeps its GitHub publish
 pipeline in `.github`, so that pipeline never runs on gitmote.
 
 `act` reads the directory through `--workflows`. The YAML is byte-identical to
@@ -297,20 +297,16 @@ exists.
 
 gitmote has no cloud self-deploy loop, in which a green `master` run rebuilds
 gitmote's own image in the Job. The Serverless Job cannot build (see above).
-Production deploys run on GitHub Actions
-([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)):
-
-1. The workflow builds the public image and pushes it to GHCR
-   (`ghcr.io/atmin/gitmote`).
-2. It runs `scw container update`, which pulls the new image.
-
-The leased writer keeps the swap safe (see
-[configuration.md](../configuration.md#rolling-deploys)). The GitHub mirror is the
-everyday deployer.
+GitHub Actions builds the public image and pushes it to GHCR
+(`ghcr.io/atmin/gitmote`), through
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml). It deploys nothing.
+An operator runs `scw container update`, which pulls the new image
+([deploy-scaleway.md](../deploy-scaleway.md#deploy)). The leased writer keeps the
+swap safe (see [configuration.md](../configuration.md#rolling-deploys)).
 
 ### A local instance can deploy gitmote
 
-A local instance is a real builder. So it can deploy gitmote as a fallback, and
+A local instance is a real builder. So it can build and deploy gitmote, and
 `make self-deploy` automates this:
 
 1. It runs a throwaway instance with `GITMOTE_CI_ALLOW_BUILDS` on.
@@ -320,20 +316,15 @@ A local instance is a real builder. So it can deploy gitmote as a fallback, and
 3. It pushes `HEAD` to `self-deploy`.
 
 The push triggers
-[`.gitmote/workflows/deploy.yml`](../../.gitmote/workflows/deploy.yml). This is
-the GitHub deploy job, gated on `self-deploy` instead of `master`. It has three
-steps:
+[`.gitmote/workflows/deploy.yml`](../../.gitmote/workflows/deploy.yml), gated on
+`self-deploy`. It has three steps:
 
 1. It builds the amd64 image.
 2. It pushes the image to GHCR.
-3. It runs the same `scw container update`.
+3. It runs the `scw container update` of a deploy by hand.
 
-The workflow runs only on the `self-deploy` branch. So it never overlaps the
-GitHub path, and nothing deploys twice. The same writer lease makes its rolling
-swap safe.
-
-This path is a fallback for when the GitHub deployer is unavailable. It is not the
-primary route. See
+The workflow runs only on the `self-deploy` branch, and never tags `:master`. The
+same writer lease makes its rolling swap safe. See
 [deploy-scaleway.md](../deploy-scaleway.md#self-deploy-without-github).
 
 ### CI builds the runner image

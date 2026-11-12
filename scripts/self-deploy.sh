@@ -10,8 +10,7 @@
 # image, pushes it to GHCR, and runs `scw container update` on prod.
 # `make self-deploy` invokes this script. See docs/deploy-scaleway.md.
 #
-# The everyday deployer stays GitHub Actions on `master`. This script is the
-# fallback when GitHub Actions is unavailable or an out-of-band deploy is wanted.
+# GitHub Actions only publishes the image on `master`, and deploys nothing.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"

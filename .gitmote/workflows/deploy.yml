@@ -1,9 +1,8 @@
 name: self-deploy
 
-# Break-glass self-deploy: gitmote builds and deploys itself through its own
-# local runner. Use it when the GitHub deployer is unavailable or an out-of-band
-# deploy is wanted. GitHub Actions stays the everyday deployer on `master`
-# (.github/workflows/ci.yml). This workflow runs only when the `self-deploy`
+# Self-deploy: gitmote builds and deploys itself through its own local runner.
+# GitHub Actions only publishes the image on `master` (.github/workflows/ci.yml),
+# and deploys nothing. This workflow runs only when the `self-deploy`
 # branch is pushed to a *local* gitmote instance. Only a local instance can
 # build. The Scaleway Serverless Job can't (docs/architecture/ci.md). That
 # instance needs:
@@ -11,14 +10,13 @@ name: self-deploy
 #   - a running Docker daemon
 #   - the CI secrets below
 #
-# This workflow is nearly identical to the `deploy` job in ci.yml. It has three
-# deliberate differences:
-#   1. It is gated on `self-deploy`, not `master`, so it never overlaps the
-#      GitHub path.
+# Its build follows the `publish` job in ci.yml, with three differences:
+#   1. It is gated on `self-deploy`, not `master`.
 #   2. GHCR auth uses a PAT (GHCR_USER and GHCR_TOKEN). Off GitHub, there is no
 #      built-in GITHUB_TOKEN.
 #   3. It builds linux/amd64 only. Scaleway needs amd64. GitHub also pushes an
 #      arm64 tag, but only for local dev, and a deploy does not need it.
+# It then runs the deploy that docs/deploy-scaleway.md#deploy runs by hand.
 
 on:
   push:
@@ -29,8 +27,7 @@ jobs:
   deploy:
     # A second gate. Even if the engine runs this file on another branch,
     # github.ref keeps the deploy confined to `self-deploy`. The runner resolves
-    # github.ref from its `checkout -B <branch>`. This mirrors the job-level `if`
-    # in ci.yml.
+    # github.ref from its `checkout -B <branch>`.
     if: github.ref == 'refs/heads/self-deploy'
     runs-on: ubuntu-latest
     steps:
@@ -47,7 +44,7 @@ jobs:
 
       # Tag with the commit SHA, which the next steps deploy, and with a moving
       # `self-deploy` tag. Deliberately do NOT tag `:master`. That tag belongs to
-      # the GitHub deployer, and a break-glass build must never overwrite it.
+      # the GitHub publisher, and a self-deploy build must never overwrite it.
       - name: Build & push public image (amd64 for Scaleway)
         uses: docker/build-push-action@v6
         with:

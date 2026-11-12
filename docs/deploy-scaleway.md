@@ -1,8 +1,9 @@
 # Deploy on Scaleway
 
-This file covers one cloud deployment: gitmote as a Scaleway Serverless Container,
-deployed from GitHub Actions. [configuration.md](configuration.md) covers the
-settings every deployment needs.
+This file covers one cloud deployment: gitmote as a Scaleway Serverless Container.
+GitHub Actions publishes the image, and you deploy it by hand or with
+`make self-deploy`. [configuration.md](configuration.md) covers the settings every
+deployment needs.
 
 ## Infrastructure
 
@@ -24,8 +25,8 @@ as `environment-variables`.
 > `secret-environment-variables` map. It does not merge, so passing one secret
 > removes all the others. Without the AWS keys, litestream falls back to EC2 IMDS,
 > and the server crash-loops on restore. Pass every secret on every `update`. The
-> plain `environment-variables` are a separate map. The CI deploy's `update` sets
-> no env vars, so it keeps both maps.
+> plain `environment-variables` are a separate map. The `update` of
+> [Deploy](#deploy) sets no env vars, so it keeps both maps.
 
 **Resources:** 1000 mVCPU, 1024 MB of memory and 8 GB of ephemeral storage
 (`cpu-limit=1000`, `memory-limit-bytes=1024MB`). The CLI needs a unit: `G`, `GB`
@@ -55,19 +56,11 @@ exceeds Scaleway's free tier: about 2.6M GB-s per month against 400k.
 two writers. A follower serves reads, but it refuses every push. Nothing routes a
 push to the writer.
 
-## GitHub Actions secrets
+## Deploy secrets
 
-The deploy pipeline uses Scaleway API credentials, apart from the container env.
-Set them in the GitHub repo under Settings, Secrets and variables, Actions,
-Repository secrets.
-
-A missing secret does not fail where a workflow uses it: GitHub substitutes an
-empty string. So a wrong name fails later, for example with
-`scw … api_key not_found`.
-
-Pushing the image needs no secret. GHCR accepts the built-in `GITHUB_TOKEN` with the
-workflow's `packages: write` permission. The Scaleway secrets serve only the deploy
-(`scw container update`) and the start of CI jobs.
+A deploy uses Scaleway API credentials, apart from the container env. A deploy by
+hand takes them from the `scw` CLI config. `make self-deploy` takes them from
+`.env` (see [Self-deploy without GitHub](#self-deploy-without-github)).
 
 A Scaleway API key has two halves, so do not swap them. The access key starts with
 `SCW` (`SCWXXXXXXXXXXXXXXXXX`), and the secret key is a UUID. Both come from the
@@ -75,19 +68,11 @@ Organization and Project that own the container.
 
 | Secret | Value |
 | --- | --- |
-| `SCW_SECRET_KEY` | The Scaleway API secret key: the UUID, not the `SCW…` access key. It deploys and starts CI jobs. |
+| `SCW_SECRET_KEY` | The Scaleway API secret key: the UUID, not the `SCW…` access key |
 | `SCW_ACCESS_KEY` | The Scaleway access key (`SCW…`) |
 | `SCW_ORGANIZATION_ID` | The Scaleway organization ID |
 | `SCW_PROJECT_ID` | The Scaleway project ID |
 | `SCW_CONTAINER_ID` | The ID of the gitmote Serverless Container |
-
-If a secret reads as empty although it is set, check these:
-
-1. It is under Secrets, not Variables.
-2. It is a Repository secret. A job with no `environment:` cannot see Environment
-   secrets.
-3. The name matches exactly. Names are case-sensitive.
-4. For an Organization secret, the repo has access to it.
 
 ## One-time setup
 
@@ -147,24 +132,30 @@ scw jobs definition create name=gitmote-runner \
   image-uri=ghcr.io/atmin/gitmote-runner:master \
   cpu-limit=1000 memory-limit=2048
 scw jobs definition update <JOB_DEFINITION_ID> image-uri=ghcr.io/atmin/gitmote-runner:master
-
-# 6. Set the GitHub Actions secrets of the deploy pipeline (see "GitHub Actions
-#    secrets"). They are not container env vars.
 ```
 
 ## Deploy
 
-Every push to `master` whose CI checks pass deploys, through the `deploy` job in
-`.github/workflows/ci.yml`:
+Every push to `master` whose CI checks pass publishes the image, through the
+`publish` job in `.github/workflows/ci.yml`:
 
 1. `ci` runs lint, test and build.
 2. `e2e` runs the end-to-end suites.
-3. The job builds the amd64 image, and pushes it as `ghcr.io/atmin/gitmote:master`
-   and `:<sha>`.
-4. `scw container container update image=ghcr.io/atmin/gitmote:<sha> … min-scale=0 max-scale=1 --wait`
-   makes Scaleway pull the public image.
+3. `publish` builds the amd64 and arm64 image, and pushes it as
+   `ghcr.io/atmin/gitmote:master` and `:<sha>`.
 
-The deploy needs no drain step. The lease makes the rolling swap safe
+Pushing the image needs no secret. GHCR accepts the built-in `GITHUB_TOKEN` with
+the workflow's `packages: write` permission.
+
+CI deploys nothing. To deploy a published commit, point the container at its tag:
+
+```bash
+scw container container update <CONTAINER_ID> \
+  image=ghcr.io/atmin/gitmote:<sha> min-scale=0 max-scale=1 --wait
+```
+
+`--wait` blocks until the new deployment serves. The deploy needs no drain step.
+The lease makes the rolling swap safe
 ([configuration.md](configuration.md#rolling-deploys)).
 
 The runner image publishes on its own, through
@@ -174,17 +165,17 @@ The runner image publishes on its own, through
 
 ### Self-deploy without GitHub
 
-When GitHub is down, or for a deploy outside the pipeline, a local gitmote instance
-builds and deploys itself. It runs
-[`.gitmote/workflows/deploy.yml`](../.gitmote/workflows/deploy.yml): the GitHub
-deploy job, triggered by the `self-deploy` branch instead of `master`. Only a local
-instance can do this, because Scaleway cannot build.
+A local gitmote instance can build and deploy itself, without GitHub. It runs
+[`.gitmote/workflows/deploy.yml`](../.gitmote/workflows/deploy.yml), triggered by
+the `self-deploy` branch. The workflow builds the image and runs the `update` of
+[Deploy](#deploy). Only a local instance can do this, because Scaleway cannot
+build.
 
 1. Copy [`.env.example`](../.env.example) to `.env`, which git ignores.
 2. Fill in the deploy secrets in `.env`.
 3. Run `make self-deploy`.
 
-`.env` holds the five Scaleway secrets of the GitHub pipeline, plus `GHCR_USER` and
+`.env` holds the five [deploy secrets](#deploy-secrets), plus `GHCR_USER` and
 `GHCR_TOKEN`. `GHCR_TOKEN` is a GHCR token with `write:packages`, because no
 `GITHUB_TOKEN` exists outside GitHub.
 
@@ -206,9 +197,8 @@ Rosetta.
 
 The build is `linux/amd64` only, the architecture of Scaleway. An arm64 host
 emulates it, so the first build is slow. The build tags `:self-deploy` and `:<sha>`,
-and deploys the SHA tag. It never deploys `:master`, which belongs to the GitHub
-deployer. Because it runs only on `self-deploy`, it never deploys twice with the
-`master` path. The lease keeps its rolling swap safe, as for the GitHub deploy.
+and deploys the SHA tag. It never tags `:master`, which belongs to the GitHub
+publisher. The lease keeps its rolling swap safe, as for a deploy by hand.
 
 The instance is disposable. Each run of `make self-deploy` first resets its state:
 the `data/selfdeploy/` directory and its S3 volume. So an interrupted run cannot
